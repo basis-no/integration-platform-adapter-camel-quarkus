@@ -86,7 +86,9 @@ Cross-runtime semantic changes require a coordinated contract change.
 
 Use `X.Y.Z-SNAPSHOT` builds from Sonatype's separate snapshot repository for
 remote acceptance. Create a `vX.Y.Z` tag only after local and remote acceptance
-is complete; that tag publishes the immutable final artifact to Maven Central.
+is complete. Tags never trigger publication. Production signing and snapshot
+publication are suspended pending credential isolation; unsigned inspection alone
+is insufficient for a release.
 See [Releasing](docs/releasing.md) for the full workflow and checklist.
 
 ## License and Support

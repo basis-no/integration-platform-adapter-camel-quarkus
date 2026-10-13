@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 
@@ -82,6 +83,38 @@ def provenance(path, version, commit, workflow_head, output, effective_pom):
         handle.write('\n')
 
 
+def unsigned(path, version, commit, output):
+    """Copy only opaque payloads; never sign or execute them in this collector."""
+    record = json.loads((output / 'provenance.json').read_text())
+    if record['source_commit'] != commit or record['version'] != version:
+        raise ValueError('Unsigned candidate identity mismatch')
+    group, artifact = record['group'], record['artifact']
+    if (not re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', group)
+            or not re.fullmatch(r'[A-Za-z0-9_-]+', artifact)):
+        raise ValueError('Invalid unsigned coordinate')
+    names = [artifact + '-' + version + suffix
+             for suffix in ('.pom', '.jar', '-sources.jar', '-javadoc.jar')]
+    # GPG skip need not stage a target POM; collect the versioned source POM.
+    sources = [path / 'pom.xml'] + [path / 'target' / name for name in names[1:]]
+    if any(p.is_symlink() or not p.is_file() for p in sources):
+        raise ValueError('Unsigned payload must be a regular file')
+    if any(not p.stat().st_size for p in sources) or sum(p.stat().st_size for p in sources) > 64 * 1024 * 1024:
+        raise ValueError('Unsigned payload size rejected')
+    pom = ET.parse(sources[0]).getroot()
+    if any(pom.findtext('p:' + key, namespaces=NS) != value
+           for key, value in (('groupId', group), ('artifactId', artifact), ('version', version))):
+        raise ValueError('Unsigned POM coordinate mismatch')
+    destination = output / 'unsigned'
+    destination.mkdir()
+    hashes = {}
+    for source, name in zip(sources, names):
+        shutil.copyfile(source, destination / name)
+        hashes[name] = hashlib.sha256(source.read_bytes()).hexdigest()
+    receipt = {'source_commit': commit, 'version': version,
+               'qualification': 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE', 'payload_sha256': hashes}
+    (output / 'unsigned.json').write_text(json.dumps(receipt, indent=2) + '\n')
+
+
 def check_artifact(directory, version, commit, signer, bundle_hash):
     receipt = json.loads((directory / 'candidate.json').read_text())
     record = json.loads((directory / 'provenance.json').read_text())
@@ -98,7 +131,7 @@ def check_artifact(directory, version, commit, signer, bundle_hash):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['selection', 'source', 'provenance', 'artifact'])
+    parser.add_argument('action', choices=['selection', 'source', 'provenance', 'unsigned', 'artifact'])
     parser.add_argument('--mode', default='inspect')
     parser.add_argument('--version', required=True)
     parser.add_argument('--commit', required=True)
@@ -120,6 +153,10 @@ def main():
         if not args.output or not args.effective_pom or not re.fullmatch(r'[a-f0-9]{40}', args.workflow_head):
             parser.error('Provenance requires output, effective POM and exact workflow head')
         provenance(args.path, args.version, args.commit, args.workflow_head, args.output, args.effective_pom)
+    elif args.action == 'unsigned':
+        if not args.output:
+            parser.error('Unsigned collection requires an output directory')
+        unsigned(args.path, args.version, args.commit, args.output)
     elif args.action == 'artifact':
         print(json.dumps(check_artifact(args.path, args.version, args.commit, args.signer, args.bundle_hash)))
 

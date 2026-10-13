@@ -81,10 +81,22 @@ GitHub Release from the same existing tag. Include changes/fixes, compatibility,
 upgrade actions and known limitations. Do not present planned behavior as shipped.
 A release is complete only after Maven Central publication and artifact verification,
 GitHub release-note readback and the applicable qualification/documentation gates.
-The manual candidate workflow validates notes and signed bytes before
-upload; portal validation and publication are separate reviewed operations with
-durable deployment identity. The release-page workflow verifies actual public
+Candidate inspection retains unsigned evidence only; production signing,
+snapshot publication and portal automation are suspended pending credential
+isolation. Standalone signed-bundle recovery tools retain deployment identity
+but do not authorize re-enabling credential-bearing workflows. The release-page workflow verifies actual public
 bytes before creating notes. Tags never trigger another build/upload. The
 synthetic CI gate does not replace full candidate, trusted production signer or
 portal qualification before release. Never rebuild or republish packages merely to repair missing release notes. Historical backfills use verified
 existing tags and must not replace the latest release. See `docs/releasing.md`.
+
+## Production credential boundary
+
+Candidate inspection is unsigned; snapshot publication and candidate portal
+actions are suspended. Never import production signing keys or pass production
+credentials to Maven, wrappers, plugins, tests, dependencies or candidate code.
+Restoring automation requires an enforceable approval boundary and isolated
+trusted signing/publication of prebuilt, reviewed bytes. Workflow prose, an exact
+SHA, manual dispatch and synthetic tests are not such a boundary. See
+`docs/release-packaging.md#production-credential-hold`; do not bypass the hold
+through historical workflow revisions.

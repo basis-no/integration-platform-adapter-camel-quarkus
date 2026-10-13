@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Remove production signing and publisher credentials from candidate inspection.
+  Inspection now retains unsigned evidence only. Suspend candidate portal actions
+  and snapshot publication until isolated signing/publication and enforceable
+  approval controls are qualified; existing artifacts remain unchanged.
+
 - Separate mutable `X.Y.Z-SNAPSHOT` remote-acceptance builds from immutable
   final `vX.Y.Z` Maven Central releases.
 - Avoid a null-method classification failure for ordinary Camel HTTP producers,

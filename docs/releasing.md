@@ -1,5 +1,10 @@
 # Releasing
 
+Production candidate signing and snapshot publication are currently suspended
+pending an enforceable credential boundary; see the
+[production credential hold](release-packaging.md#production-credential-hold).
+Unsigned inspection is available, but cannot qualify a signed release.
+
 The adapter has two publication lanes. Development and remote acceptance use a
 mutable snapshot coordinate; users receive only immutable final releases.
 
@@ -19,9 +24,10 @@ another immutable release. Existing releases are never rebuilt or replaced.
 2. Keep the POM on the next intended version, for example
    `0.4.0-SNAPSHOT`.
 3. Finish local unit, Testcontainers, documentation, and contract checks.
-4. Run the GitHub **Publish Maven SNAPSHOT** workflow from the commit to test.
-   The workflow publishes to Sonatype's separate snapshot repository and does
-   not create a Git tag or a Maven Central release entry.
+4. **Blocked by the production credential hold:** snapshot publication must use
+   separately qualified build and publication stages before this step resumes.
+   Do not restore credentials to the Maven build or dispatch an older workflow
+   revision to bypass the hold.
 5. Configure the validation integration to consume snapshots:
 
    ```xml
@@ -46,7 +52,9 @@ therefore suitable for acceptance testing, not production dependencies.
 
 ## Final release
 
-Under the manual workflow, inspect a signed candidate from the exact approved
+This procedure is blocked until the production credential hold is resolved.
+Unsigned inspection does not produce a signed candidate. Once a separately
+qualified signing path exists, inspect a signed candidate from the exact approved
 source commit and explicitly selected version **before** creating a final tag.
 Review its bundle hash, toolchain, plugin versions and qualification evidence.
 Create the final tag only after that review and immutable-release approval:
@@ -57,7 +65,7 @@ git push origin v0.4.0
 ```
 
 The tag path never builds or uploads automatically. The manual
-candidate workflow uploads the already inspected bundle in `USER_MANAGED` mode,
+replacement publication path must upload the already inspected bundle in `USER_MANAGED` mode,
 then separately publishes its validated deployment under action-specific human approval.
 Resume by the saved deployment ID; never rebuild or start a second upload to
 repair a failed publication stage. The workflows reject release-candidate,

@@ -163,6 +163,63 @@ class Fixtures(unittest.TestCase):
         recovery.recover(self.path, self.receipt, self.state, allow_upload=True, call=call)
         self.assertEqual(len([name for name in calls if name.startswith('/upload')]), 1)
 
+    def test_unsigned_collection_cannot_be_reused_as_signed_candidate(self):
+        output = self.root / 'evidence'
+        output.mkdir()
+        (output / 'provenance.json').write_text(json.dumps({
+            'source_commit': 'a' * 40, 'version': VERSION, 'group': GROUP, 'artifact': ARTIFACT}))
+        target = self.root / 'target'
+        target.mkdir()
+        for name, data in self.blobs.items():
+            if name.endswith(('.pom', '.jar')):
+                (target / Path(name).name).write_bytes(data)
+        (self.root / 'pom.xml').write_bytes(self.blobs[next(n for n in self.blobs if n.endswith('.pom'))])
+        (target / (ARTIFACT + '-' + VERSION + '.pom')).unlink()
+        candidate.unsigned(self.root, VERSION, 'a' * 40, output)
+        receipt = json.loads((output / 'unsigned.json').read_text())
+        self.assertEqual(receipt['qualification'], 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE')
+        self.assertEqual(len(list((output / 'unsigned').iterdir())), 4)
+        with self.assertRaises(FileNotFoundError):
+            candidate.check_artifact(output, VERSION, 'a' * 40, SIGNER, 'b' * 64)
+
+    def test_unsigned_collection_refuses_symlinks_and_wrong_identity(self):
+        output = self.root / 'evidence'
+        output.mkdir()
+        (output / 'provenance.json').write_text(json.dumps({
+            'source_commit': 'a' * 40, 'version': VERSION, 'group': GROUP, 'artifact': ARTIFACT}))
+        target = self.root / 'target'
+        target.mkdir()
+        for name, data in self.blobs.items():
+            if name.endswith(('.pom', '.jar')):
+                (target / Path(name).name).write_bytes(data)
+        (self.root / 'pom.xml').write_bytes(self.blobs[next(n for n in self.blobs if n.endswith('.pom'))])
+        with self.assertRaises(ValueError):
+            candidate.unsigned(self.root, VERSION, 'b' * 40, output)
+        payload = target / (ARTIFACT + '-' + VERSION + '.jar')
+        payload.unlink()
+        payload.symlink_to(self.path)
+        with self.assertRaises(ValueError):
+            candidate.unsigned(self.root, VERSION, 'a' * 40, output)
+        self.assertFalse((output / 'unsigned').exists())
+
+    def test_production_workflows_have_no_signing_or_portal_secret_references(self):
+        workflows = Path(__file__).resolve().parents[1] / 'workflows'
+        for name in ('release-candidate.yml', 'publish-snapshot.yml'):
+            text = (workflows / name).read_text()
+            self.assertNotIn('secrets.', text)
+            self.assertNotIn('gpg-private-key:', text)
+            self.assertNotIn('gpg-passphrase:', text)
+        text = (workflows / 'release-candidate.yml').read_text()
+        self.assertIn('test "$MODE" = inspect', text)
+        self.assertIn('name: unsigned-central-candidate-', text)
+        self.assertNotIn('name: central-candidate-', text)
+        self.assertNotIn('central-recovery.py', text)
+        self.assertIn('-Dgpg.skip=true', text)
+        snapshot = (workflows / 'publish-snapshot.yml').read_text()
+        self.assertIn('exit 1', snapshot)
+        self.assertNotIn('checkout@', snapshot)
+        self.assertNotIn('mvnw', snapshot)
+
     def test_candidate_selection_requires_exact_inputs_and_refuses_upload_rerun(self):
         candidate.selection('inspect', VERSION, 'a' * 40, SIGNER)
         candidate.selection('upload', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64)

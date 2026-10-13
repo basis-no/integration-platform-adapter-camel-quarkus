@@ -6,27 +6,55 @@ cleanup. A full adapter candidate, trusted production signer and release approva
 remain separate gates before any production upload. Do not rebuild, retag or
 replace an existing stable release.
 
-`release-candidate.yml` defaults to **inspect**, which builds and signs a candidate
-without portal credentials or upload. Every action requires an explicit version,
-source commit and signer. Upload/resume/publish additionally require an existing
-inspection run and its reviewed bundle hash. Upload and publication require an
-existing final tag pointing to that source and a non-secret reference to actual
-action-specific human approval. The workflow remains manually dispatched by an
-authorized release operator: typing an approval reference does not create approval
-or bypass tool enforcement. No billing upgrade, new credentials, visibility change
-or new environment grant is required by this proposal. If enforced environment
-reviewers become available, they can be added as defense in depth through a
-separately reviewed change; unavailable paid protection is not bypassed or claimed.
+## Production credential hold
 
-## Candidate before a tag
+The candidate workflow performs **unsigned inspection only**. It never imports a
+production private key, supplies a signing passphrase, or obtains Central portal
+credentials. Upload, resume and publish are refused. Snapshot publication is also
+suspended because its Maven build previously shared a runner with signing and
+publication credentials. Existing releases and published snapshots are unchanged.
 
-Use the checked-in Maven wrapper and Java 21. Record the wrapper distribution URL,
-actual `./mvnw --version`, Java version, release-plugin versions, exact source head,
-POM and workflow digests in the acceptance packet. Build with
-`./mvnw --batch-mode --no-transfer-progress -Prelease clean verify` after setting
-the approved candidate version in a disposable checkout. This runs signing at
-`verify`, without invoking Central deployment or Maven local install staging.
-The qualified wrapper is the toolchain authority; a runner's global `mvn` is not.
+A source commit, Maven wrapper, plugin, test or dependency can execute arbitrary
+code. An exact SHA, a private repository, an approval-reference string and a
+synthetic-key test do not establish permission to expose production credentials.
+Neither a later cleanup step nor log masking protects a key while code is running.
+Do not re-enable either workflow by adding repository secrets to source builds.
+
+Before production automation resumes, establish an enforceable approval boundary
+for the **workflow code and artifact identity**, with credentials unavailable to
+branch workflows. Move signing credentials out of repository-wide access into a
+separately reviewed secret store or a supported protected environment. Environment
+reviewers/branch controls must actually be configured and enforced; a name alone
+is insufficient. Separately authorize any billing, secret migration or key rotation.
+
+Use distinct fresh runners for source build, signing, and publication. The build
+has no production credentials. The signer receives only reviewed, hash-pinned
+payloads as data and runs fixed trusted tooling: no candidate checkout, Maven,
+wrapper, tests, plugins, hooks, cache reuse or artifact-provided executables.
+The publisher verifies the signed bundle and executes only trusted portal tooling.
+A replacement must be independently qualified before this hold is removed.
+
+Workflow-file changes alone do not revoke repository secrets or disable historical
+workflow revisions. Disable the affected workflows through Actions administration
+as an immediate containment step; account for older branch versions and other
+credential-bearing workflows before claiming repository-wide containment.
+
+## Unsigned candidate before a tag
+
+Dispatch unsigned inspection from `main` with an exact source commit, version and
+expected future signer fingerprint. The fingerprint does not cause signing.
+The job uses Java 21 and the source Maven wrapper with `-Prelease -Dgpg.skip=true
+clean verify`. It records wrapper/Java versions, effective plugins and source
+hashes, then retains four opaque payloads in an `unsigned-central-candidate-*`
+artifact with `UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE` identity. Candidate code may
+ignore Maven flags, but there are no production credentials available to steal.
+The read-only GitHub token remains a runner credential, not a production signer.
+
+Unsigned inspection cannot qualify a release or satisfy the signed-bundle workflow:
+its artifact name and receipt differ, and it contains no production signatures.
+Do not create a final tag from unsigned inspection alone. The retained standalone
+bundle/recovery tools below remain for already signed, independently approved
+artifacts; they do not authorize a credential-bearing Maven build.
 
 Require exactly four payloads in the candidate directory: the release POM,
 runtime JAR, sources JAR and Javadoc JAR, each with its detached `.asc` signature.
@@ -39,9 +67,10 @@ python3 .github/scripts/central-bundle.py candidate.zip \
   --signer FULL_UPPERCASE_40_CHARACTER_FINGERPRINT --receipt candidate.json
 ```
 
-The candidate workflow retains the actual wrapper/Java version, effective release
+Unsigned inspection retains the actual wrapper/Java version, effective release
 plugin versions, POM/wrapper digests and exact source/workflow heads. It requires
-a clean matching snapshot source and reviewed dated release notes before signing.
+a clean matching snapshot source and dated release notes. Separate trusted signing
+is not implemented by this workflow.
 The tool generates checksums and includes only those eight signed inputs. It
 rejects an unexpected namespace/version, missing or duplicate entries, incorrect
 checksums, invalid JARs and signatures from another key. It never downloads keys.
@@ -83,7 +112,7 @@ another publish call until an operator establishes the outcome. Preserve stale
 lock/temporary files after a crash for review; do not discard state to retry.
 Serialize publishers for a coordinate in CI as well as with the local state lock.
 
-In CI, the upload job first calls `--prepare-upload` without portal credentials
+The suspended upload design first called `--prepare-upload` without portal credentials
 and uploads `central-intent-VERSION` before the first network call. Then it retains
 `central-state-VERSION` with `always()` after the operation, including failures.
 Workflow reruns cannot repeat an upload. Use **resume** with the latest state run
