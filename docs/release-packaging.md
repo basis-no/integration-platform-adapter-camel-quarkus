@@ -49,6 +49,9 @@ hashes, then retains four opaque payloads in an `unsigned-central-candidate-*`
 artifact with `UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE` identity. Candidate code may
 ignore Maven flags, but there are no production credentials available to steal.
 The read-only GitHub token remains a runner credential, not a production signer.
+Candidate inspection neither restores nor saves a shared Maven cache: candidate
+code can poison cache contents for later jobs. Its provenance is diagnostic
+evidence from a source-build runner, not an independent signing approval.
 
 Unsigned inspection cannot qualify a release or satisfy the signed-bundle workflow:
 its artifact name and receipt differ, and it contains no production signatures.

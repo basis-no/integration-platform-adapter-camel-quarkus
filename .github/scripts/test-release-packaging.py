@@ -215,6 +215,10 @@ class Fixtures(unittest.TestCase):
         self.assertNotIn('name: central-candidate-', text)
         self.assertNotIn('central-recovery.py', text)
         self.assertIn('-Dgpg.skip=true', text)
+        # Candidate code can write arbitrary Maven cache contents. Never share
+        # its dependency cache with a later trusted signing/publishing runner.
+        self.assertNotIn('cache:', text)
+        self.assertNotIn('actions/cache', text)
         snapshot = (workflows / 'publish-snapshot.yml').read_text()
         self.assertIn('exit 1', snapshot)
         self.assertNotIn('checkout@', snapshot)

@@ -95,8 +95,6 @@ jobs:
         with:
           distribution: temurin
           java-version: '21'
-          cache: maven
-          cache-dependency-path: candidate/pom.xml
       - name: Build unsigned candidate with no production credentials
         working-directory: candidate
         run: |
