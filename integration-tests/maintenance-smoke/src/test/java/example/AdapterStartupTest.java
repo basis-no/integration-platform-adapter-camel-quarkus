@@ -6,6 +6,7 @@ import no.basis.integrationplatform.camel.lifecycle.MessageStoreRoutePolicy;
 import org.apache.camel.CamelContext;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.component.kafka.KafkaEndpoint;
+import org.apache.camel.component.kafka.PollOnError;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -28,6 +29,8 @@ class AdapterStartupTest {
         assertFalse(endpoint.getConfiguration().isAutoCommitEnable());
         assertTrue(endpoint.getConfiguration().isAllowManualCommit());
         assertTrue(endpoint.getConfiguration().isBreakOnFirstError());
+        // A poll failure reconnects instead of stopping the consumer or skipping an offset.
+        assertEquals(PollOnError.RECONNECT, endpoint.getConfiguration().getPollOnError());
     }
 
     @Test

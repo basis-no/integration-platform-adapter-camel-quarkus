@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.3.6 — Unreleased
+
+### Added
+
+- Prepare bounded synthetic PostgreSQL qualification fixtures with exact run
+  ownership and partial-startup cleanup. Certification and final combined-candidate execution remain release gates.
+
+- Versions are scoped to a physical key row. Unswept expiry preserves its
+  counter; expiry cleanup or explicit deletion followed by recreation starts
+  at 1. A stale numeric CAS can match the new row. This is a candidate
+  limitation under the unlocked draft contract, subject to final release review, not lease or fencing
+  support. Durable cursor migration keeps no TTL, no deletion and existing
+  polling protection.
+
+- An integration-scoped `KeyValueStore` API for small JSON cursors and markers,
+  with versions, compare-and-set, optional expiry, bounded cleanup and a Camel
+  idempotent repository. SQL statements have a five-second execution bound;
+  sweeper disposal waits up to ten seconds and reports incomplete shutdown. It uses the platform-provisioned `bip_key_value` table
+  from draft contract `1.2.0-rc2`; it does not create or migrate tables.
+- This is a local candidate, not a published or certified adapter pin. It
+  preserves the complete maintenance baseline and does not add leases or the
+  Trusted Message Store. Release remains subject to review. Existing application databases remain supported; using the API or migrating data is optional.
+
+
+### Security and compatibility
+
+- Unsigned candidate builds receive no production signing/publishing credentials.
+  Signed candidate and snapshot publication remain suspended until an enforceable
+  isolated signer/publisher path and credential review are complete.
+- Existing application databases and named datasources remain supported. No
+  migration or Message Store schema change is required while KV is unused.
+
+### Fixed
+
+- A Kafka poll failure reconnects and polls the same position again
+  (`camel.component.kafka.poll-on-error=RECONNECT`). Before, a missing read
+  permission journaled a `FAILED` row without a record and stopped the consumer
+  for good while the process stayed up; another poll failure moved past the
+  offset. An authentication failure still stops the consumer.
+
+- The endpoint URI journaled for each step masks credentials the way Camel
+  masks them in its logs. Before, a fixed `to` endpoint with a password in its
+  user info or in an option such as `password` or `accessToken` stored that
+  password in the Message Store (`bip_step_outcome.endpoint_uri`). Step ids
+  still derive from the exact URI, so existing step identities and the
+  delivered-step guard are unchanged. Rows journaled before the upgrade are
+  not rewritten. The missing-node-id warning also masks the endpoint; arbitrary
+  exception text and application logging remain outside this guarantee.
+
+- A late outcome from an older attempt still records that attempt's history,
+  but cannot replace a newer attempt's current message summary, including its
+  status, payload, error and timestamps. Same-attempt updates remain supported.
+
+### Known limitations
+
+- Poll-time authorization failures can recover after a permission grant, but
+  invalid authentication remains non-recoverable. A SmallRye-only health endpoint
+  can remain Ready after polling stops. The upstream Camel health bridge passed
+  the pinned maintenance fixture; it remains an application composition
+  prerequisite and is not automatically added by this adapter. Qualify each
+  application's actual BOM and route lifecycle. Reconnecting readiness can
+  fluctuate; the finite stopped-poller proof is not a continuous permission or
+  business-acceptance guarantee.
+  See [maintenance qualification](docs/maintenance-qualification.md).
+
 ## 0.3.5 — 2026-10-12
 
 Maven artifact:

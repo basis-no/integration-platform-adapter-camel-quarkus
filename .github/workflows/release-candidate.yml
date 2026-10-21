@@ -1,0 +1,126 @@
+name: Inspect unsigned Central candidate (production signing suspended)
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [inspect]
+        default: inspect
+        description: Unsigned inspection only; signing and portal actions are suspended
+      version:
+        required: true
+        description: Explicit approved candidate version, without v or SNAPSHOT
+      source_commit:
+        required: true
+        description: Exact 40-character source commit for unsigned inspection
+      signer:
+        required: true
+        description: Expected future signer fingerprint; inspection does not sign
+      candidate_run:
+        description: Existing successful inspection run for upload/resume/publish
+      state_run:
+        description: Latest deployment-state run for resume/publish
+      bundle_sha256:
+        description: Reviewed candidate bundle SHA-256 for upload/resume/publish
+      approval_reference:
+        description: Non-secret reference to actual human approval for the chosen portal action
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: central-candidate-${{ inputs.version }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  MODE: ${{ inputs.action }}
+  VERSION: ${{ inputs.version }}
+  SOURCE_COMMIT: ${{ inputs.source_commit }}
+  SIGNER: ${{ inputs.signer }}
+  CANDIDATE_RUN: ${{ inputs.candidate_run }}
+  STATE_RUN: ${{ inputs.state_run }}
+  BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
+  APPROVAL_REFERENCE: ${{ inputs.approval_reference }}
+
+jobs:
+  request:
+    if: github.server_url == 'https://github.com' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate explicit action and exact inputs
+        run: >-
+          python3 .github/scripts/release-candidate.py selection
+          --mode "$MODE" --version "$VERSION" --commit "$SOURCE_COMMIT"
+          --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --state-run "$STATE_RUN"
+          --bundle-hash "$BUNDLE_SHA256" --attempt "$GITHUB_RUN_ATTEMPT"
+      - name: Refuse production actions until an enforceable credential boundary exists
+        run: |
+          test "$MODE" = inspect
+          test "$GITHUB_REF" = refs/heads/main
+
+  inspect:
+    needs: request
+    if: inputs.action == 'inspect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MAVEN_OPTS: -Xmx512m -XX:ActiveProcessorCount=2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check clean snapshot source before rewriting candidate version
+        run: >-
+          python3 .github/scripts/release-candidate.py source
+          --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate
+      - name: Validate candidate notes before unsigned build
+        run: python3 .github/scripts/release-notes.py --tag "v$VERSION" --pom candidate/pom.xml --changelog candidate/CHANGELOG.md --output candidate-notes.md
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build unsigned candidate with no production credentials
+        working-directory: candidate
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+          ./mvnw --batch-mode --no-transfer-progress -Prelease -Dgpg.skip=true clean verify -DforkCount=1 -DreuseForks=true -DargLine='-Xmx256m -XX:ActiveProcessorCount=2' | tee ../candidate-build.log
+          ./mvnw --batch-mode --no-transfer-progress -Prelease help:effective-pom -Doutput=../candidate-effective-pom.xml
+      - name: Retain unsigned payloads and source provenance
+        run: |
+          mkdir evidence
+          python3 .github/scripts/release-candidate.py provenance --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate --workflow-head "$GITHUB_SHA" --effective-pom candidate-effective-pom.xml --output evidence/provenance.json
+          cp candidate-effective-pom.xml evidence/effective-pom.xml
+          cp candidate-notes.md evidence/release-notes.md
+          python3 .github/scripts/release-candidate.py unsigned --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate --output evidence
+      - name: Retain unsigned candidate bytes and identity even after validation failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-central-candidate-${{ inputs.version }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain build diagnostics on failure or success
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-inspection-log-${{ github.run_id }}
+          path: candidate-build.log
+          if-no-files-found: warn
+          retention-days: 30

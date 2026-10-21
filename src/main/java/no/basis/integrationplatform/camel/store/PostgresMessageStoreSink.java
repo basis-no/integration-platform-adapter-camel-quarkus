@@ -60,6 +60,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 occurred_at = excluded.occurred_at,
                 error = excluded.error,
                 updated_at = current_timestamp
+            where excluded.last_attempt >= bip_message_log.last_attempt
             """;
 
     private static final String UPSERT_MESSAGE_ATTEMPT_SQL = """

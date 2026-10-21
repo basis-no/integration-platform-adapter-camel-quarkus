@@ -6,6 +6,8 @@ import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -25,7 +27,32 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 @Testcontainers
 class PostgresMessageStoreSinkTest {
     @Container
-    private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
+    private static final PostgreSQLContainer POSTGRES = boundedPostgres();
+
+    private static PostgreSQLContainer boundedPostgres() {
+        boolean bounded = Boolean.getBoolean("bip.test.bounded-services");
+        String runId = System.getProperty("bip.test.run-id");
+        if (bounded && (runId == null || runId.isBlank())) {
+            throw new IllegalArgumentException("Unique bip.test.run-id is required");
+        }
+        var postgres = new PostgreSQLContainer(
+                bounded ? "postgres@sha256:16bc17c64a573ef34162af9298258d1aec548232985b33ed7b1eac33ba35c229" : "postgres:16-alpine");
+        if (bounded) {
+            postgres.withImagePullPolicy(image -> false);
+            postgres.withLabel("bip.qualification.run", runId);
+            postgres.withCreateContainerCmdModifier(command -> {
+                var ports = command.getExposedPorts();
+                if (ports == null || ports.length == 0) throw new IllegalStateException("Missing synthetic fixture ports");
+                var bindings = java.util.Arrays.stream(ports)
+                        .map(port -> new com.github.dockerjava.api.model.PortBinding(
+                                com.github.dockerjava.api.model.Ports.Binding.bindIp("127.0.0.1"), port))
+                        .toArray(com.github.dockerjava.api.model.PortBinding[]::new);
+                command.getHostConfig().withMemory(256L * 1024 * 1024).withMemorySwap(256L * 1024 * 1024)
+                        .withPidsLimit(64L).withNanoCPUs(1_000_000_000L).withPortBindings(bindings);
+            });
+        }
+        return postgres;
+    }
 
     private DataSource dataSource;
     private PostgresMessageStoreSink sink;
@@ -103,7 +130,33 @@ class PostgresMessageStoreSinkTest {
         assertEquals("COMPLETED", singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 2"));
     }
 
+    @ParameterizedTest
+    @EnumSource(value = MessageStatus.class, names = {"COMPLETED", "FAILED", "DLQ"})
+    void lateOlderAttemptPreservesEntireCurrentSummaryButRetainsHistory(MessageStatus latestStatus) {
+        MessageStatus olderStatus = latestStatus == MessageStatus.COMPLETED
+                ? MessageStatus.FAILED : MessageStatus.COMPLETED;
+        sink.record(result(latestStatus, 2, "newer outcome", "newer-payload",
+                Instant.parse("2026-06-14T13:00:00Z")));
+        String before = singleValue("select row_to_json(m)::text from bip_message_log m where message_id = 'message-123'");
+
+        sink.record(result(olderStatus, 1, "late older outcome", "older-payload",
+                Instant.parse("2026-06-14T12:00:00Z")));
+
+        // The guard covers status, payload, error, timestamps and all metadata together.
+        assertEquals(before, singleValue("select row_to_json(m)::text from bip_message_log m where message_id = 'message-123'"));
+        assertEquals(2, rowCount("bip_message_attempt"));
+        assertEquals(olderStatus.name(), singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 1"));
+        assertEquals(latestStatus.name(), singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 2"));
+
+        sink.record(result(MessageStatus.COMPLETED, 3, null));
+        assertEquals("3", singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
+    }
+
     private MessageAttemptResult result(MessageStatus status, int attempt, String error) {
+        return result(status, attempt, error, "payload-body", Instant.parse("2026-06-14T12:00:00Z"));
+    }
+
+    private MessageAttemptResult result(MessageStatus status, int attempt, String error, String payload, Instant occurredAt) {
         return new MessageAttemptResult(
                 1,
                 "message-123",
@@ -113,7 +166,7 @@ class PostgresMessageStoreSinkTest {
                 "vendor",
                 "postgres_inline",
                 128L,
-                "payload-body".getBytes(StandardCharsets.UTF_8),
+                payload.getBytes(StandardCharsets.UTF_8),
                 Instant.parse("2026-07-14T12:00:00Z"),
                 null,
                 true,
@@ -124,7 +177,7 @@ class PostgresMessageStoreSinkTest {
                 true,
                 2,
                 3,
-                Instant.parse("2026-06-14T12:00:00Z"),
+                occurredAt,
                 status,
                 List.of(new StepResult(
                         "sftp",

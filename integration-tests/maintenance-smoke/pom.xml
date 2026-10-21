@@ -8,7 +8,7 @@
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <quarkus.version>3.32.2</quarkus.version>
-    <adapter.version>0.3.5-SNAPSHOT</adapter.version>
+    <adapter.version>0.3.6-SNAPSHOT</adapter.version>
   </properties>
   <repositories><repository>
     <id>central-portal-snapshots</id>

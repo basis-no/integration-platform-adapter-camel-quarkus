@@ -26,15 +26,12 @@ This library is a Camel/Quarkus runtime adapter. It is self-contained: the
 tables, topics and headers it reads and writes are documented in this README,
 and the schema it expects ships in `src/main/resources/db/message-store/`.
 
-See the [changelog](CHANGELOG.md) for maintenance changes, upgrade actions and limitations.
-Candidate CI and snapshot publication validate exactly one nonempty section for
-the source POM version with `python3 scripts/check_changelog.py`. Stable publication
-also runs `python3 scripts/check_changelog.py --tag vX.Y.Z` before rewriting the POM
-or loading publication credentials: the tag must match the source version and its
-notes must have an approved ISO release date and no pending release status in
-the heading or an explicit status declaration. Technical prose about pending
-deliveries or candidate validation remains valid. Finalize
-those notes only as part of an approved release; older sections need no invented dates.
+See the [changelog](CHANGELOG.md) for candidate changes, upgrade actions and
+limitations. [Release tooling](docs/release-packaging.md) builds unsigned candidates
+without production credentials. Production signing and snapshot publication are
+suspended pending an enforceable isolated signer and credential review. A tag
+never rebuilds or uploads a release. Final notes need an approved date and exact
+artifact provenance; source preparation does not authorize publication.
 
 ## 0.3.5 maintenance line
 
@@ -145,6 +142,7 @@ its own `application.properties`:
 camel.component.kafka.auto-commit-enable=false
 camel.component.kafka.allow-manual-commit=true
 camel.component.kafka.break-on-first-error=true
+camel.component.kafka.poll-on-error=RECONNECT
 ```
 
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
@@ -154,6 +152,20 @@ outcome, failed journal write or failed commit leaves the exchange failed.
 that unresolved input. Applications must not override these safety defaults.
 This can intentionally block processing during a durability outage; it is not a
 promise that every failure always progresses.
+
+A failure while polling, before any record reaches a route, reconnects the
+consumer and polls the same position again. Camel's default for poll failures
+would route the exception to the error handler without a record, move past the
+offset and, after an authorization error, stop polling for good while the
+process stays up. A missing read permission, for example while a new topic's
+permission is still being applied, now delays consumption instead of ending it.
+An authentication failure still stops the consumer.
+
+The current Message Store summary follows the highest recorded attempt. A late
+write from an older attempt still records its attempt history but cannot replace
+the newer summary's status, payload, error or timestamps. Repeated writes for the
+same attempt may update that attempt and its current summary; this is not a
+within-attempt event-ordering guarantee.
 
 ## Retry and DLQ
 
@@ -379,6 +391,26 @@ The adapter records `DELIVERED`, `FAILED`, or `SKIPPED` step outcomes in the
 message attempt. `SKIPPED` means the configured `StepOutcomeStore` says the same
 idempotency key was already delivered, so the endpoint send was not repeated.
 
+Each recorded step keeps its endpoint URI with credentials masked the way Camel
+masks them in logs: a password in the user info and options such as `password`,
+`passphrase`, `secretKey` or `accessToken` are stored as `xxxxxx`. Step ids are
+derived from the exact URI, so masking does not change them. Failed and skipped
+step entries use the same masked endpoint, as does the warning emitted when a
+send has no stable Camel node id. This masks the endpoint field, not arbitrary
+exception messages or application logs. Existing rows, logs and backups are not
+rewritten; review their access and retention separately.
+
+## Key-Value Store
+
+The combined local `0.3.6-SNAPSHOT` candidate adds
+[`KeyValueStore`](docs/key-value-store.md) for small integration-scoped JSON
+cursors and markers in the platform-provisioned `bip_key_value` table of draft
+contract `1.2.0-rc2`. It keeps the full maintenance baseline and adds no leases
+or Trusted Message Store service. It is not a published or certified pin.
+Calls have their own transactions; they are not atomic with delivery or polling.
+The feature is lazy and has no effect when unused. Calls fail explicitly if the
+table is unavailable; no schema or metadata is created at startup.
+
 ## Sink and Store Selection
 
 The message outcome sink is selected with `basis.message-store.sink`:
@@ -448,6 +480,7 @@ Configuration reference:
 | --- | --- | --- | --- |
 | `basis.delivery-audit.routes` | comma-separated exact route ids | empty | Select independent `direct:` delivery requests for non-replayable audit. |
 | `basis.input-audit.routes` | comma-separated exact route ids | empty | Select non-Kafka input inspection without changing source recovery. |
+| `basis.message-store.key-value.sweep-interval-seconds` | integer seconds, `1..3600` | `3600` | Once the candidate Key-Value Store is used, sweep this integration’s expired keys in bounded batches. |
 | `basis.message-store.sink` | `log`, `postgres`, `kafka` | `log` | Selects where terminal message outcomes go. |
 | `basis.message-store.step-outcome-store` | `noop`, `postgres` | `noop` | Selects whether delivered-step checks are durable. |
 | `basis.message-store.payload.mode` | `postgres-inline`, `metadata-only` | `postgres-inline` | Selects whether safely capturable payloads are stored inline for replay. |
@@ -557,6 +590,11 @@ patch does not rewrite historical rows or remove records already published to
 Kafka. Safe input replay still retains message identity, increments the manual
 attempt and preserves the existing redo-step contract. Request acceptance is
 not proof of delivery or of successful offset commit.
+
+The [application database continuity fixture](integration-tests/application-data-smoke/README.md)
+checks a named business datasource alongside a legacy Message Store with no KV
+table. Its baseline and candidate results must be recorded separately; upgrading
+the adapter does not move application state.
 
 ## How this project is developed
 
