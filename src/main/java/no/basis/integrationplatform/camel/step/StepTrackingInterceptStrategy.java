@@ -1,6 +1,8 @@
 package no.basis.integrationplatform.camel.step;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.AsyncProcessor;
@@ -17,9 +19,21 @@ import org.apache.camel.support.AsyncProcessorConverterHelper;
 @ApplicationScoped
 public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private final StepTracker stepTracker;
+    private final TrafficSignals trafficSignals;
 
     public StepTrackingInterceptStrategy(StepTracker stepTracker) {
+        this(stepTracker, null);
+    }
+
+    /**
+     * Creates tracking with optional existing-registry activity export.
+     * @param stepTracker durable step tracker
+     * @param trafficSignals optional activity signal exporter
+     */
+    @Inject
+    public StepTrackingInterceptStrategy(StepTracker stepTracker, TrafficSignals trafficSignals) {
         this.stepTracker = stepTracker;
+        this.trafficSignals = trafficSignals;
     }
 
     @Override
@@ -40,8 +54,12 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return target;
         }
 
+        if (trafficSignals != null) {
+            if (target instanceof SendProcessor send) trafficSignals.observeProducerEndpoint(send.getEndpoint());
+            else if (target instanceof SendDynamicProcessor send) trafficSignals.observeDynamicEndpoint(send.getUri());
+        }
         AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
-        return new StepTrackingProcessor(delegate, endpointSend, stepTracker);
+        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, trafficSignals);
     }
 
     private EndpointSend endpointSend(NamedNode definition, Processor target) {
@@ -71,11 +89,18 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         private final AsyncProcessor delegate;
         private final EndpointSend endpointSend;
         private final StepTracker stepTracker;
+        private final TrafficSignals trafficSignals;
 
         private StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker) {
+            this(delegate, endpointSend, stepTracker, null);
+        }
+
+        private StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend,
+                StepTracker stepTracker, TrafficSignals trafficSignals) {
             this.delegate = delegate;
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
+            this.trafficSignals = trafficSignals;
         }
 
         @Override
@@ -85,8 +110,11 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 stepTracker.recordSkipped(exchange);
                 return;
             }
+            var trafficSnapshot = beforePublish(exchange);
             try {
-                delegate.process(exchange);
+                boolean returned = false;
+                try { delegate.process(exchange); returned = true; }
+                finally { afterPublish(trafficSnapshot, exchange, returned && exchange.getException() == null); }
                 if (exchange.getException() == null) {
                     stepTracker.recordDelivered(exchange);
                 } else {
@@ -108,7 +136,9 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 return true;
             }
 
+            var trafficSnapshot = beforePublish(exchange);
             return delegate.process(exchange, doneSync -> {
+                afterPublish(trafficSnapshot, exchange, exchange.getException() == null);
                 if (exchange.getException() == null) {
                     stepTracker.recordDelivered(exchange);
                 } else {
@@ -131,16 +161,27 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 stepTracker.recordSkipped(exchange);
                 return java.util.concurrent.CompletableFuture.completedFuture(exchange);
             }
+            var trafficSnapshot = beforePublish(exchange);
             return delegate.processAsync(exchange).whenComplete((result, failure) -> {
-                if (failure == null && result.getException() == null) {
-                    stepTracker.recordDelivered(result);
+                Exchange completedExchange = result != null ? result : exchange;
+                afterPublish(trafficSnapshot, completedExchange, failure == null && completedExchange.getException() == null);
+                if (failure == null && completedExchange.getException() == null) {
+                    stepTracker.recordDelivered(completedExchange);
                 } else {
                     if (failure != null) {
-                        result.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
+                        completedExchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
                     }
-                    stepTracker.recordFailed(result);
+                    stepTracker.recordFailed(completedExchange);
                 }
             });
+        }
+
+        private TrafficSignals.PublishSnapshot beforePublish(Exchange exchange) {
+            return trafficSignals == null ? null : trafficSignals.beforePublish(endpointSend.endpointUri(), exchange);
+        }
+
+        private void afterPublish(TrafficSignals.PublishSnapshot snapshot, Exchange exchange, boolean succeeded) {
+            if (trafficSignals != null) trafficSignals.afterPublish(snapshot, exchange, succeeded);
         }
 
         private boolean alreadyDelivered(Exchange exchange) {

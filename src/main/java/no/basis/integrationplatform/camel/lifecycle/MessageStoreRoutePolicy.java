@@ -6,6 +6,7 @@ import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
+import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.Exchange;
 import org.apache.camel.Route;
 import org.apache.camel.component.kafka.KafkaConstants;
@@ -23,6 +24,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
 
     private final MessageStoreSink sink;
+    private TrafficSignals trafficSignals;
     private final String integrationName;
     private final PayloadCapturePolicy payloadPolicy;
 
@@ -36,11 +38,16 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         this.payloadPolicy = payloadPolicy;
     }
 
+    void setTrafficSignals(TrafficSignals trafficSignals) {
+        this.trafficSignals = trafficSignals;
+    }
+
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
         ensureMessageId(exchange);
         captureKafkaManualCommit(exchange);
         capturePayloadMetadata(exchange);
+        if (trafficSignals != null) trafficSignals.recordAdmitted(exchange);
     }
 
     @Override

@@ -4,6 +4,12 @@
 
 ### Added
 
+- Add opt-in Kafka record admission and broker-ACK publication counters via the
+  existing Micrometer registry. Defaults are disabled. Missing, unsafe or
+  incomplete coverage is unknown; counters do not claim business completion.
+  Publication requires explicit destination topics and safe static producer
+  metadata/ACK configuration. No route or Kafka setting changes automatically.
+
 - Prepare bounded synthetic PostgreSQL qualification fixtures with exact run
   ownership and partial-startup cleanup. Certification and final combined-candidate execution remain release gates.
 

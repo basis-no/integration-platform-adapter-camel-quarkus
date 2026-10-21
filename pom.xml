@@ -70,6 +70,11 @@
   </dependencyManagement>
 
   <dependencies>
+    <!-- Existing Quarkus/Micrometer API only; export stays optional without a registry. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+    </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-arc</artifactId>

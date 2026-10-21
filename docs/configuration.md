@@ -25,3 +25,14 @@ to their emitted Kafka messages. Input and delivery selections cannot overlap.
 [Key-Value Store](key-value-store.md) covers the optional cursor and marker API,
 its independent transactions, provisioning and isolation limits. Application
 databases remain supported and need no migration to adopt this adapter.
+
+## Optional Kafka activity metrics
+
+| Property | Environment mapping | Values | Default | Ownership |
+| --- | --- | --- | --- | --- |
+| `basis.traffic.signals` | `BASIS_TRAFFIC_SIGNALS` | Comma-separated `record_admitted`, `record_published`; empty disables | empty | Explicit integration event selection; candidate only |
+| `basis.traffic.input-topics` | `BASIS_TRAFFIC_INPUT_TOPICS` | Exact comma-separated Kafka producer destination input topics; no wildcards | empty | Required for publication export; does not change routes or Kafka settings |
+
+[Activity metrics](activity-metrics.md) defines admission and broker-ACK semantics,
+static-producer requirements, fixed metrics and unknown coverage. Empty selection
+preserves existing behavior. Export alone does not enable a platform alert policy.

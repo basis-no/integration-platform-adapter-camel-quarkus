@@ -596,6 +596,15 @@ checks a named business datasource alongside a legacy Message Store with no KV
 table. Its baseline and candidate results must be recorded separately; upgrading
 the adapter does not move application state.
 
+## Optional activity metrics candidate
+
+The unreleased candidate adds explicitly selected Kafka admission and
+broker-confirmed publication counters through an existing Micrometer registry.
+They measure activity, not unique transactions or downstream completion. Defaults
+remain disabled; missing or incomplete coverage is unknown. See
+[activity metrics](docs/activity-metrics.md) and
+[configuration](docs/configuration.md#optional-kafka-activity-metrics).
+
 ## How this project is developed
 
 Most code and documentation here is written with AI coding agents, directed
