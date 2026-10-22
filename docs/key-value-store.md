@@ -5,8 +5,10 @@ integration in its environment's Message Store: polling cursors, markers such
 as "a full re-sync already ran", keys of input already seen, and small buffers.
 It is not a place for payloads, secrets, or business records.
 
-**Local 0.3.6 candidate; not published or certified.** This implements section 13 of the draft message-store
-contract `v1.2.0-rc2`; it is not certified. It needs a Message Store provisioned
+**Local 0.3.6 candidate; not published or certified.** This implements the
+Key-Value Store API subset of section 13 of draft message-store contract
+`v1.2.0-rc2`. Section 13.1 single-active leases and certification scenarios
+S39–S44 are not implemented or qualified. It needs a Message Store provisioned
 with `bip_key_value`. Against an older Message Store the adapter starts
 and runs as before, and only Key-Value Store calls fail.
 
