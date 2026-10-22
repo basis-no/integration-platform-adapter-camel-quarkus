@@ -6,6 +6,9 @@ a Key-Value Store table, reads and updates the existing cursor, and asserts that
 unused optional KV starts no sweeper. The same fixture can run with adapter
 0.3.5 or the 0.3.6 candidate using `-Dadapter.version=...`; do not change business
 logic between the two runs. A passing candidate does not migrate application data.
+The fixture supplies a synthetic loopback Kafka bootstrap value for the adapter's
+required CDI configuration; it starts no Kafka route or broker. Its HTTP listener
+also binds to loopback on an ephemeral port.
 
 Use a freshly cached pinned PostgreSQL 17 image and a unique UUID run ID. One
 loopback server is capped at256MiB memory/swap,1CPU/64PIDs and stops on partial
