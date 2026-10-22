@@ -62,6 +62,9 @@ values are not a newly supported envelope representation.
 - Previously acknowledged external effects can still repeat after a crash or
   whole-input replay unless a stable durable step/idempotency design covers
   those effects. This patch does not introduce transaction-level deduplication.
+  A lost response can repeat an applied effect during automatic retries too.
+  The receiver must enforce the stable key or domain uniqueness; establish its
+  outcome before replay. Receiver business acknowledgement remains an acceptance gate.
 - No blanket HTTP 500 policy, poll-timeout guarantee, memory tuning, queue
   cleanup or DLQ dismissal feature is included.
 - Replay refusal does not retroactively remove the old dashboard resend button.

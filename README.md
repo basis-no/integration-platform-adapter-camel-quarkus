@@ -104,6 +104,10 @@ stored can still lead to a repeated call on replay. External side effects
 therefore still need domain idempotency, for example a unique database key,
 deterministic file name, stable Kafka event id, or a target API that honors
 `Idempotency-Key`.
+A receiver can also apply an effect and lose its response; automatic delivery
+retries can then repeat that effect before any operator replay. The receiver must
+enforce the stable key or equivalent domain uniqueness. Establish the receiver
+outcome before requesting replay when acknowledgement is missing.
 
 ## Message Status Semantics
 

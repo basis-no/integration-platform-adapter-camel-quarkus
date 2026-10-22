@@ -2,6 +2,9 @@
 
 ## 0.3.6 — Unreleased
 
+- Clarify lost-acknowledgement duplicate risks, receiver idempotency and the
+  operator check required before replay. Retry policy is unchanged.
+
 - Preserve UTF-8 Kafka correlation IDs as text before downstream processing, so
   HTTP forwarding matches journal identity instead of emitting byte-array text.
   Envelope decoding is independent of payload charset. Other header types and
