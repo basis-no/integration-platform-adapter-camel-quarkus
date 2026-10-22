@@ -42,6 +42,13 @@ internal failure propagation, not connectivity to a live environment.
 
 ## Application compatibility and limits
 
+The unreleased candidate preserves a UTF-8 Kafka correlation ID as a text header
+before downstream components forward it. Verify the exact broker header bytes,
+journal correlation and receiver's HTTP header together; a typed journal read
+alone can hide a byte-array object forwarded as numeric text. Existing strings,
+unrelated binary headers and non-Kafka inputs are unchanged. ByteBuffer and list
+values are not a newly supported envelope representation.
+
 - Upgrade code, dependency and recovery ownership together. An application
   catch-all can still leave an input unparked; refusing to commit it is safer
   than claiming that it was handled, but can keep the partition blocked.

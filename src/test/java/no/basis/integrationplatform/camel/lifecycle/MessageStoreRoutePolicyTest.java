@@ -26,6 +26,37 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MessageStoreRoutePolicyTest {
+
+    @Test
+    void normalizesKafkaByteArrayCorrelationForDownstreamHeaders() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        String correlation = "00000000-0000-0000-0000-000000000099";
+        byte[] encoded = correlation.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exchange.getMessage().setHeader(KafkaConstants.TOPIC, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, encoded);
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+        assertEquals(correlation, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID),
+                "Downstream components must see text, not the Kafka byte-array object");
+        policy.onExchangeDone(route("synthetic-input"), exchange);
+        assertEquals(correlation, sink.result.correlationId());
+    }
+
+    @Test
+    void keepsOtherCorrelationTypesAndUnownedHeadersUntouched() {
+        Object[] values = {"already-text", java.nio.ByteBuffer.wrap(new byte[]{65}), List.of(65), new byte[]{65}};
+        for (Object value : values) {
+            MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(result -> {}, "adapter-test");
+            Exchange exchange = exchange();
+            byte[] unowned = {0, 1, 2};
+            exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, value);
+            exchange.getMessage().setHeader("X-Binary-Context", unowned);
+            policy.onExchangeBegin(route("synthetic-input"), exchange);
+            org.junit.jupiter.api.Assertions.assertSame(value, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
+            org.junit.jupiter.api.Assertions.assertSame(unowned, exchange.getMessage().getHeader("X-Binary-Context"));
+        }
+    }
     @Test
     void recordsCompletedResultBeforeKafkaCommit() {
         // Given a completed Kafka exchange with collected step results and a manual commit handle.

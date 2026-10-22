@@ -2,6 +2,10 @@
 
 ## 0.3.6 — Unreleased
 
+- Preserve UTF-8 Kafka correlation IDs as text before downstream processing, so
+  HTTP forwarding matches journal identity instead of emitting byte-array text.
+  Other header types and binary application headers are unchanged.
+
 ### Added
 
 - Add opt-in Kafka record admission and broker-ACK publication counters via the

@@ -45,6 +45,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
         ensureMessageId(exchange);
+        normalizeKafkaCorrelationHeader(exchange);
         captureKafkaManualCommit(exchange);
         capturePayloadMetadata(exchange);
         if (trafficSignals != null) trafficSignals.recordAdmitted(exchange);
@@ -220,6 +221,15 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         messageId = UUID.randomUUID().toString();
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, messageId);
         return messageId;
+    }
+
+    private void normalizeKafkaCorrelationHeader(Exchange exchange) {
+        // Kafka exposes bytes, but downstream HTTP components need the owned text header.
+        if (exchange.getMessage().getHeader(KafkaConstants.TOPIC) != null
+                && exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID) instanceof byte[]) {
+            String correlation = exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class);
+            exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, correlation);
+        }
     }
 
     private int schemaVersion(Exchange exchange) {
