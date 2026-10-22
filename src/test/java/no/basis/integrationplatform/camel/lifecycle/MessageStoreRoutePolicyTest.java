@@ -28,6 +28,26 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class MessageStoreRoutePolicyTest {
 
     @Test
+    void decodesCorrelationAsUtf8IndependentlyOfBodyCharset() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        String correlation = "order-ø-€";
+        byte[] body = {(byte) 0xe5};
+        exchange.setProperty(Exchange.CHARSET_NAME, "ISO-8859-1");
+        exchange.getMessage().setHeader(KafkaConstants.TOPIC, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID,
+                correlation.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        exchange.getMessage().setBody(body);
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+        assertEquals(correlation, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
+        org.junit.jupiter.api.Assertions.assertArrayEquals(body, exchange.getMessage().getBody(byte[].class));
+        assertEquals("ISO-8859-1", exchange.getProperty(Exchange.CHARSET_NAME));
+        policy.onExchangeDone(route("synthetic-input"), exchange);
+        assertEquals(correlation, sink.result.correlationId());
+    }
+
+    @Test
     void normalizesKafkaByteArrayCorrelationForDownstreamHeaders() {
         RecordingSink sink = new RecordingSink();
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");

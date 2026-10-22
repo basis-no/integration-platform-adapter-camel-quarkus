@@ -80,7 +80,8 @@ The unreleased 0.3.6 candidate converts the owned `x-bip-correlation-id` from
 Kafka's byte-array header representation to text before downstream processing.
 This preserves the same ID through HTTP forwarding and journal recording. It
 does not convert unrelated binary headers or introduce support for arbitrary
-header types. See [maintenance qualification](docs/maintenance-qualification.md).
+header types. Envelope decoding uses UTF-8 independently of the business payload
+charset. See [maintenance qualification](docs/maintenance-qualification.md).
 
 The adapter aims for:
 

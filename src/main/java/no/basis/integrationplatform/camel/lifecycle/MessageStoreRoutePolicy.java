@@ -226,8 +226,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void normalizeKafkaCorrelationHeader(Exchange exchange) {
         // Kafka exposes bytes, but downstream HTTP components need the owned text header.
         if (exchange.getMessage().getHeader(KafkaConstants.TOPIC) != null
-                && exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID) instanceof byte[]) {
-            String correlation = exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class);
+                && exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID) instanceof byte[] bytes) {
+            String correlation = new String(bytes, StandardCharsets.UTF_8);
             exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, correlation);
         }
     }
