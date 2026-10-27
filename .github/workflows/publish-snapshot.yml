@@ -1,7 +1,9 @@
-name: Snapshot publication suspended pending credential isolation
+name: Snapshot publication suspended (releases are signed offline)
 
+# Every Central upload requires the offline release signer; acceptance uses
+# locally built artifacts. See docs/release-packaging.md#snapshot-lane.
 # Existing signed releases and previously published snapshots are unaffected.
-# Do not restore repository signing or publisher credentials to a source build.
+# Never add signing or publisher credentials to a source build.
 on:
   workflow_dispatch:
 
@@ -15,5 +17,5 @@ jobs:
     steps:
       - name: Refuse credential-bearing source builds
         run: |
-          echo "Snapshot publication is suspended. See docs/release-packaging.md." >&2
+          echo "Snapshot publication is suspended. See docs/release-packaging.md#snapshot-lane." >&2
           exit 1
