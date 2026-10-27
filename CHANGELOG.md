@@ -153,6 +153,14 @@ with 0.4.
   [delivery audit](docs/delivery-audit.md) for recovery and inspection details
   carried over from 0.3.5.
 
+### Release process
+
+- Releases are signed offline by the release manager. The production signing
+  key and the Maven Central token never exist in GitHub or CI; CI only builds
+  and keeps the unsigned candidate, and reads back the public artifacts after
+  publication. Snapshot publication stays suspended; acceptance uses locally
+  built artifacts. Existing published artifacts are unchanged.
+
 ## 0.3.5 — 2026-10-12
 
 Maven artifact:
