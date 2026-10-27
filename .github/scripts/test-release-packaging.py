@@ -175,9 +175,10 @@ class Fixtures(unittest.TestCase):
                 (target / Path(name).name).write_bytes(data)
         (self.root / 'pom.xml').write_bytes(self.blobs[next(n for n in self.blobs if n.endswith('.pom'))])
         (target / (ARTIFACT + '-' + VERSION + '.pom')).unlink()
-        candidate.unsigned(self.root, VERSION, 'a' * 40, output)
+        candidate.unsigned(self.root, VERSION, 'a' * 40, output, '42')
         receipt = json.loads((output / 'unsigned.json').read_text())
         self.assertEqual(receipt['qualification'], 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE')
+        self.assertEqual(receipt['candidate_run'], '42')
         self.assertEqual(len(list((output / 'unsigned').iterdir())), 4)
         with self.assertRaises(FileNotFoundError):
             candidate.check_artifact(output, VERSION, 'a' * 40, SIGNER, 'b' * 64)
@@ -194,12 +195,14 @@ class Fixtures(unittest.TestCase):
                 (target / Path(name).name).write_bytes(data)
         (self.root / 'pom.xml').write_bytes(self.blobs[next(n for n in self.blobs if n.endswith('.pom'))])
         with self.assertRaises(ValueError):
-            candidate.unsigned(self.root, VERSION, 'b' * 40, output)
+            candidate.unsigned(self.root, VERSION, 'b' * 40, output, '42')
+        with self.assertRaises(ValueError):
+            candidate.unsigned(self.root, VERSION, 'a' * 40, output, '')
         payload = target / (ARTIFACT + '-' + VERSION + '.jar')
         payload.unlink()
         payload.symlink_to(self.path)
         with self.assertRaises(ValueError):
-            candidate.unsigned(self.root, VERSION, 'a' * 40, output)
+            candidate.unsigned(self.root, VERSION, 'a' * 40, output, '42')
         self.assertFalse((output / 'unsigned').exists())
 
     def test_production_workflows_have_no_signing_or_portal_secret_references(self):
@@ -219,6 +222,7 @@ class Fixtures(unittest.TestCase):
         # its dependency cache with a later trusted signing/publishing runner.
         self.assertNotIn('cache:', text)
         self.assertNotIn('actions/cache', text)
+        self.assertIn('--workflow-run "$GITHUB_RUN_ID"', text)
         snapshot = (workflows / 'publish-snapshot.yml').read_text()
         self.assertIn('exit 1', snapshot)
         self.assertNotIn('checkout@', snapshot)
@@ -227,13 +231,17 @@ class Fixtures(unittest.TestCase):
     def test_candidate_selection_requires_exact_inputs_and_refuses_upload_rerun(self):
         candidate.selection('inspect', VERSION, 'a' * 40, SIGNER)
         candidate.selection('upload', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64)
+        candidate.selection('readback', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64)
         for args in [('inspect', VERSION, 'main', SIGNER),
                      ('inspect', VERSION + '-SNAPSHOT', 'a' * 40, SIGNER),
                      ('upload', VERSION, 'a' * 40, SIGNER),
                      ('upload', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64, '2'),
                      ('publish', VERSION, 'a' * 40, SIGNER, '123', '456', 'b' * 64, '2'),
                      ('resume', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64),
-                     ('publish', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64)]:
+                     ('publish', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64),
+                     ('readback', VERSION, 'a' * 40, SIGNER, '', '', 'b' * 64),
+                     ('readback', VERSION, 'a' * 40, SIGNER, '123', '456', 'b' * 64),
+                     ('readback', VERSION, 'a' * 40, SIGNER, '123', '', '')]:
             with self.assertRaises(ValueError):
                 candidate.selection(*args)
 
