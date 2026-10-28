@@ -103,8 +103,10 @@
 - A route that replaces the message without the platform headers, such as a
   split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
   journals the outcome under a newly generated message id with no correlation.
-  The row falls back to the consumed input's message id and correlation. A
-  correlation the route sets itself is still recorded as before.
+  The row falls back to the consumed input's message id, correlation, attempt,
+  schema version, content type and source/target system. A replay through such a
+  route therefore stays its own attempt instead of overwriting attempt 1's
+  history row. A value the route sets itself is still recorded as before.
 
 ### Known limitations
 

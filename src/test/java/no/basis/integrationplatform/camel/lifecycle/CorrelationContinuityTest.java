@@ -107,6 +107,25 @@ class CorrelationContinuityTest {
     }
 
     @Test
+    void replayThroughARouteThatDropsHeadersKeepsItsAttemptAndEnvelope() throws Exception {
+        durableSteps = false;
+        start(new ReceiverComponent(), new RouteBuilder() {
+            public void configure() {
+                from("direct:input").routeId("input").routePolicy(policy()).removeHeaders("*");
+            }
+        });
+
+        send(input("<Order/>", null, null));
+        send(input("<Order/>", "2", null));
+
+        assertEquals(List.of(1, 2), rows.stream().map(MessageAttemptResult::attempt).toList());
+        assertEquals("application/xml", rows.getLast().contentType());
+        assertEquals("pos", rows.getLast().sourceSystem());
+        assertEquals("sap", rows.getLast().targetSystem());
+        assertEquals(3, rows.getLast().schemaVersion());
+    }
+
+    @Test
     void correlationSetByTheRouteStillWins() throws Exception {
         durableSteps = false;
         start(new ReceiverComponent(), new RouteBuilder() {
@@ -225,6 +244,10 @@ class CorrelationContinuityTest {
         headers.put(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) commits::incrementAndGet);
         headers.put(PlatformHeaders.MESSAGE_ID, "message-1".getBytes(StandardCharsets.UTF_8));
         headers.put(PlatformHeaders.CORRELATION_ID, CORRELATION.getBytes(StandardCharsets.UTF_8));
+        headers.put(PlatformHeaders.CONTENT_TYPE, "application/xml".getBytes(StandardCharsets.UTF_8));
+        headers.put(PlatformHeaders.SOURCE_SYSTEM, "pos".getBytes(StandardCharsets.UTF_8));
+        headers.put(PlatformHeaders.TARGET_SYSTEM, "sap".getBytes(StandardCharsets.UTF_8));
+        headers.put(PlatformHeaders.SCHEMA_VERSION, "3".getBytes(StandardCharsets.UTF_8));
         if (attempt != null) {
             headers.put(PlatformHeaders.REPLAY, "true".getBytes(StandardCharsets.UTF_8));
             headers.put(PlatformHeaders.ATTEMPT, attempt.getBytes(StandardCharsets.UTF_8));
