@@ -290,6 +290,16 @@ class PostgresMessageStoreSinkTest {
         assertEquals(null, expiry("bip_message_attempt", " and attempt = 1"));
     }
 
+    @Test
+    void lateOlderInlineAttemptKeepsItsOwnExpiryWhenTheSummaryHasNone() {
+        sink.record(expiring(MessageStatus.COMPLETED, 2, null));
+        sink.record(expiring(MessageStatus.FAILED, 1, Instant.parse("2026-07-14T12:00:00Z")));
+
+        assertEquals(null, expiry("bip_message_log", ""));
+        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 1"),
+                "Inline bytes in a history row must keep an expiry so retention can remove them");
+    }
+
     private static final String EXPIRY_1 = "2026-07-14T12:00:00Z";
 
     private String expiry(String table, String attemptFilter) {
