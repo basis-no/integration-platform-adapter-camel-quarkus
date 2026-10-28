@@ -82,9 +82,13 @@ Quarkus 3.33.4 (Camel 4.18.4).
   longer be replayed by the first. With the platform's message recovery SQL
   installed, the second integration's journal write is refused instead, and its
   input does not get past that record. A send with the same step id is skipped as
-  already delivered. This applies to every 0.3.x release; from 0.3.6 the adapter
-  logs a warning when it journals a message id that another integration already
-  journaled.
+  already delivered. This applies to every 0.3.x release. From 0.3.6 the adapter
+  logs a warning, once per pair of integrations and then at most every ten
+  minutes with a count, when it journals a message id that another integration
+  already journaled. With the platform's message recovery SQL, or row-level
+  isolation between integrations, that warning does not appear: the signal is
+  the refused write itself (`RECOVERY_SCOPE_MISMATCH` or a row-level security
+  error) in the second integration's log.
 - A replay or re-consumed record stores a new inline payload expiry, which
   extends retention. A Message Store with the platform's message recovery SQL
   keeps the first expiry.

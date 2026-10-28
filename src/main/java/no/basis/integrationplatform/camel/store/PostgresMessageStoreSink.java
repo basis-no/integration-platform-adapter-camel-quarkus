@@ -12,9 +12,16 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Clock;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 public class PostgresMessageStoreSink implements MessageStoreSink {
     private static final Logger LOG = LoggerFactory.getLogger(PostgresMessageStoreSink.class);
+    static final Duration SHARED_ID_WARNING_INTERVAL = Duration.ofMinutes(10);
     public static final String MESSAGE_LOG_TABLE = "bip_message_log";
     public static final String MESSAGE_ATTEMPT_TABLE = "bip_message_attempt";
 
@@ -128,14 +135,54 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     private final DataSource dataSource;
     private final MessageStatusEventJson serializer;
+    private final Clock clock;
+    private final Map<String, SharedIdReport> sharedIdReports = new ConcurrentHashMap<>();
 
     public PostgresMessageStoreSink(DataSource dataSource) {
         this(dataSource, new MessageStatusEventJson());
     }
 
     PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer) {
+        this(dataSource, serializer, Clock.systemUTC());
+    }
+
+    PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Clock clock) {
         this.dataSource = dataSource;
         this.serializer = serializer;
+        this.clock = clock;
+    }
+
+    /**
+     * bip_message_log keeps one row per message id and bip_message_attempt one per id and
+     * attempt, so two integrations on one Message Store can replace each other's rows. In a
+     * chain every message collides: warn once per integration pair, then at most every
+     * {@link #SHARED_ID_WARNING_INTERVAL} with the number of collisions since.
+     */
+    private void reportSharedMessageId(String other, MessageAttemptResult result) {
+        SharedIdReport report = sharedIdReports.computeIfAbsent(other + "\u0000" + result.integration(),
+                ignored -> new SharedIdReport());
+        long collisions = report.collisions.incrementAndGet();
+        Instant now = clock.instant();
+        synchronized (report) {
+            if (report.lastWarning != null && now.isBefore(report.lastWarning.plus(SHARED_ID_WARNING_INTERVAL))) {
+                return;
+            }
+            long since = collisions - report.collisionsAtLastWarning;
+            report.lastWarning = now;
+            report.collisionsAtLastWarning = collisions;
+            LOG.warn("Message id {} is also journaled by integration {}; integration {} records attempt {} under the "
+                            + "same id. The Message Store keeps one summary row per message id and one attempt row per "
+                            + "id and attempt, so the two integrations can replace each other's records. {} such "
+                            + "message(s) for this pair since the last warning. Mint a new x-bip-message-id per "
+                            + "integration and keep continuity in x-bip-correlation-id",
+                    result.messageId(), other, result.integration(), result.attempt(), since);
+        }
+    }
+
+    private static final class SharedIdReport {
+        private final AtomicLong collisions = new AtomicLong();
+        private long collisionsAtLastWarning;
+        private Instant lastWarning;
     }
 
     @Override
@@ -189,12 +236,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             try (ResultSet upserted = statement.executeQuery()) {
                 String other = upserted.next() ? upserted.getString(1) : null;
                 if (other != null) {
-                    // bip_message_log and bip_message_attempt are keyed by message id alone, so
-                    // two integrations on one Message Store replace each other's rows.
-                    LOG.warn("Message id {} is also journaled by integration {}; integration {} now replaces its "
-                                    + "summary and attempt {} rows. Mint a new x-bip-message-id per integration and "
-                                    + "keep continuity in x-bip-correlation-id",
-                            result.messageId(), other, result.integration(), result.attempt());
+                    reportSharedMessageId(other, result);
                 }
             }
         }
