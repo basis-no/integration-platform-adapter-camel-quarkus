@@ -207,7 +207,9 @@ a send node has one step id, so all parts share one idempotency key. With
 through a node is delivered; later parts are `SKIPPED`, also in the first
 attempt. Without `stopOnException()`, each failed part is parked separately and
 the input still records `COMPLETED`; with it, the first failure parks the input
-once and records `DLQ`. Per-part identity is not part of 0.3.x.
+once and records `DLQ`. Per-part identity is not part of 0.3.x. See the
+[split step identity advisory](docs/split-step-identity.md) for the exact
+conditions under which a part is not sent, and the safe configuration.
 
 Processing time still needs an application-specific budget: bounded receiver
 timeouts and retries, number of transactions per input, poll batch size and

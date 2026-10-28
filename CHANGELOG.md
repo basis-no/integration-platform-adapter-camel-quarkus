@@ -99,9 +99,12 @@
 
 - Split parts share the input's message id and the send node's step id. With
   the Postgres step outcome store, only the first part sent through a node is
-  delivered and later parts are recorded as skipped, also in the first attempt.
-  Without `stopOnException()`, each failed part is parked separately while the
-  input records `COMPLETED`. Per-part identity is not part of 0.3.x.
+  delivered and later parts are skipped, also in the first attempt. Loops through
+  one node behave the same way. All 0.3.x releases are affected; see the
+  [split step identity advisory](docs/split-step-identity.md) for the conditions
+  and the safe configuration. Without `stopOnException()`, each failed part is
+  parked separately while the input records `COMPLETED`. Per-part identity is
+  not part of 0.3.x.
 
 - A replay records a new inline payload expiry, so each replay extends payload
   retention from the time it was processed.
