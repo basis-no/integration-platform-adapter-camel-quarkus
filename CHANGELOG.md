@@ -34,6 +34,10 @@
   its sends no longer reads as a delivery. Routes can check
   `basis.messageStore.stepAlreadyDelivered` after a send before logging success.
 
+- Warn at startup for each tracked external send without an explicit Camel id.
+  Generated ids such as `to1` change when a route is edited, and other
+  integrations generate the same ids.
+
 - Log a processing failure with its stack trace at ERROR before the exchange is
   sent to the dead letter queue. The DLQ error header still carries only the
   exception message.
@@ -113,6 +117,15 @@
   and the safe configuration. Without `stopOnException()`, each failed part is
   parked separately while the input records `COMPLETED`. Per-part identity is
   not part of 0.3.x.
+
+- Step keys are `<message-id>:<step-id>` and the step outcome table has no
+  integration column, so the delivered-step lookup is not scoped by integration.
+  If a message id travels to another integration on the same Message Store
+  (Camel's Kafka producer forwards `x-bip-message-id` by default), and both use
+  the Postgres step store with the same step id, the second integration's send
+  is skipped as already delivered. Generated ids such as `to1` make this likely.
+  Give tracked sends explicit ids that are unique across integrations, and
+  prefer a new message id per integration. All 0.3.x releases are affected.
 
 - A replay records a new inline payload expiry, so each replay extends payload
   retention from the time it was processed.

@@ -398,9 +398,22 @@ stable step names, use normal Camel ids on important external sends:
     uri: "sftp:vendor/orders?fileName=order-${header.x-bip-correlation-id}.xml"
 ```
 
-If no id is present, the adapter derives a fallback key from route and endpoint
-metadata. Fallback keys are acceptable for audit, but explicit ids are better
-for dashboard display and future partial replay.
+Give every tracked external send an explicit id. Without one, Camel generates
+a node id such as `to1`. It changes when the route is edited, and other
+integrations generate the same ids. When a message id travels to another
+integration (Camel's Kafka producer forwards `x-bip-message-id` by default) and
+both share a Message Store with the Postgres step store, the second
+integration's `<message-id>:to1` matches the first one's delivered step, and its
+own send is skipped. From 0.3.6 the adapter logs a warning at startup for each
+tracked send without an explicit id. The step outcome table has no integration
+column, so 0.3.x cannot scope the lookup by integration. Prefer a new
+`x-bip-message-id` per integration and carry continuity in
+`x-bip-correlation-id`. Explicit ids must still be unique across the
+integrations that can see the same message id.
+
+If no node id is available at all, the adapter derives a fallback key from route
+and endpoint metadata. Fallback keys are acceptable for audit, but explicit ids
+are better for dashboard display and future partial replay.
 
 Internal Camel endpoints such as `direct:`, `log:`, `bean:`, `mock:`, `seda:`,
 `timer:`, and `micrometer:` are ignored. External sends get:

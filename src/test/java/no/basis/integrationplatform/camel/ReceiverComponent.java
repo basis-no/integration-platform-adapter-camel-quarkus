@@ -37,6 +37,8 @@ public final class ReceiverComponent extends DefaultComponent {
 
     @Override
     protected Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) {
+        // Accept any options, such as credentials in masking tests; the receiver ignores them.
+        parameters.clear();
         return new ProcessorEndpoint(uri, this, exchange -> {
             synchronized (this) {
                 received.add(exchange.copy());

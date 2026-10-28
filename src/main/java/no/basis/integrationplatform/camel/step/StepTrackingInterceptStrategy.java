@@ -10,14 +10,19 @@ import org.apache.camel.CamelContext;
 import org.apache.camel.Exchange;
 import org.apache.camel.NamedNode;
 import org.apache.camel.Processor;
+import org.apache.camel.model.ProcessorDefinition;
 import org.apache.camel.model.RouteDefinition;
 import org.apache.camel.processor.SendDynamicProcessor;
 import org.apache.camel.processor.SendProcessor;
 import org.apache.camel.spi.InterceptStrategy;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
+import org.apache.camel.util.URISupport;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @ApplicationScoped
 public class StepTrackingInterceptStrategy implements InterceptStrategy {
+    private static final Logger LOG = LoggerFactory.getLogger(StepTrackingInterceptStrategy.class);
     private final StepTracker stepTracker;
     private final TrafficSignals trafficSignals;
 
@@ -54,12 +59,35 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return target;
         }
 
+        warnOnGeneratedStepId(definition, endpointSend);
         if (trafficSignals != null) {
             if (target instanceof SendProcessor send) trafficSignals.observeProducerEndpoint(send.getEndpoint());
             else if (target instanceof SendDynamicProcessor send) trafficSignals.observeDynamicEndpoint(send.getUri());
         }
         AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
         return new StepTrackingProcessor(delegate, endpointSend, stepTracker, trafficSignals);
+    }
+
+    /**
+     * The step id is the node id. A generated one such as {@code to1} changes when the
+     * route is edited and is the same in other integrations, so another integration's
+     * delivered step with the same message id makes this send look already delivered.
+     */
+    private void warnOnGeneratedStepId(NamedNode definition, EndpointSend endpointSend) {
+        if (!(definition instanceof ProcessorDefinition<?> processor) || processor.hasCustomIdAssigned()
+                || DefaultStepTracker.isInternal(endpointSend.endpointUri())) {
+            return;
+        }
+        String routeId = null;
+        for (NamedNode node = definition; node != null && routeId == null; node = node.getParent()) {
+            if (node instanceof RouteDefinition route) {
+                routeId = route.getId();
+            }
+        }
+        LOG.warn("Tracked send to {} in route {} has no explicit id; its step id {} is generated, changes when the "
+                        + "route is edited and can match another integration's step for the same message id. "
+                        + "Give the send an explicit id",
+                URISupport.sanitizeUri(endpointSend.endpointUri()), routeId, endpointSend.nodeId());
     }
 
     private EndpointSend endpointSend(NamedNode definition, Processor target) {

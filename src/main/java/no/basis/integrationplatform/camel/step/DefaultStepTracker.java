@@ -227,8 +227,16 @@ public class DefaultStepTracker implements StepTracker {
     }
 
     private boolean isInternalEndpoint(String endpointUri) {
-        String scheme = scheme(endpointUri);
-        return DEFAULT_INTERNAL_SCHEMES.contains(scheme);
+        return isInternal(endpointUri);
+    }
+
+    /** Whether a send to this endpoint is internal and never tracked as a step. */
+    static boolean isInternal(String endpointUri) {
+        if (endpointUri == null) {
+            return DEFAULT_INTERNAL_SCHEMES.contains("unknown");
+        }
+        int colon = endpointUri.indexOf(':');
+        return DEFAULT_INTERNAL_SCHEMES.contains(colon < 0 ? endpointUri : endpointUri.substring(0, colon));
     }
 
     private String currentStepId(Exchange exchange) {
