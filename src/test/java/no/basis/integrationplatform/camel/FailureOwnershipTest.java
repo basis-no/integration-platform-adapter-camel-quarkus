@@ -29,6 +29,19 @@ class FailureOwnershipTest {
     }
 
     @Test
+    void exhaustedFailureIsLoggedOnceWithItsStackTraceBeforeParking() throws Exception {
+        try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
+            var outcome = run(false, false, false);
+
+            var errors = logs.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            assertInstanceOf(IllegalArgumentException.class, errors.getFirst().getThrown());
+            assertEquals("synthetic receiver rejection", errors.getFirst().getThrown().getMessage());
+            assertEquals(MessageStatus.DLQ, outcome.rows.getFirst().status());
+        }
+    }
+
+    @Test
     void applicationCatchAllBypassesPlatformParking() throws Exception {
         var outcome = run(true, false, false);
         assertEquals(6, outcome.calls.get(), "One initial call and the application's five redeliveries");

@@ -11,6 +11,7 @@ import java.time.Instant;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlatformRouteConfigurationTest {
@@ -55,6 +56,33 @@ class PlatformRouteConfigurationTest {
         assertEquals("stream-derived body", exchange.getMessage().getBody());
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
         assertNotNull(exchange.getMessage().getHeader(PlatformHeaders.DLQ_AT));
+    }
+
+    @Test
+    void dlqParkingLogsTheFailureWithItsStackTrace() {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        var failure = new IllegalStateException("vendor unavailable");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
+
+        try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
+            configuration.prepareDlq(exchange);
+
+            var errors = logs.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            assertSame(failure, errors.getFirst().getThrown());
+            assertEquals("Message message-123 failed after its configured retries and is being sent to the dead letter queue",
+                    LogCapture.text(errors.getFirst()));
+        }
+    }
+
+    @Test
+    void dlqParkingWithoutAFailureLogsNoError() {
+        try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
+            configuration.prepareDlq(exchange());
+
+            assertTrue(logs.records().isEmpty());
+        }
     }
 
     @Test

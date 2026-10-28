@@ -3,11 +3,14 @@ package no.basis.integrationplatform.camel;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteConfigurationBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
 
 @ApplicationScoped
 public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
+    private static final Logger LOG = LoggerFactory.getLogger(PlatformRouteConfiguration.class);
     public static final String SLOW_BACKEND = "ip-slow-backend";
     public static final String NO_RETRY = "ip-no-retry";
     static final String DLQ_URI = "direct:bip-confirmed-dead-letter";
@@ -67,6 +70,13 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     void prepareDlq(Exchange exchange) {
         exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, false);
 
+        // The DLQ header keeps only the message; operators need the stack trace to diagnose it.
+        Throwable failure = failure(exchange);
+        if (failure != null) {
+            LOG.error("Message {} failed after its configured retries and is being sent to the dead letter queue",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+        }
+
         // Contract §8: the DLQ record must carry the ORIGINAL consumed payload,
         // not a mid-transformation body. Restore it from the capture made at
         // route start when the payload was capturable; metadata_only /
@@ -81,13 +91,15 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     }
 
     private String failureMessage(Exchange exchange) {
-        Throwable failure = exchange.getException();
-        if (failure == null) {
-            failure = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
-        }
+        Throwable failure = failure(exchange);
         if (failure == null) {
             return "unknown failure";
         }
         return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+    }
+
+    private Throwable failure(Exchange exchange) {
+        Throwable failure = exchange.getException();
+        return failure != null ? failure : exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
     }
 }
