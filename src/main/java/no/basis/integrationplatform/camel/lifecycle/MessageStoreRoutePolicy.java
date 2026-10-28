@@ -22,6 +22,8 @@ import java.util.UUID;
 
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
+    private static final String INPUT_MESSAGE_ID = "basis.messageStore.inputMessageId";
+    private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
 
     private final MessageStoreSink sink;
     private TrafficSignals trafficSignals;
@@ -44,8 +46,9 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
-        ensureMessageId(exchange);
+        exchange.setProperty(INPUT_MESSAGE_ID, ensureMessageId(exchange));
         normalizeKafkaCorrelationHeader(exchange);
+        exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
         captureKafkaManualCommit(exchange);
         capturePayloadMetadata(exchange);
         if (trafficSignals != null) trafficSignals.recordAdmitted(exchange);
@@ -87,8 +90,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
         return new MessageAttemptResult(
                 schemaVersion(exchange),
-                ensureMessageId(exchange),
-                exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class),
+                messageId(exchange),
+                correlationId(exchange),
                 exchange.getMessage().getHeader(PlatformHeaders.CONTENT_TYPE, String.class),
                 exchange.getMessage().getHeader(PlatformHeaders.SOURCE_SYSTEM, String.class),
                 exchange.getMessage().getHeader(PlatformHeaders.TARGET_SYSTEM, String.class),
@@ -210,6 +213,22 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             return text.getBytes(StandardCharsets.UTF_8);
         }
         return null;
+    }
+
+    // A route or aggregation strategy can replace the message without the platform headers
+    // (for example a grouped split). The outcome still belongs to the consumed input.
+    private String messageId(Exchange exchange) {
+        String current = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
+        String input = exchange.getProperty(INPUT_MESSAGE_ID, String.class);
+        if ((current == null || current.isBlank()) && input != null) {
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, input);
+        }
+        return ensureMessageId(exchange);
+    }
+
+    private String correlationId(Exchange exchange) {
+        String current = exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class);
+        return current != null ? current : exchange.getProperty(INPUT_CORRELATION_ID, String.class);
     }
 
     private String ensureMessageId(Exchange exchange) {
