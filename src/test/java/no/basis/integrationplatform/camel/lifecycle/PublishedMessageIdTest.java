@@ -188,6 +188,57 @@ class PublishedMessageIdTest {
                 rows.stream().map(r -> r.steps().getFirst().status().name()).toList());
     }
 
+    /**
+     * The send with the derived id fails after its retries, so the restore after it never
+     * runs. The parked record and the upstream journal row must still use the input id.
+     */
+    @org.junit.jupiter.api.Test
+    void failedPublishIsParkedAndJournaledUnderTheInputId() throws Exception {
+        List<MessageAttemptResult> rows = new CopyOnWriteArrayList<>();
+        List<Object> parkedIds = new CopyOnWriteArrayList<>();
+        var broker = new no.basis.integrationplatform.camel.ReceiverComponent(e -> {
+            throw new IllegalStateException("broker unavailable");
+        });
+        try (var context = new DefaultCamelContext()) {
+            var properties = new java.util.Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.addComponent("broker", broker);
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
+                    new DefaultStepTracker(new no.basis.integrationplatform.camel.step.NoopStepOutcomeStore())));
+            context.addRoutes(new no.basis.integrationplatform.camel.PlatformRouteConfiguration());
+            context.addRoutes(new no.basis.integrationplatform.camel.PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:parking").errorHandler(noErrorHandler())
+                            .process(e -> parkedIds.add(e.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)));
+                    from("direct:upstream").routeConfigurationId(no.basis.integrationplatform.camel.PlatformRouteConfiguration.NO_RETRY)
+                            .routePolicy(new MessageStoreRoutePolicy(rows::add, "upstream"))
+                            .to("direct:publish-orders");
+                    from("direct:publish-orders")
+                        .setProperty("inputMessageId", header("x-bip-message-id"))
+                        .process(exchange -> exchange.getMessage().setHeader("x-bip-message-id",
+                            UUID.nameUUIDFromBytes((exchange.getProperty("inputMessageId", String.class)
+                                + ":bip.orders.in").getBytes(StandardCharsets.UTF_8)).toString()))
+                        .to("broker:bip.orders.in").id("publish-orders")
+                        .setHeader("x-bip-message-id", exchangeProperty("inputMessageId"));
+                }
+            });
+            context.start();
+            context.createProducerTemplate().send("direct:upstream", e -> {
+                e.getMessage().setHeader(KafkaConstants.TOPIC, "bip.upstream.in");
+                e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> { });
+                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, INPUT_ID);
+                e.getMessage().setBody("<Order/>");
+            });
+        }
+        String derived = UUID.nameUUIDFromBytes((INPUT_ID + ":bip.orders.in").getBytes(StandardCharsets.UTF_8)).toString();
+        assertEquals(derived, broker.received().getFirst().getMessage().getHeader(PlatformHeaders.MESSAGE_ID),
+                "The failed send itself carried the derived id");
+        assertEquals(List.of(INPUT_ID), parkedIds);
+        assertEquals(List.of(INPUT_ID + "/DLQ"), rows.stream().map(r -> r.messageId() + "/" + r.status()).toList());
+    }
+
     private static List<ConsumerRecord<String, String>> consumeAll(String brokers, String topic, int expected) {
         try (var consumer = new KafkaConsumer<String, String>(Map.of("bootstrap.servers", brokers,
                 "group.id", "verify-" + UUID.randomUUID(), "auto.offset.reset", "earliest"),

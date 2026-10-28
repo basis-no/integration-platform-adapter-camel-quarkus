@@ -79,6 +79,14 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     void prepareDlq(Exchange exchange) {
         exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, false);
 
+        // The parked record is the consumed input. A route may have set another id for a
+        // send to another integration and failed before restoring it; park and journal the
+        // failure under the input's id, not the downstream one.
+        String inputMessageId = exchange.getProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, String.class);
+        if (inputMessageId != null && !inputMessageId.isBlank()) {
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, inputMessageId);
+        }
+
         // The DLQ header keeps only the message; operators need the stack trace to diagnose it.
         Throwable failure = failure(exchange);
         if (failure != null) {

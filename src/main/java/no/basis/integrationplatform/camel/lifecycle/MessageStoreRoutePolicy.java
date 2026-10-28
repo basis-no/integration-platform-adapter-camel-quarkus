@@ -25,7 +25,6 @@ import java.util.UUID;
 
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
-    private static final String INPUT_MESSAGE_ID = "basis.messageStore.inputMessageId";
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
     private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
     private static final List<String> ENVELOPE_HEADERS = List.of(PlatformHeaders.ATTEMPT, PlatformHeaders.SCHEMA_VERSION,
@@ -52,7 +51,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
-        exchange.setProperty(INPUT_MESSAGE_ID, ensureMessageId(exchange));
+        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
         normalizeKafkaCorrelationHeader(exchange);
         exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
         captureInputEnvelope(exchange);
@@ -226,7 +225,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     // (for example a grouped split). The outcome still belongs to the consumed input.
     private String messageId(Exchange exchange) {
         String current = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
-        String input = exchange.getProperty(INPUT_MESSAGE_ID, String.class);
+        String input = exchange.getProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, String.class);
         if ((current == null || current.isBlank()) && input != null) {
             exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, input);
         }

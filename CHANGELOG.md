@@ -42,6 +42,10 @@ Quarkus 3.33.4 (Camel 4.18.4).
   records the outcome under a new random message id. The message id,
   correlation, attempt and envelope fall back to the consumed input's values; a
   value the route sets itself still wins.
+- A failure sent to the dead letter queue is parked and recorded under the
+  consumed input's message id. Before, a route that set another id for a send to
+  another integration, and failed before restoring it, parked and recorded the
+  failure under that downstream id.
 - Logs no longer suggest a delivery that did not happen. A step skipped because
   an earlier attempt delivered it is logged at INFO. The logging sink counts
   delivered, skipped and failed steps separately. Routes can read
