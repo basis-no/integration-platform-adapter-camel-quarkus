@@ -7,6 +7,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 @ApplicationScoped
 public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
@@ -14,6 +17,12 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     public static final String SLOW_BACKEND = "ip-slow-backend";
     public static final String NO_RETRY = "ip-no-retry";
     static final String DLQ_URI = "direct:bip-confirmed-dead-letter";
+    static final String MASKED = "xxxxxx";
+    private static final Set<String> CREDENTIAL_HEADERS = Set.of(
+            "authorization", "proxy-authorization", "cookie", "set-cookie", "www-authenticate", "proxy-authenticate");
+    private static final List<String> CREDENTIAL_PARTS = List.of(
+            "secret", "token", "password", "passwd", "credential", "session", "signature",
+            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth");
 
     @Override
     public void configuration() {
@@ -86,8 +95,30 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
             exchange.getMessage().setBody(originalPayload);
         }
 
+        maskCredentialHeaders(exchange);
         exchange.getMessage().setHeader(PlatformHeaders.ERROR, failureMessage(exchange));
         exchange.getMessage().setHeader(PlatformHeaders.DLQ_AT, Instant.now().toString());
+    }
+
+    /**
+     * The Kafka DLQ producer forwards every message header. Request headers a route set
+     * for a receiver, and response headers copied back from a successful call, can carry
+     * credentials and session cookies. Keep the names for diagnosis, mask the values.
+     */
+    static void maskCredentialHeaders(Exchange exchange) {
+        for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
+            if (isCredentialHeader(name)) {
+                exchange.getMessage().setHeader(name, MASKED);
+            }
+        }
+    }
+
+    static boolean isCredentialHeader(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("x-bip-") || lower.equals("idempotency-key")) {
+            return false;
+        }
+        return CREDENTIAL_HEADERS.contains(lower) || CREDENTIAL_PARTS.stream().anyMatch(lower::contains);
     }
 
     private String failureMessage(Exchange exchange) {

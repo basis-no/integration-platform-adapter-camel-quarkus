@@ -216,7 +216,13 @@ timeouts and retries, number of transactions per input, poll batch size and
 `max.poll.interval.ms` must fit together. This patch does not classify every
 HTTP 500 as permanent or automatically resize application memory.
 
-The DLQ record follows contract section 8:
+The DLQ record follows contract section 8. It also carries the other message
+headers present at failure, because the Kafka producer forwards them. From 0.3.6
+the values of credential-like headers are masked as `xxxxxx`: `Authorization`,
+`Cookie`, `Set-Cookie`, `WWW-Authenticate`, and names containing secret, token,
+password, credential, session, signature, auth or API/subscription key. The
+names stay visible. Remove any other receiver header you do not want on the
+shared DLQ before the failing step.
 
 - the body is the **original consumed payload**, restored from the payload
   captured at route start — not a mid-transformation body. When the payload

@@ -91,6 +91,15 @@
   activity counters reported themselves unsupported after the first record. Offset
   commit and DLQ parking use `CamelKafkaManualCommit`, unchanged in both.
 
+- The DLQ record no longer carries credentials in clear text. The Kafka DLQ
+  producer forwards every message header, including request headers a route set
+  for a receiver (`Authorization`, client secrets, API and subscription keys),
+  and response headers copied back from a successful receiver call (`Set-Cookie`,
+  `WWW-Authenticate`). Their values are now masked as `xxxxxx`; header names,
+  `x-bip-*` and `Idempotency-Key` are kept. Other headers, such as a receiver's
+  internal host names, are still forwarded. Version 0.3.5 forwards all of them
+  unmasked.
+
 - A route that replaces the message without the platform headers, such as a
   split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
   journals the outcome under a newly generated message id with no correlation.
