@@ -83,6 +83,13 @@ parking and consumer progress; record the exact image and adapter versions.
 
 ## Snapshot publication
 
+Suspended. Every Central upload requires the offline signer, so
+`publish-snapshot.yml` refuses to run, and no Central token or signing secret
+may be configured in the repository. Use locally built artifacts for acceptance
+([Releasing](releasing.md#acceptance-with-locally-built-artifacts)). The steps
+below are kept for reference only, until an approved signing boundary covers
+snapshots.
+
 The maintenance line uses the same snapshot publishing mechanism as development;
 snapshot support is not restricted to the highest version. `0.3.4-SNAPSHOT` and
 `0.4.0-SNAPSHOT` are separate Maven coordinates. Snapshot publication does not
