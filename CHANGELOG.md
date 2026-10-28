@@ -28,6 +28,16 @@
   support. Durable cursor migration keeps no TTL, no deletion and existing
   polling protection.
 
+- Log each step skipped because an earlier attempt already delivered it at
+  INFO, with the step, message id and masked endpoint. The logging sink reports
+  delivered, skipped and failed step counts separately, so a replay that skipped
+  its sends no longer reads as a delivery. Routes can check
+  `basis.messageStore.stepAlreadyDelivered` after a send before logging success.
+
+- Log a processing failure with its stack trace at ERROR before the exchange is
+  sent to the dead letter queue. The DLQ error header still carries only the
+  exception message.
+
 - An integration-scoped `KeyValueStore` API for small JSON cursors and markers,
   with versions, compare-and-set, optional expiry, bounded cleanup and a Camel
   idempotent repository. SQL statements have a five-second execution bound;
@@ -66,6 +76,14 @@
 - A late outcome from an older attempt still records that attempt's history,
   but cannot replace a newer attempt's current message summary, including its
   status, payload, error and timestamps. Same-attempt updates remain supported.
+  This covers the original Kafka record consumed again as attempt 1 after a
+  replay recovered it, which previously reset `last_attempt` to 1.
+
+- A route that replaces the message without the platform headers, such as a
+  split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
+  journals the outcome under a newly generated message id with no correlation.
+  The row falls back to the consumed input's message id and correlation. A
+  correlation the route sets itself is still recorded as before.
 
 ### Known limitations
 
@@ -78,6 +96,15 @@
   fluctuate; the finite stopped-poller proof is not a continuous permission or
   business-acceptance guarantee.
   See [maintenance qualification](docs/maintenance-qualification.md).
+
+- Split parts share the input's message id and the send node's step id. With
+  the Postgres step outcome store, only the first part sent through a node is
+  delivered and later parts are recorded as skipped, also in the first attempt.
+  Without `stopOnException()`, each failed part is parked separately while the
+  input records `COMPLETED`. Per-part identity is not part of 0.3.x.
+
+- A replay records a new inline payload expiry, so each replay extends payload
+  retention from the time it was processed.
 
 ## 0.3.5 — 2026-10-12
 
