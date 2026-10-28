@@ -152,6 +152,100 @@ class PostgresMessageStoreSinkTest {
         assertEquals("3", singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
     }
 
+    @Test
+    void reconsumedOriginalInputAfterReplayKeepsReplayedLatestAttempt() {
+        // The original record fails, a replay recovers it, then the original Kafka record is
+        // consumed again without an attempt header. It is attempt 1 again and must not reset
+        // the summary that the dashboard reads as the recovered latest attempt.
+        sink.record(result(MessageStatus.FAILED, 1, "vendor unavailable"));
+        sink.record(result(MessageStatus.COMPLETED, 2, null));
+
+        sink.record(result(MessageStatus.COMPLETED, 1, null));
+
+        assertEquals("2", singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
+        assertEquals("COMPLETED", singleValue("select status from bip_message_log where message_id = 'message-123'"));
+        assertEquals(null, singleValue("select error from bip_message_log where message_id = 'message-123'"));
+        assertEquals(2, rowCount("bip_message_attempt"));
+        assertEquals("COMPLETED", singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 2"));
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({"2, 1", "1, 2"})
+    void concurrentAttemptsLeaveTheNewestAttemptAsSummary(int firstAttempt, int waitingAttempt) throws Exception {
+        var readyToCommit = new java.util.concurrent.CountDownLatch(1);
+        var releaseCommit = new java.util.concurrent.CountDownLatch(1);
+        var gated = new PostgresMessageStoreSink(commitGated(dataSource, readyToCommit, releaseCommit));
+        var executor = java.util.concurrent.Executors.newFixedThreadPool(2);
+        try {
+            var first = executor.submit(() -> gated.record(result(
+                    MessageStatus.DLQ, firstAttempt, "attempt " + firstAttempt, "payload-" + firstAttempt,
+                    Instant.parse("2026-06-14T12:00:00Z"))));
+            assertEquals(true, readyToCommit.await(30, java.util.concurrent.TimeUnit.SECONDS));
+
+            var waiting = executor.submit(() -> sink.record(result(
+                    MessageStatus.COMPLETED, waitingAttempt, "attempt " + waitingAttempt, "payload-" + waitingAttempt,
+                    Instant.parse("2026-06-14T12:00:00Z"))));
+            // The second summary upsert must wait on the uncommitted first one rather than read around it.
+            awaitLockWait();
+            releaseCommit.countDown();
+            first.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            waiting.get(30, java.util.concurrent.TimeUnit.SECONDS);
+        } finally {
+            releaseCommit.countDown();
+            executor.shutdownNow();
+        }
+
+        String newest = Integer.toString(Math.max(firstAttempt, waitingAttempt));
+        assertEquals(newest, singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
+        assertEquals("attempt " + newest, singleValue("select error from bip_message_log where message_id = 'message-123'"));
+        assertEquals("payload-" + newest,
+                singleValue("select convert_from(payload_bytes, 'UTF8') from bip_message_log where message_id = 'message-123'"));
+        assertEquals(2, rowCount("bip_message_attempt"));
+    }
+
+    private void awaitLockWait() throws InterruptedException {
+        Instant deadline = Instant.now().plusSeconds(30);
+        while (Instant.now().isBefore(deadline)) {
+            if (!"0".equals(singleValue("select count(*) from pg_stat_activity where wait_event_type = 'Lock'"))) {
+                return;
+            }
+            Thread.sleep(50);
+        }
+        throw new AssertionError("Second attempt did not wait for the first attempt's summary lock");
+    }
+
+    /** Pauses the first commit so a second attempt can be recorded while it is in flight. */
+    private static DataSource commitGated(DataSource delegate, java.util.concurrent.CountDownLatch readyToCommit,
+            java.util.concurrent.CountDownLatch releaseCommit) {
+        return (DataSource) java.lang.reflect.Proxy.newProxyInstance(
+                DataSource.class.getClassLoader(), new Class<?>[] {DataSource.class},
+                (proxy, method, args) -> {
+                    Object value = invoke(method, delegate, args);
+                    if (!(value instanceof Connection connection)) {
+                        return value;
+                    }
+                    return java.lang.reflect.Proxy.newProxyInstance(
+                            Connection.class.getClassLoader(), new Class<?>[] {Connection.class},
+                            (connectionProxy, connectionMethod, connectionArgs) -> {
+                                if (connectionMethod.getName().equals("commit")) {
+                                    readyToCommit.countDown();
+                                    if (!releaseCommit.await(30, java.util.concurrent.TimeUnit.SECONDS)) {
+                                        throw new IllegalStateException("Commit gate was not released");
+                                    }
+                                }
+                                return invoke(connectionMethod, connection, connectionArgs);
+                            });
+                });
+    }
+
+    private static Object invoke(java.lang.reflect.Method method, Object target, Object[] args) throws Throwable {
+        try {
+            return method.invoke(target, args);
+        } catch (java.lang.reflect.InvocationTargetException e) {
+            throw e.getCause();
+        }
+    }
+
     private MessageAttemptResult result(MessageStatus status, int attempt, String error) {
         return result(status, attempt, error, "payload-body", Instant.parse("2026-06-14T12:00:00Z"));
     }
