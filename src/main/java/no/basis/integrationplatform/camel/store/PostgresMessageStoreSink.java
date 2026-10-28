@@ -2,14 +2,19 @@ package no.basis.integrationplatform.camel.store;
 
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import javax.sql.DataSource;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
 
 public class PostgresMessageStoreSink implements MessageStoreSink {
+    private static final Logger LOG = LoggerFactory.getLogger(PostgresMessageStoreSink.class);
     public static final String MESSAGE_LOG_TABLE = "bip_message_log";
     public static final String MESSAGE_ATTEMPT_TABLE = "bip_message_attempt";
 
@@ -63,7 +68,14 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             where excluded.last_attempt >= bip_message_log.last_attempt
             """;
 
+    // The CTE reads another integration that already journaled this message id, without
+    // an extra round trip. Its snapshot is taken before the insert.
     private static final String UPSERT_MESSAGE_ATTEMPT_SQL = """
+            with other as (
+                select integration from bip_message_attempt
+                where message_id = ? and integration is distinct from ?
+                limit 1
+            )
             insert into bip_message_attempt (
                 message_id,
                 attempt,
@@ -111,6 +123,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 occurred_at = excluded.occurred_at,
                 steps_json = excluded.steps_json,
                 error = excluded.error
+            returning (select integration from other)
             """;
 
     private final DataSource dataSource;
@@ -149,29 +162,41 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     private void upsertMessageAttempt(Connection connection, MessageAttemptResult result) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_ATTEMPT_SQL)) {
             statement.setString(1, result.messageId());
-            statement.setInt(2, result.attempt());
-            statement.setInt(3, result.schemaVersion());
-            statement.setString(4, result.correlationId());
-            statement.setString(5, result.contentType());
-            statement.setString(6, result.sourceSystem());
-            statement.setString(7, result.targetSystem());
-            statement.setString(8, result.payloadStorage());
-            setLongOrNull(statement, 9, result.payloadSizeBytes());
-            setBytesOrNull(statement, 10, result.payloadBytes());
-            setTimestampOrNull(statement, 11, result.payloadExpiresAt());
-            setTimestampOrNull(statement, 12, result.payloadDeletedAt());
-            statement.setBoolean(13, result.replayable());
-            statement.setString(14, result.replayDisabledReason());
-            statement.setString(15, result.integration());
-            statement.setString(16, result.routeId());
-            statement.setString(17, result.status().name());
-            statement.setBoolean(18, result.autoRedelivered());
-            setIntegerOrNull(statement, 19, result.autoRedeliveryCount());
-            setIntegerOrNull(statement, 20, result.autoRedeliveryMax());
-            statement.setTimestamp(21, Timestamp.from(result.occurredAt()));
-            statement.setString(22, serializer.serializeSteps(result));
-            statement.setString(23, result.error());
-            statement.executeUpdate();
+            statement.setString(2, result.integration());
+            statement.setString(3, result.messageId());
+            statement.setInt(4, result.attempt());
+            statement.setInt(5, result.schemaVersion());
+            statement.setString(6, result.correlationId());
+            statement.setString(7, result.contentType());
+            statement.setString(8, result.sourceSystem());
+            statement.setString(9, result.targetSystem());
+            statement.setString(10, result.payloadStorage());
+            setLongOrNull(statement, 11, result.payloadSizeBytes());
+            setBytesOrNull(statement, 12, result.payloadBytes());
+            setTimestampOrNull(statement, 13, result.payloadExpiresAt());
+            setTimestampOrNull(statement, 14, result.payloadDeletedAt());
+            statement.setBoolean(15, result.replayable());
+            statement.setString(16, result.replayDisabledReason());
+            statement.setString(17, result.integration());
+            statement.setString(18, result.routeId());
+            statement.setString(19, result.status().name());
+            statement.setBoolean(20, result.autoRedelivered());
+            setIntegerOrNull(statement, 21, result.autoRedeliveryCount());
+            setIntegerOrNull(statement, 22, result.autoRedeliveryMax());
+            statement.setTimestamp(23, Timestamp.from(result.occurredAt()));
+            statement.setString(24, serializer.serializeSteps(result));
+            statement.setString(25, result.error());
+            try (ResultSet upserted = statement.executeQuery()) {
+                String other = upserted.next() ? upserted.getString(1) : null;
+                if (other != null) {
+                    // bip_message_log and bip_message_attempt are keyed by message id alone, so
+                    // two integrations on one Message Store replace each other's rows.
+                    LOG.warn("Message id {} is also journaled by integration {}; integration {} now replaces its "
+                                    + "summary and attempt {} rows. Mint a new x-bip-message-id per integration and "
+                                    + "keep continuity in x-bip-correlation-id",
+                            result.messageId(), other, result.integration(), result.attempt());
+                }
+            }
         }
     }
 

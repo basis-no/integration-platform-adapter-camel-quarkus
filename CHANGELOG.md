@@ -70,11 +70,17 @@ Quarkus 3.33.4 (Camel 4.18.4).
   each failed part is parked separately while the input records `COMPLETED`. See
   the [split step identity advisory](docs/split-step-identity.md). This applies
   to every 0.3.x release.
-- The delivered-step lookup is not scoped by integration. If a message id
-  reaches a second integration on the same Message Store (Camel's Kafka producer
-  forwards `x-bip-message-id` by default), and both integrations use the same
-  step id, the second integration's send is skipped. This applies to every 0.3.x
-  release.
+- The Message Store is keyed by message id alone. A Kafka input adopts an
+  incoming `x-bip-message-id`, and Camel's Kafka producer forwards it by default.
+  When a message id reaches a second integration on the same Message Store, the
+  two integrations collide. The second integration replaces the first one's
+  journal rows, so the message moves to the other integration's view and can no
+  longer be replayed by the first. With the platform's message recovery SQL
+  installed, the second integration's journal write is refused instead, and its
+  input does not get past that record. A send with the same step id is skipped as
+  already delivered. This applies to every 0.3.x release; from 0.3.6 the adapter
+  logs a warning when it journals a message id that another integration already
+  journaled.
 - A replay or re-consumed record stores a new inline payload expiry, which
   extends retention. A Message Store with the platform's message recovery SQL
   keeps the first expiry.
@@ -96,9 +102,11 @@ Quarkus 3.33.4 (Camel 4.18.4).
   reconnection. NotReady does not restart a pod: alert on sustained NotReady.
 - Set the readiness probe timeout to 3–5 seconds. While the consumer reconnects,
   Camel's Kafka health check can take more than 2 seconds to answer.
-- Give every tracked external send an explicit id that is unique across the
-  integrations that can see the same message id, and review the new startup
-  warnings. Changing an id changes that step's identity for replays.
+- Give each integration its own `x-bip-message-id`: set a new one before
+  publishing to another integration's input, and carry continuity in
+  `x-bip-correlation-id`. Give every tracked external send an explicit id that
+  is unique across integrations, and review the new startup warnings. Changing an
+  id changes that step's identity for replays.
 - Tools that read DLQ records see `xxxxxx` instead of credential header values.
 - The journal writer works with and without the platform's message recovery
   SQL. With it installed, the recovery history protection, payload expiry clamp
