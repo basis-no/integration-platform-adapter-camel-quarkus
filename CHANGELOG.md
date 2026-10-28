@@ -29,8 +29,8 @@ Quarkus 3.33.4 (Camel 4.18.4).
   Rows recorded before the upgrade are not rewritten.
 - Credential-like header values in DLQ records are masked as `xxxxxx`:
   `Authorization`, cookies, authentication challenges, and names containing
-  secret, token, password, credential, session, signature, auth or API or
-  subscription key. Before, request credentials set by a route and response
+  secret, token, password, credential, session, signature or auth, or ending in
+  `-key` or `_key`. Before, request credentials set by a route and response
   headers from a successful receiver call reached the shared DLQ in clear text.
   Header names, `x-bip-*` and `Idempotency-Key` are unchanged.
 - An outcome from an older attempt that arrives late cannot replace a newer

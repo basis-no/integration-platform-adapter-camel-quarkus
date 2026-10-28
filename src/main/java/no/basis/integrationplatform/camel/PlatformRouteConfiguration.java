@@ -126,7 +126,9 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (lower.startsWith("x-bip-") || lower.equals("idempotency-key")) {
             return false;
         }
-        return CREDENTIAL_HEADERS.contains(lower) || CREDENTIAL_PARTS.stream().anyMatch(lower::contains);
+        // Names ending in -key or _key (x-functions-key, x-access-key, x-client-key) carry keys too.
+        return CREDENTIAL_HEADERS.contains(lower) || CREDENTIAL_PARTS.stream().anyMatch(lower::contains)
+                || lower.endsWith("-key") || lower.endsWith("_key");
     }
 
     private String failureMessage(Exchange exchange) {

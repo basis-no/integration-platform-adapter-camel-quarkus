@@ -87,6 +87,12 @@ class PlatformRouteConfigurationTest {
         message.setHeader("client_secret", "request-client-secret");
         message.setHeader("Ocp-Apim-Subscription-Key", "request-subscription-key");
         message.setHeader("X-API-Key", "key-value");
+        message.setHeader("x-functions-key", "functions-key-value");
+        message.setHeader("X-Access-Key", "access-key-value");
+        message.setHeader("x_client_key", "client-key-value");
+        // Kafka record-key headers name the record key, not a credential.
+        message.setHeader("CamelKafkaKey", "order-1");
+        message.setHeader("kafka.KEY", "order-1");
         // Response headers copied back from a successful receiver call.
         message.setHeader("Set-Cookie", "SESSION=receiver-session-cookie");
         message.setHeader("WWW-Authenticate", "Bearer error=\"invalid_token\"");
@@ -101,6 +107,7 @@ class PlatformRouteConfigurationTest {
         configuration.prepareDlq(exchange);
 
         for (String name : List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
+                "x-functions-key", "X-Access-Key", "x_client_key",
                 "Set-Cookie", "WWW-Authenticate", "X-Request-Token-Echo")) {
             assertEquals("xxxxxx", message.getHeader(name), name);
         }
@@ -108,6 +115,8 @@ class PlatformRouteConfigurationTest {
         assertEquals("message-123:deliver", message.getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
         assertEquals("message-123:deliver", message.getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
         assertEquals("application/xml", message.getHeader("Content-Type"));
+        assertEquals("order-1", message.getHeader("CamelKafkaKey"));
+        assertEquals("order-1", message.getHeader("kafka.KEY"));
         assertEquals(200, message.getHeader("CamelHttpResponseCode"));
         assertEquals("after receiver success", message.getHeader(PlatformHeaders.ERROR));
     }
