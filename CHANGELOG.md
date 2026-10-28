@@ -2,144 +2,110 @@
 
 ## 0.3.6 — Unreleased
 
-- Clarify lost-acknowledgement duplicate risks, receiver idempotency and the
-  operator check required before replay. Retry policy is unchanged.
-
-- Preserve UTF-8 Kafka correlation IDs as text before downstream processing, so
-  HTTP forwarding matches journal identity instead of emitting byte-array text.
-  Envelope decoding is independent of payload charset. Other header types and
-  binary application headers are unchanged.
-
-### Added
-
-- Add opt-in Kafka record admission and broker-ACK publication counters via the
-  existing Micrometer registry. Defaults are disabled. Missing, unsafe or
-  incomplete coverage is unknown; counters do not claim business completion.
-  Publication requires explicit destination topics and safe static producer
-  metadata/ACK configuration. No route or Kafka setting changes automatically.
-
-- Prepare bounded synthetic PostgreSQL qualification fixtures with exact run
-  ownership and partial-startup cleanup. Certification and final combined-candidate execution remain release gates.
-
-- Versions are scoped to a physical key row. Unswept expiry preserves its
-  counter; expiry cleanup or explicit deletion followed by recreation starts
-  at 1. A stale numeric CAS can match the new row. This is a candidate
-  limitation under the unlocked draft contract, subject to final release review, not lease or fencing
-  support. Durable cursor migration keeps no TTL, no deletion and existing
-  polling protection.
-
-- Log each step skipped because an earlier attempt already delivered it at
-  INFO, with the step, message id and masked endpoint. The logging sink reports
-  delivered, skipped and failed step counts separately, so a replay that skipped
-  its sends no longer reads as a delivery. Routes can check
-  `basis.messageStore.stepAlreadyDelivered` after a send before logging success.
-
-- Warn at startup for each tracked external send without an explicit Camel id.
-  Generated ids such as `to1` change when a route is edited, and other
-  integrations generate the same ids.
-
-- Log a processing failure with its stack trace at ERROR before the exchange is
-  sent to the dead letter queue. The DLQ error header still carries only the
-  exception message.
-
-- An integration-scoped `KeyValueStore` API for small JSON cursors and markers,
-  with versions, compare-and-set, optional expiry, bounded cleanup and a Camel
-  idempotent repository. SQL statements have a five-second execution bound;
-  sweeper disposal waits up to ten seconds and reports incomplete shutdown. It uses the platform-provisioned `bip_key_value` table
-  from draft contract `1.2.0-rc2`; it does not create or migrate tables.
-- This is a local candidate, not a published or certified adapter pin. It
-  preserves the complete maintenance baseline and does not add leases or the
-  Trusted Message Store. Release remains subject to review. Existing application databases remain supported; using the API or migrating data is optional.
-
-
-### Security and compatibility
-
-- Unsigned candidate builds receive no production signing/publishing credentials.
-  Signed candidate and snapshot publication remain suspended until an enforceable
-  isolated signer/publisher path and credential review are complete.
-- Existing application databases and named datasources remain supported. No
-  migration or Message Store schema change is required while KV is unused.
+Maintenance release on the 0.3 line. The Kafka recovery baseline remains Message
+Store contract `v1.0.0-rc2`. No Message Store schema migration is required. The
+optional Key-Value Store uses the platform-provisioned `bip_key_value` table
+only when an application uses it. Tested with Quarkus 3.32.2 (Camel 4.18.0) and
+Quarkus 3.33.4 (Camel 4.18.4).
 
 ### Fixed
 
 - A Kafka poll failure reconnects and polls the same position again
   (`camel.component.kafka.poll-on-error=RECONNECT`). Before, a missing read
-  permission journaled a `FAILED` row without a record and stopped the consumer
-  for good while the process stayed up; another poll failure moved past the
-  offset. An authentication failure still stops the consumer.
-
-- The endpoint URI journaled for each step masks credentials the way Camel
-  masks them in its logs. Before, a fixed `to` endpoint with a password in its
-  user info or in an option such as `password` or `accessToken` stored that
-  password in the Message Store (`bip_step_outcome.endpoint_uri`). Step ids
-  still derive from the exact URI, so existing step identities and the
-  delivered-step guard are unchanged. Rows journaled before the upgrade are
-  not rewritten. The missing-node-id warning also masks the endpoint; arbitrary
-  exception text and application logging remain outside this guarantee.
-
-- A late outcome from an older attempt still records that attempt's history,
-  but cannot replace a newer attempt's current message summary, including its
-  status, payload, error and timestamps. Same-attempt updates remain supported.
-  This covers the original Kafka record consumed again as attempt 1 after a
-  replay recovered it, which previously reset `last_attempt` to 1.
-
-- Read Kafka record headers under both Camel names. camel-kafka 4.18.0 uses
-  `kafka.TOPIC`, `kafka.PARTITION`, `kafka.OFFSET` and `kafka.RECORD_META`; later
-  4.18.x releases, for example the 4.18.4 in Quarkus 3.33.4, use `CamelKafkaTopic`,
-  `CamelKafkaPartition`, `CamelKafkaOffset` and `CamelKafkaRecordMeta`. With the
-  later names, UTF-8 correlation normalisation did not run, and the opt-in
-  activity counters reported themselves unsupported after the first record. Offset
-  commit and DLQ parking use `CamelKafkaManualCommit`, unchanged in both.
-
-- The DLQ record no longer carries credentials in clear text. The Kafka DLQ
-  producer forwards every message header, including request headers a route set
-  for a receiver (`Authorization`, client secrets, API and subscription keys),
-  and response headers copied back from a successful receiver call (`Set-Cookie`,
-  `WWW-Authenticate`). Their values are now masked as `xxxxxx`; header names,
-  `x-bip-*` and `Idempotency-Key` are kept. Other headers, such as a receiver's
-  internal host names, are still forwarded. Version 0.3.5 forwards all of them
-  unmasked.
-
+  permission recorded a `FAILED` row without a record and stopped the consumer
+  for good while the process stayed up, and another poll failure could move past
+  the offset. An authentication failure still stops the consumer.
+- A UTF-8 `x-bip-correlation-id` from Kafka is kept as text before the route
+  runs, independent of the payload charset. Receivers get the same correlation
+  as the journal instead of byte-array text.
+- Kafka record headers are read under both Camel names: `kafka.TOPIC`,
+  `kafka.PARTITION`, `kafka.OFFSET` and `kafka.RECORD_META` (Camel 4.18.0), and
+  `CamelKafkaTopic`, `CamelKafkaPartition`, `CamelKafkaOffset` and
+  `CamelKafkaRecordMeta` (later 4.18.x releases). On the later releases, the
+  correlation fix above and the activity counters were otherwise inactive.
+  Offset commit and DLQ parking were not affected.
+- Credentials in a step's endpoint URI are masked in the Message Store and in
+  warnings, the way Camel masks them in its logs. Step identities are unchanged.
+  Rows recorded before the upgrade are not rewritten.
+- Credential-like header values in DLQ records are masked as `xxxxxx`:
+  `Authorization`, cookies, authentication challenges, and names containing
+  secret, token, password, credential, session, signature, auth or API or
+  subscription key. Before, request credentials set by a route and response
+  headers from a successful receiver call reached the shared DLQ in clear text.
+  Header names, `x-bip-*` and `Idempotency-Key` are unchanged.
+- An outcome from an older attempt that arrives late cannot replace a newer
+  attempt's message summary. This includes the original Kafka record consumed
+  again as attempt 1 after a replay recovered it, which used to reset the
+  latest attempt to 1.
 - A route that replaces the message without the platform headers, such as a
   split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
-  journals the outcome under a newly generated message id with no correlation.
-  The row falls back to the consumed input's message id, correlation, attempt,
-  schema version, content type and source/target system. A replay through such a
-  route therefore stays its own attempt instead of overwriting attempt 1's
-  history row. A value the route sets itself is still recorded as before.
+  records the outcome under a new random message id. The message id,
+  correlation, attempt and envelope fall back to the consumed input's values; a
+  value the route sets itself still wins.
+- Logs no longer suggest a delivery that did not happen. A step skipped because
+  an earlier attempt delivered it is logged at INFO. The logging sink counts
+  delivered, skipped and failed steps separately. Routes can read
+  `basis.messageStore.stepAlreadyDelivered` in the step after a send.
+- A failure that is sent to the dead letter queue is logged at ERROR with its
+  stack trace first.
+
+### New and opt-in
+
+- Key-Value Store: an integration-scoped API for small JSON cursors and markers,
+  with versions, compare-and-set, optional expiry, bounded cleanup and a Camel
+  idempotent repository. It is optional, uses the platform's `bip_key_value`
+  table from draft contract `1.2.0-rc2`, and never creates or migrates tables.
+  See [Key-Value Store](docs/key-value-store.md).
+- Activity counters for admitted Kafka records and broker-acknowledged
+  publications, through the application's Micrometer registry. Off by default;
+  incomplete coverage is reported as unknown, not as zero. See
+  [activity metrics](docs/activity-metrics.md).
+- A startup warning for each tracked external send without an explicit Camel id.
 
 ### Known limitations
 
-- Poll-time authorization failures can recover after a permission grant, but
-  invalid authentication remains non-recoverable. A SmallRye-only health endpoint
-  can remain Ready after polling stops. The upstream Camel health bridge passed
-  the pinned maintenance fixture; it remains an application composition
-  prerequisite and is not automatically added by this adapter. Qualify each
-  application's actual BOM and route lifecycle. Reconnecting readiness can
-  fluctuate; the finite stopped-poller proof is not a continuous permission or
-  business-acceptance guarantee.
-  See [maintenance qualification](docs/maintenance-qualification.md).
+- Split parts and loop iterations that send through the same node share one
+  step identity. With the Postgres step store, only the first is delivered and
+  the rest are skipped, also in the first attempt. Without `stopOnException()`,
+  each failed part is parked separately while the input records `COMPLETED`. See
+  the [split step identity advisory](docs/split-step-identity.md). This applies
+  to every 0.3.x release.
+- The delivered-step lookup is not scoped by integration. If a message id
+  reaches a second integration on the same Message Store (Camel's Kafka producer
+  forwards `x-bip-message-id` by default), and both integrations use the same
+  step id, the second integration's send is skipped. This applies to every 0.3.x
+  release.
+- A replay or re-consumed record stores a new inline payload expiry, which
+  extends retention. A Message Store with the platform's message recovery SQL
+  keeps the first expiry.
+- An invalid Kafka authentication stops the consumer for good while the process
+  keeps running. A receiver can apply an effect and lose its response, so retries
+  can repeat it; receivers must deduplicate on the stable `Idempotency-Key`.
+- Key-Value Store versions belong to a physical row: after expiry cleanup or
+  deletion and recreation, the version starts at 1 again and a stale numeric
+  compare-and-set can match. It has no leases or fencing.
+- DLQ records still carry other headers present at failure, such as a
+  receiver's host names. Only credential-like values are masked.
 
-- Split parts share the input's message id and the send node's step id. With
-  the Postgres step outcome store, only the first part sent through a node is
-  delivered and later parts are skipped, also in the first attempt. Loops through
-  one node behave the same way. All 0.3.x releases are affected; see the
-  [split step identity advisory](docs/split-step-identity.md) for the conditions
-  and the safe configuration. Without `stopOnException()`, each failed part is
-  parked separately while the input records `COMPLETED`. Per-part identity is
-  not part of 0.3.x.
+### Upgrade notes
 
-- Step keys are `<message-id>:<step-id>` and the step outcome table has no
-  integration column, so the delivered-step lookup is not scoped by integration.
-  If a message id travels to another integration on the same Message Store
-  (Camel's Kafka producer forwards `x-bip-message-id` by default), and both use
-  the Postgres step store with the same step id, the second integration's send
-  is skipped as already delivered. Generated ids such as `to1` make this likely.
-  Give tracked sends explicit ids that are unique across integrations, and
-  prefer a new message id per integration. All 0.3.x releases are affected.
-
-- A replay records a new inline payload expiry, so each replay extends payload
-  retention from the time it was processed.
+- Add the Camel health bridge (`camel-quarkus-microprofile-health`); the
+  platform template includes it. With SmallRye Health alone, readiness stays
+  Ready after the Kafka consumer stops. With the bridge, readiness turns
+  NotReady during a broker outage or a stopped consumer, and Ready again after
+  reconnection. NotReady does not restart a pod: alert on sustained NotReady.
+- Set the readiness probe timeout to 3–5 seconds. While the consumer reconnects,
+  Camel's Kafka health check can take more than 2 seconds to answer.
+- Give every tracked external send an explicit id that is unique across the
+  integrations that can see the same message id, and review the new startup
+  warnings. Changing an id changes that step's identity for replays.
+- Tools that read DLQ records see `xxxxxx` instead of credential header values.
+- The journal writer works with and without the platform's message recovery
+  SQL. With it installed, the recovery history protection, payload expiry clamp
+  and replay refusals apply as before. No grant changes are needed.
+- See [maintenance qualification](docs/maintenance-qualification.md) and
+  [delivery audit](docs/delivery-audit.md) for recovery and inspection details
+  carried over from 0.3.5.
 
 ## 0.3.5 — 2026-10-12
 
