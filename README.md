@@ -433,10 +433,12 @@ idempotency key was already delivered, so the endpoint send was not repeated.
 From 0.3.6 each skip is logged at INFO with the step, message id and masked
 endpoint, and the logging sink counts delivered, skipped and failed steps
 separately. A route log placed after a send cannot tell by itself whether the send
-happened: until the next tracked send, the exchange property
+happened. Directly after the send, the exchange property
 `basis.messageStore.stepAlreadyDelivered`
 (`PlatformExchangeProperties.STEP_ALREADY_DELIVERED`) is `true` only when that
-send was skipped. Do not log "delivered" without checking it.
+send was skipped. Every later `to`/`toD`, including `log:` and `direct:`, resets
+it, so read it in the step that follows the send, for example a `choice` or
+`setProperty`. Do not log "delivered" without checking it.
 
 Each recorded step keeps its endpoint URI with credentials masked the way Camel
 masks them in logs: a password in the user info and options such as `password`,
