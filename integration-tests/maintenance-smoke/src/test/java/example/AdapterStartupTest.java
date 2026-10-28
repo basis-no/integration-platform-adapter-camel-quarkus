@@ -1,7 +1,9 @@
 package example;
 
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.keyvalue.KeyValueStore;
 import no.basis.integrationplatform.camel.lifecycle.MessageStoreRoutePolicy;
 import org.apache.camel.CamelContext;
 import org.apache.camel.ProducerTemplate;
@@ -14,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class AdapterStartupTest {
     @Inject CamelContext context;
     @Inject ProducerTemplate producer;
+    @Inject Instance<KeyValueStore> keyValues;
 
     @Test
     void discoversAdapterAndAttachesPolicyOnlyToKafkaInput() {
@@ -21,6 +24,15 @@ class AdapterStartupTest {
         assertTrue(context.getRoute("source").getRoutePolicyList().stream().anyMatch(MessageStoreRoutePolicy.class::isInstance));
         var internalPolicies = context.getRoute("receiver").getRoutePolicyList();
         assertTrue(internalPolicies == null || internalPolicies.stream().noneMatch(MessageStoreRoutePolicy.class::isInstance));
+    }
+
+    @Test
+    void discoversKeyValueStoreWithoutStartingItsInactiveDataSource() {
+        assertTrue(keyValues.isResolvable());
+        // ApplicationScoped proxy creation must not invoke the producer or open JDBC.
+        assertNotNull(keyValues.get());
+        assertTrue(Thread.getAllStackTraces().keySet().stream()
+                .noneMatch(thread -> thread.isAlive() && thread.getName().equals("bip-key-value-sweep")));
     }
 
     @Test
