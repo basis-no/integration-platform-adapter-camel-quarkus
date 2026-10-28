@@ -58,7 +58,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 payload_storage = excluded.payload_storage,
                 payload_size_bytes = excluded.payload_size_bytes,
                 payload_bytes = excluded.payload_bytes,
-                payload_expires_at = excluded.payload_expires_at,
+                payload_expires_at = coalesce(bip_message_log.payload_expires_at, excluded.payload_expires_at),
                 payload_deleted_at = excluded.payload_deleted_at,
                 replayable = excluded.replayable,
                 replay_disabled_reason = excluded.replay_disabled_reason,
@@ -73,6 +73,11 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 error = excluded.error,
                 updated_at = current_timestamp
             where excluded.last_attempt >= bip_message_log.last_attempt
+            returning payload_expires_at
+            """;
+
+    private static final String MESSAGE_LOG_EXPIRY_SQL = """
+            select payload_expires_at from bip_message_log where message_id = ?
             """;
 
     // The CTE reads another integration that already journaled this message id, without
@@ -191,8 +196,15 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             boolean previousAutoCommit = connection.getAutoCommit();
             connection.setAutoCommit(false);
             try {
-                upsertMessageAttempt(connection, result);
-                upsertMessageLog(connection, result);
+                // A replay or re-consumption keeps the first inline payload expiry: retention
+                // runs from the original capture, not from the latest attempt.
+                // The summary is written before the history row. During a rolling upgrade an
+                // older pod writes them in the opposite order; two pods recording the same
+                // message and attempt at once can then deadlock. PostgreSQL aborts one, its
+                // record fails without an offset commit, and the record is processed again.
+                Instant retained = upsertMessageLog(connection, result);
+                // A summary without inline payload has no expiry; bytes in this history row still need one.
+                upsertMessageAttempt(connection, result, retained != null ? retained : result.payloadExpiresAt());
                 connection.commit();
             } catch (Exception e) {
                 connection.rollback();
@@ -206,7 +218,8 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
         }
     }
 
-    private void upsertMessageAttempt(Connection connection, MessageAttemptResult result) throws SQLException {
+    private void upsertMessageAttempt(Connection connection, MessageAttemptResult result, Instant payloadExpiresAt)
+            throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_ATTEMPT_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.integration());
@@ -220,7 +233,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             statement.setString(10, result.payloadStorage());
             setLongOrNull(statement, 11, result.payloadSizeBytes());
             setBytesOrNull(statement, 12, result.payloadBytes());
-            setTimestampOrNull(statement, 13, result.payloadExpiresAt());
+            setTimestampOrNull(statement, 13, payloadExpiresAt);
             setTimestampOrNull(statement, 14, result.payloadDeletedAt());
             statement.setBoolean(15, result.replayable());
             statement.setString(16, result.replayDisabledReason());
@@ -242,7 +255,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
         }
     }
 
-    private void upsertMessageLog(Connection connection, MessageAttemptResult result) throws SQLException {
+    private Instant upsertMessageLog(Connection connection, MessageAttemptResult result) throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_LOG_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.correlationId());
@@ -265,8 +278,24 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             setIntegerOrNull(statement, 19, result.autoRedeliveryMax());
             statement.setTimestamp(20, Timestamp.from(result.occurredAt()));
             statement.setString(21, result.error());
-            statement.executeUpdate();
+            try (ResultSet updated = statement.executeQuery()) {
+                if (updated.next()) {
+                    return instantOrNull(updated.getTimestamp(1));
+                }
+            }
         }
+        // A late older attempt leaves the summary unchanged; its history row takes the retained expiry.
+        try (PreparedStatement statement = connection.prepareStatement(MESSAGE_LOG_EXPIRY_SQL)) {
+            statement.setString(1, result.messageId());
+            try (ResultSet current = statement.executeQuery()) {
+                current.next();
+                return instantOrNull(current.getTimestamp(1));
+            }
+        }
+    }
+
+    private Instant instantOrNull(Timestamp timestamp) {
+        return timestamp == null ? null : timestamp.toInstant();
     }
 
     private void setLongOrNull(PreparedStatement statement, int index, Long value) throws SQLException {

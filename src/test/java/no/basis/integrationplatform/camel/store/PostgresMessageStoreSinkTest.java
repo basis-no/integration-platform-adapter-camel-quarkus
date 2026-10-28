@@ -246,6 +246,67 @@ class PostgresMessageStoreSinkTest {
         }
     }
 
+    @Test
+    void replayKeepsTheFirstInlinePayloadExpiry() {
+        sink.record(expiring(MessageStatus.FAILED, 1, Instant.parse("2026-07-14T12:00:00Z")));
+        // A replay attempt captures the payload again and computes a later expiry.
+        sink.record(expiring(MessageStatus.COMPLETED, 2, Instant.parse("2026-08-20T09:00:00Z")));
+
+        assertEquals("2", singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
+        assertEquals("COMPLETED", singleValue("select status from bip_message_log where message_id = 'message-123'"));
+        assertEquals(EXPIRY_1, expiry("bip_message_log", ""));
+        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 2"));
+        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 1"));
+    }
+
+    @Test
+    void reconsumedSameAttemptKeepsTheFirstInlinePayloadExpiry() {
+        sink.record(expiring(MessageStatus.COMPLETED, 1, Instant.parse("2026-07-14T12:00:00Z")));
+        sink.record(expiring(MessageStatus.COMPLETED, 1, Instant.parse("2026-08-20T09:00:00Z")));
+
+        assertEquals(EXPIRY_1, expiry("bip_message_log", ""));
+        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 1"));
+    }
+
+    @Test
+    void lateOlderAttemptHistoryTakesTheRetainedExpiry() {
+        sink.record(expiring(MessageStatus.COMPLETED, 2, Instant.parse("2026-07-14T12:00:00Z")));
+        sink.record(expiring(MessageStatus.FAILED, 1, Instant.parse("2026-08-20T09:00:00Z")));
+
+        assertEquals("2", singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
+        assertEquals(EXPIRY_1, expiry("bip_message_log", ""));
+        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 1"));
+    }
+
+    @Test
+    void firstInlineCaptureAfterMetadataOnlyAttemptsSetsTheExpiry() {
+        sink.record(expiring(MessageStatus.FAILED, 1, null));
+        assertEquals(null, expiry("bip_message_log", ""));
+
+        sink.record(expiring(MessageStatus.COMPLETED, 2, Instant.parse("2026-07-14T12:00:00Z")));
+
+        assertEquals(EXPIRY_1, expiry("bip_message_log", ""));
+        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 2"));
+        assertEquals(null, expiry("bip_message_attempt", " and attempt = 1"));
+    }
+
+    private static final String EXPIRY_1 = "2026-07-14T12:00:00Z";
+
+    private String expiry(String table, String attemptFilter) {
+        return singleValue("select to_char(payload_expires_at at time zone 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS\"Z\"') from "
+                + table + " where message_id = 'message-123'" + attemptFilter);
+    }
+
+    private MessageAttemptResult expiring(MessageStatus status, int attempt, Instant payloadExpiresAt) {
+        var base = result(status, attempt, status == MessageStatus.COMPLETED ? null : "failure");
+        return new MessageAttemptResult(base.schemaVersion(), base.messageId(), base.correlationId(), base.contentType(),
+                base.sourceSystem(), base.targetSystem(), base.payloadStorage(), base.payloadSizeBytes(),
+                base.payloadBytes(), payloadExpiresAt, base.payloadDeletedAt(), base.replayable(),
+                base.replayDisabledReason(), base.integration(), base.routeId(), base.attempt(),
+                base.autoRedelivered(), base.autoRedeliveryCount(), base.autoRedeliveryMax(), base.occurredAt(),
+                base.status(), base.steps(), base.error());
+    }
+
     private MessageAttemptResult result(MessageStatus status, int attempt, String error) {
         return result(status, attempt, error, "payload-body", Instant.parse("2026-06-14T12:00:00Z"));
     }

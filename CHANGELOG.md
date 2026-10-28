@@ -37,6 +37,19 @@ Quarkus 3.33.4 (Camel 4.18.4).
   attempt's message summary. This includes the original Kafka record consumed
   again as attempt 1 after a replay recovered it, which used to reset the
   latest attempt to 1.
+- A replay, or the same record consumed again, no longer extends inline payload
+  retention. Before, each attempt stored a new expiry of processing time plus
+  retention, so repeated replays could keep a payload indefinitely. The message
+  summary keeps its first expiry, and each attempt's history row records that
+  same expiry. An attempt that captures the payload after metadata-only attempts
+  still sets the first expiry. Once that expiry has passed, replay is refused as
+  for any expired payload. A late older attempt whose summary has no inline
+  payload keeps its own expiry. This is Camel adapter behaviour: contract §6 does
+  not yet specify inline expiry across replay, and the .NET adapter still
+  stores each attempt's new expiry. Message Stores with the platform's recovery
+  SQL clamp the expiry for both. During a rolling upgrade, an older and a newer
+  pod that record the same message and attempt at the same moment can deadlock;
+  PostgreSQL aborts one, its record is not committed and is processed again.
 - A route that replaces the message without the platform headers, such as a
   split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
   records the outcome under a new random message id. The message id,
@@ -88,9 +101,6 @@ Quarkus 3.33.4 (Camel 4.18.4).
   isolation between integrations, that warning does not appear: the signal is
   the refused write itself (`RECOVERY_SCOPE_MISMATCH` or a row-level security
   error) in the second integration's log.
-- A replay or re-consumed record stores a new inline payload expiry, which
-  extends retention. A Message Store with the platform's message recovery SQL
-  keeps the first expiry.
 - An invalid Kafka authentication stops the consumer for good while the process
   keeps running. A receiver can apply an effect and lose its response, so retries
   can repeat it; receivers must deduplicate on the stable `Idempotency-Key`.
