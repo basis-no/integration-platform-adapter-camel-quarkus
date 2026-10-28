@@ -201,6 +201,14 @@ request routes should use `ip-no-retry` when the input route owns retry, to avoi
 multiplying attempts. Splits that belong to the same input must share the unit
 of work so failure reaches the input's terminal outcome.
 
+Known split limitations in 0.3.x: split parts keep the input's message id, and
+a send node has one step id, so all parts share one idempotency key. With
+`basis.message-store.step-outcome-store=postgres`, only the first part sent
+through a node is delivered; later parts are `SKIPPED`, also in the first
+attempt. Without `stopOnException()`, each failed part is parked separately and
+the input still records `COMPLETED`; with it, the first failure parks the input
+once and records `DLQ`. Per-part identity is not part of 0.3.x.
+
 Processing time still needs an application-specific budget: bounded receiver
 timeouts and retries, number of transactions per input, poll batch size and
 `max.poll.interval.ms` must fit together. This patch does not classify every
