@@ -401,6 +401,13 @@ Internal Camel endpoints such as `direct:`, `log:`, `bean:`, `mock:`, `seda:`,
 The adapter records `DELIVERED`, `FAILED`, or `SKIPPED` step outcomes in the
 message attempt. `SKIPPED` means the configured `StepOutcomeStore` says the same
 idempotency key was already delivered, so the endpoint send was not repeated.
+From 0.3.6 each skip is logged at INFO with the step, message id and masked
+endpoint, and the logging sink counts delivered, skipped and failed steps
+separately. A route log placed after a send cannot tell by itself whether the send
+happened: until the next tracked send, the exchange property
+`basis.messageStore.stepAlreadyDelivered`
+(`PlatformExchangeProperties.STEP_ALREADY_DELIVERED`) is `true` only when that
+send was skipped. Do not log "delivered" without checking it.
 
 Each recorded step keeps its endpoint URI with credentials masked the way Camel
 masks them in logs: a password in the user info and options such as `password`,
