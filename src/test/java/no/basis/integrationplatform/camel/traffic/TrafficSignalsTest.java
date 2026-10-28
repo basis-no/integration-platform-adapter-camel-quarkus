@@ -53,6 +53,28 @@ class TrafficSignalsTest {
         assertEquals(2, total("record_admitted"));
         assertEquals(1, supported("record_admitted"));
     }
+    @Test void laterCamelHeaderNamesCountAdmission() {
+        // camel-kafka after 4.18.0 names the record coordinates CamelKafka*.
+        var signals = new TrafficSignals(registry, "record_admitted", "");
+        signals.observeKafkaBoundary();
+        var exchange = new DefaultExchange(context);
+        exchange.getMessage().setHeader("CamelKafkaTopic", "input");
+        exchange.getMessage().setHeader("CamelKafkaPartition", 0);
+        exchange.getMessage().setHeader("CamelKafkaOffset", 7L);
+        signals.recordAdmitted(exchange);
+        assertEquals(1, total("record_admitted"));
+        assertEquals(1, supported("record_admitted"));
+    }
+    @Test void laterCamelHeaderNameCountsPublication() {
+        var signals = new TrafficSignals(registry, "record_published", "input");
+        signals.observeProducerEndpoint(producer(true, "all"));
+        var exchange = new DefaultExchange(context);
+        var snapshot = signals.beforePublish("kafka:input", exchange);
+        exchange.getMessage().setHeader("CamelKafkaRecordMeta", List.of(metadata("input", 1)));
+        signals.afterPublish(snapshot, exchange, true);
+        assertEquals(1, total("record_published"));
+        assertEquals(1, supported("record_published"));
+    }
     @Test void timerOrEmptyPollCannotBecomeKnownZeroActivity() {
         var signals = new TrafficSignals(registry, "record_admitted", "");
         signals.observeKafkaBoundary();

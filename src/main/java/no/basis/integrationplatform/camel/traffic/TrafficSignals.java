@@ -8,7 +8,7 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
-import org.apache.camel.component.kafka.KafkaConstants;
+import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import org.apache.camel.component.kafka.KafkaEndpoint;
 import org.apache.kafka.clients.producer.RecordMetadata;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -121,9 +121,9 @@ public class TrafficSignals {
     public void recordAdmitted(Exchange exchange) {
         if (!supported(Signal.record_admitted)) return;
         try {
-            Object topic = exchange.getMessage().getHeader(KafkaConstants.TOPIC);
-            Object offset = exchange.getMessage().getHeader(KafkaConstants.OFFSET);
-            Object partition = exchange.getMessage().getHeader(KafkaConstants.PARTITION);
+            Object topic = KafkaRecordHeaders.topic(exchange.getMessage());
+            Object offset = KafkaRecordHeaders.offset(exchange.getMessage());
+            Object partition = KafkaRecordHeaders.partition(exchange.getMessage());
             if (!(topic instanceof String name) || name.isBlank()
                     || !(offset instanceof Number n) || n.longValue() < 0
                     || !(partition instanceof Number p) || p.intValue() < 0) {
@@ -220,7 +220,7 @@ public class TrafficSignals {
     }
 
     private static List<?> metadata(Exchange exchange) {
-        Object value = exchange.getMessage().getHeader(KafkaConstants.KAFKA_RECORD_META);
+        Object value = KafkaRecordHeaders.recordMetadata(exchange.getMessage());
         if (value == null) return List.of();
         if (value instanceof List<?> list) return list;
         throw new IllegalArgumentException("Kafka record metadata is not a list");

@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
@@ -244,7 +245,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     private void normalizeKafkaCorrelationHeader(Exchange exchange) {
         // Kafka exposes bytes, but downstream HTTP components need the owned text header.
-        if (exchange.getMessage().getHeader(KafkaConstants.TOPIC) != null
+        if (KafkaRecordHeaders.topic(exchange.getMessage()) != null
                 && exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID) instanceof byte[] bytes) {
             String correlation = new String(bytes, StandardCharsets.UTF_8);
             exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, correlation);

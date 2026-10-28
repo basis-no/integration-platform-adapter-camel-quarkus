@@ -79,6 +79,14 @@
   This covers the original Kafka record consumed again as attempt 1 after a
   replay recovered it, which previously reset `last_attempt` to 1.
 
+- Read Kafka record headers under both Camel names. camel-kafka 4.18.0 uses
+  `kafka.TOPIC`, `kafka.PARTITION`, `kafka.OFFSET` and `kafka.RECORD_META`; later
+  4.18.x releases, for example the 4.18.4 in Quarkus 3.33.4, use `CamelKafkaTopic`,
+  `CamelKafkaPartition`, `CamelKafkaOffset` and `CamelKafkaRecordMeta`. With the
+  later names, UTF-8 correlation normalisation did not run, and the opt-in
+  activity counters reported themselves unsupported after the first record. Offset
+  commit and DLQ parking use `CamelKafkaManualCommit`, unchanged in both.
+
 - A route that replaces the message without the platform headers, such as a
   split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
   journals the outcome under a newly generated message id with no correlation.

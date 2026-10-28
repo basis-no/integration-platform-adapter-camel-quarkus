@@ -63,6 +63,19 @@ class MessageStoreRoutePolicyTest {
         assertEquals(correlation, sink.result.correlationId());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"kafka.TOPIC", "CamelKafkaTopic"})
+    void normalizesCorrelationUnderEitherCamelTopicHeaderName(String topicHeader) {
+        // camel-kafka 4.18.0 sets kafka.TOPIC; later 4.18.x releases set CamelKafkaTopic.
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(topicHeader, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, "order-ø".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+        assertEquals("order-ø", exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
+    }
+
     @Test
     void keepsOtherCorrelationTypesAndUnownedHeadersUntouched() {
         Object[] values = {"already-text", java.nio.ByteBuffer.wrap(new byte[]{65}), List.of(65), new byte[]{65}};
