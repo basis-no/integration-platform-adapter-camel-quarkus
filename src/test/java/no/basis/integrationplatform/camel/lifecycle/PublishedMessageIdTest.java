@@ -189,6 +189,72 @@ class PublishedMessageIdTest {
     }
 
     /**
+     * The doTry/doFinally form of the handbook example, which also restores the input id
+     * when the send fails, on the success path: the same publications and journal rows.
+     */
+    @org.junit.jupiter.api.Test
+    void doFinallyVariantPublishesTheDerivedIdAndRestoresTheInputId() throws Exception {
+        String brokers = KAFKA.getBootstrapServers();
+        String topic = "bip.orders-finally.in";
+        List<MessageAttemptResult> rows = new CopyOnWriteArrayList<>();
+        Set<String> ledger = java.util.Collections.synchronizedSet(new HashSet<>());
+        StepOutcomeStore store = new StepOutcomeStore() {
+            public boolean wasDelivered(String key) { return ledger.contains(key); }
+            public void recordDelivered(StepResult step) { ledger.add(step.idempotencyKey()); }
+            public void recordFailed(StepResult step) { }
+        };
+        try (var admin = AdminClient.create(Map.<String, Object>of("bootstrap.servers", brokers));
+             var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(topic, 1, (short) 1))).all().get(20, TimeUnit.SECONDS);
+            context.getComponent("kafka", org.apache.camel.component.kafka.KafkaComponent.class)
+                    .getConfiguration().setBrokers(brokers);
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(new DefaultStepTracker(store)));
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:upstream").routeId("upstream-input")
+                            .routePolicy(new MessageStoreRoutePolicy(rows::add, "upstream"))
+                            .to("direct:publish-orders");
+                    from("direct:publish-orders")
+                        .setProperty("inputMessageId", header("x-bip-message-id"))
+                        .doTry()
+                            .process(exchange -> exchange.getMessage().setHeader("x-bip-message-id",
+                                UUID.nameUUIDFromBytes((exchange.getProperty("inputMessageId", String.class)
+                                    + ":" + topic).getBytes(StandardCharsets.UTF_8)).toString()))
+                            .to("kafka:" + topic).id("publish-orders")
+                        .doFinally()
+                            .setHeader("x-bip-message-id", exchangeProperty("inputMessageId"))
+                        .end();
+                }
+            });
+            context.start();
+            var producer = context.createProducerTemplate();
+            for (String[] delivery : new String[][]{{null, null}, {null, null}, {"2", "[\"publish-orders\"]"}}) {
+                producer.send("direct:upstream", e -> {
+                    e.getMessage().setHeader(KafkaConstants.TOPIC, "bip.upstream.in");
+                    e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> { });
+                    e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, INPUT_ID);
+                    e.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, "order-1");
+                    if (delivery[0] != null) {
+                        e.getMessage().setHeader(PlatformHeaders.REPLAY, "true");
+                        e.getMessage().setHeader(PlatformHeaders.ATTEMPT, delivery[0]);
+                        e.getMessage().setHeader(PlatformHeaders.REDO_STEPS, delivery[1]);
+                    }
+                    e.getMessage().setBody("<Order/>");
+                });
+            }
+        }
+
+        String derived = UUID.nameUUIDFromBytes((INPUT_ID + ":" + topic).getBytes(StandardCharsets.UTF_8)).toString();
+        var published = consumeAll(brokers, topic, 2);
+        assertEquals(List.of(derived, derived), published.stream().map(r -> header(r, PlatformHeaders.MESSAGE_ID)).toList());
+        assertEquals(derived + ":publish-orders", header(published.getFirst(), PlatformHeaders.IDEMPOTENCY_KEY));
+        assertEquals(List.of(INPUT_ID, INPUT_ID, INPUT_ID), rows.stream().map(MessageAttemptResult::messageId).toList());
+        assertEquals(List.of(1, 1, 2), rows.stream().map(MessageAttemptResult::attempt).toList());
+        assertEquals(List.of("DELIVERED", "SKIPPED", "DELIVERED"),
+                rows.stream().map(r -> r.steps().getFirst().status().name()).toList());
+    }
+
+    /**
      * The send with the derived id fails after its retries, so the restore after it never
      * runs. The parked record and the upstream journal row must still use the input id.
      */
