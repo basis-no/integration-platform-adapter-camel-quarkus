@@ -269,6 +269,11 @@ class Fixtures(unittest.TestCase):
         for name, job in jobs.items():
             self.assertIn('    permissions:\n', job, name)
             self.assertNotIn('cache', job, name + ': no shared caches next to release jobs')
+            # Values reach scripts only through env, never spliced into script text.
+            scripts = re.findall(r'(?m)^( +)run: (.*\n(?:\1  .*\n|\s*\n)*)', job)
+            self.assertTrue(scripts, name)
+            for _, script in scripts:
+                self.assertNotIn('${{', script, name)
         build, attest, sign, publish = jobs.values()
         self.assertIn('-Dgpg.skip=true', build)
         self.assertIn('--workflow-run "$GITHUB_RUN_ID"', build)
