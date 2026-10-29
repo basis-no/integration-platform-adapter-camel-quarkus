@@ -64,7 +64,6 @@ Quarkus 3.33.4 (Camel 4.18.4).
   publications, through the application's Micrometer registry. Off by default;
   incomplete coverage is reported as unknown, not as zero. See
   [activity metrics](docs/activity-metrics.md).
-- A startup warning for each tracked external send without an explicit Camel id.
 
 ### Known limitations
 
@@ -103,6 +102,18 @@ Quarkus 3.33.4 (Camel 4.18.4).
 
 ### Upgrade notes
 
+- **Every tracked external send needs an explicit id.** An application whose
+  routes contain a `to` or `toD` to an external endpoint without an `id` no
+  longer starts; the error names the route and the endpoint. Generated ids such
+  as `to1` change when a route is edited and repeat across integrations, which
+  can make one integration skip another's send. Add explicit ids before
+  upgrading. Renaming a generated id, for example `to1` to `send-to-sap`, changes
+  that step's key: replaying or redoing a message recorded before the change
+  repeats that send once. The startup check covers the routes as Camel builds
+  them; the platform's pre-build check reads the source and misses endpoints
+  whose URIs are built elsewhere, such as placeholders and constants. Only in an
+  emergency, `basis.message-store.step-ids.emergency-allow-generated=true` starts
+  the application anyway and logs a warning for each such send.
 - Add the Camel health bridge (`camel-quarkus-microprofile-health`); the
   platform template includes it. With SmallRye Health alone, readiness stays
   Ready after the Kafka consumer stops. With the bridge, readiness turns
@@ -112,9 +123,8 @@ Quarkus 3.33.4 (Camel 4.18.4).
   Camel's Kafka health check can take more than 2 seconds to answer.
 - Give each integration its own `x-bip-message-id`: set a new one before
   publishing to another integration's input, and carry continuity in
-  `x-bip-correlation-id`. Give every tracked external send an explicit id that
-  is unique across integrations, and review the new startup warnings. Changing an
-  id changes that step's identity for replays.
+  `x-bip-correlation-id`. Explicit step ids must also be unique across the
+  integrations that can see the same message id.
 - Tools that read DLQ records see `xxxxxx` instead of credential header values.
 - The journal writer works with and without the platform's message recovery
   SQL. With it installed, the recovery history protection, payload expiry clamp

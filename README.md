@@ -404,16 +404,26 @@ stable step names, use normal Camel ids on important external sends:
     uri: "sftp:vendor/orders?fileName=order-${header.x-bip-correlation-id}.xml"
 ```
 
-Give every tracked external send an explicit id. Without one, Camel generates
-a node id such as `to1`. It changes when the route is edited, and other
-integrations generate the same ids. When a message id travels to another
-integration (Camel's Kafka producer forwards `x-bip-message-id` by default) and
-both share a Message Store with the Postgres step store, the second
-integration's `<message-id>:to1` matches the first one's delivered step, and its
-own send is skipped. From 0.3.6 the adapter logs a warning at startup for each
-tracked send without an explicit id. The step outcome table has no integration
-column, so 0.3.x cannot scope the lookup by integration. Prefer a new
-`x-bip-message-id` per integration and carry continuity in
+Every tracked external send must have an explicit id. Without one, Camel
+generates a node id such as `to1`. It changes when the route is edited, and other
+integrations generate the same ids: when a message id reaches another
+integration on the same Message Store, the second integration's
+`<message-id>:to1` matches the first one's delivered step and its own send is
+skipped. From 0.3.6 the application therefore fails to start when a tracked send
+(`to` or `toD` to an external endpoint) has no explicit id. Internal endpoints,
+wire taps and the adapter's own dead letter route are not checked.
+
+`basis.message-store.step-ids.emergency-allow-generated=true` is an emergency
+escape hatch only: the application then starts and logs a warning for each such
+send. Use it to restore service while the ids are added, not as a setting.
+
+Renaming a generated id, for example `to1` to `send-to-sap`, changes that step's
+key. Replaying or redoing a message recorded before the change repeats that send
+once. The startup check covers the routes as Camel builds them; the platform's
+pre-build check reads the source and misses endpoints whose URIs are built
+elsewhere, such as placeholders and constants.
+
+Prefer a new `x-bip-message-id` per integration and carry continuity in
 `x-bip-correlation-id`. Explicit ids must still be unique across the
 integrations that can see the same message id.
 
@@ -532,6 +542,7 @@ Configuration reference:
 | `basis.message-store.key-value.sweep-interval-seconds` | integer seconds, `1..3600` | `3600` | Once the candidate Key-Value Store is used, sweep this integration’s expired keys in bounded batches. |
 | `basis.message-store.sink` | `log`, `postgres`, `kafka` | `log` | Selects where terminal message outcomes go. |
 | `basis.message-store.step-outcome-store` | `noop`, `postgres` | `noop` | Selects whether delivered-step checks are durable. |
+| `basis.message-store.step-ids.emergency-allow-generated` | `true`, `false` | `false` | Emergency escape hatch: start even though a tracked send has no explicit id, with a warning for each. See [step tracking](#step-tracking). |
 | `basis.message-store.payload.mode` | `postgres-inline`, `metadata-only` | `postgres-inline` | Selects whether safely capturable payloads are stored inline for replay. |
 | `basis.message-store.status-topic` | Kafka topic name | `bip.message.status` | Used only when `basis.message-store.sink=kafka`. |
 | `basis.message-store.dlq-uri` | Camel endpoint URI | `kafka:bip.message.dlq` | Target used by the shared dead letter channel. |

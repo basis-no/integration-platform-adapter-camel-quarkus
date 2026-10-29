@@ -17,28 +17,47 @@ import org.apache.camel.processor.SendProcessor;
 import org.apache.camel.spi.InterceptStrategy;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
 import org.apache.camel.util.URISupport;
+import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 @ApplicationScoped
 public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private static final Logger LOG = LoggerFactory.getLogger(StepTrackingInterceptStrategy.class);
+    /** Emergency escape hatch: start with generated step ids, logging a warning for each. */
+    public static final String EMERGENCY_ALLOW_GENERATED_STEP_IDS = "basis.message-store.step-ids.emergency-allow-generated";
+
     private final StepTracker stepTracker;
     private final TrafficSignals trafficSignals;
+    private final boolean allowGeneratedStepIds;
 
     public StepTrackingInterceptStrategy(StepTracker stepTracker) {
         this(stepTracker, null);
     }
 
     /**
-     * Creates tracking with optional existing-registry activity export.
+     * Creates tracking with optional existing-registry activity export. Programmatic
+     * construction warns about generated step ids; the CDI runtime refuses them.
      * @param stepTracker durable step tracker
      * @param trafficSignals optional activity signal exporter
      */
-    @Inject
     public StepTrackingInterceptStrategy(StepTracker stepTracker, TrafficSignals trafficSignals) {
+        this(stepTracker, trafficSignals, true);
+    }
+
+    /**
+     * Creates tracking.
+     * @param stepTracker durable step tracker
+     * @param trafficSignals optional activity signal exporter
+     * @param allowGeneratedStepIds {@code true} only as an emergency: a tracked send without
+     *        an explicit id then logs a warning instead of failing route creation
+     */
+    @Inject
+    public StepTrackingInterceptStrategy(StepTracker stepTracker, TrafficSignals trafficSignals,
+            @ConfigProperty(name = EMERGENCY_ALLOW_GENERATED_STEP_IDS, defaultValue = "false") boolean allowGeneratedStepIds) {
         this.stepTracker = stepTracker;
         this.trafficSignals = trafficSignals;
+        this.allowGeneratedStepIds = allowGeneratedStepIds;
     }
 
     @Override
@@ -59,7 +78,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return target;
         }
 
-        warnOnGeneratedStepId(definition, endpointSend);
+        checkStepId(definition, endpointSend);
         if (trafficSignals != null) {
             if (target instanceof SendProcessor send) trafficSignals.observeProducerEndpoint(send.getEndpoint());
             else if (target instanceof SendDynamicProcessor send) trafficSignals.observeDynamicEndpoint(send.getUri());
@@ -72,8 +91,9 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
      * The step id is the node id. A generated one such as {@code to1} changes when the
      * route is edited and is the same in other integrations, so another integration's
      * delivered step with the same message id makes this send look already delivered.
+     * Route creation fails unless the emergency flag allows it with a warning.
      */
-    private void warnOnGeneratedStepId(NamedNode definition, EndpointSend endpointSend) {
+    private void checkStepId(NamedNode definition, EndpointSend endpointSend) {
         if (!(definition instanceof ProcessorDefinition<?> processor) || processor.hasCustomIdAssigned()
                 || DefaultStepTracker.isInternal(endpointSend.endpointUri())) {
             return;
@@ -84,10 +104,17 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 routeId = route.getId();
             }
         }
+        String endpoint = URISupport.sanitizeUri(endpointSend.endpointUri());
+        if (!allowGeneratedStepIds) {
+            throw new IllegalStateException("Tracked send to " + endpoint + " in route " + routeId
+                    + " has no explicit id; its step id would be the generated " + endpointSend.nodeId()
+                    + ". Give the send an explicit id. Only in an emergency, set "
+                    + EMERGENCY_ALLOW_GENERATED_STEP_IDS + "=true to start with a warning instead");
+        }
         LOG.warn("Tracked send to {} in route {} has no explicit id; its step id {} is generated, changes when the "
                         + "route is edited and can match another integration's step for the same message id. "
-                        + "Give the send an explicit id",
-                URISupport.sanitizeUri(endpointSend.endpointUri()), routeId, endpointSend.nodeId());
+                        + "Give the send an explicit id ({}=true is set)",
+                endpoint, routeId, endpointSend.nodeId(), EMERGENCY_ALLOW_GENERATED_STEP_IDS);
     }
 
     private EndpointSend endpointSend(NamedNode definition, Processor target) {
