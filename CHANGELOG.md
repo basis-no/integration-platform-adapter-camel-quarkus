@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Parity with adapter 0.3.6: an endpoint send without an explicit id fails
+  startup (emergency flag `basis.message-store.step-ids.emergency-allow-generated`);
+  Kafka poll failures reconnect; a UTF-8 Kafka correlation id stays text under
+  both camel-kafka header names; credentials are masked in journaled step
+  endpoints and in DLQ header values; a late older attempt cannot replace the
+  newer summary; a route that drops headers is still recorded under the input's
+  identity and attempt; a parked failure keeps the input's message id; skipped
+  steps are logged at INFO and the logging sink counts step outcomes.
 - A replay resets an inline payload's expiry, capped at first receipt plus twice
   the retention, instead of keeping the first expiry. First receipt is the
   earliest outcome this integration recorded for the message. Object payloads

@@ -30,6 +30,14 @@ method is explicit. Other HTTP operations, multi-operation components such as
 S3, and unknown schemes remain ambiguous because their URI alone does not prove
 whether they read or write.
 
+Every endpoint send that is not an internal Camel endpoint must have an explicit
+id: the application fails to start otherwise. A generated id such as `to1`
+changes when a route is edited, repeats across integrations, and cannot be
+named in the classification lists. Renaming a generated id changes that step's
+key, so replaying or redoing a message recorded before the change repeats the
+send once. `basis.message-store.step-ids.emergency-allow-generated=true` is an
+emergency escape hatch that starts the application with a warning per send.
+
 ## Explicit Classification
 
 Use stable node ids and classify exact ids when automatic classification is
