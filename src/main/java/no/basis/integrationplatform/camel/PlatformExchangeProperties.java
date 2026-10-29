@@ -3,6 +3,8 @@ package no.basis.integrationplatform.camel;
 /** Internal Camel exchange-property names shared by adapter policies and interceptors. */
 public final class PlatformExchangeProperties {
     /** Collected per-attempt durable step outcomes. */
+    /** The consumed input's message id, captured when a recorded exchange begins. */
+    public static final String INPUT_MESSAGE_ID = "basis.messageStore.inputMessageId";
     public static final String STEPS = "basis.messageStore.steps";
     /** Current intercepted stable step id. */
     public static final String CURRENT_STEP_ID = "basis.messageStore.currentStepId";

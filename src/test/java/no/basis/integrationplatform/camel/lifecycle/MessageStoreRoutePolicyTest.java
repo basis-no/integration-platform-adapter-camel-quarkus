@@ -60,6 +60,41 @@ class MessageStoreRoutePolicyTest {
         org.junit.jupiter.api.Assertions.assertSame(correlation, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
     }
 
+    /** A route that drops the platform headers still records the input's identity, attempt and envelope. */
+    @Test
+    void routeThatDropsHeadersStillRecordsTheInputIdentityAndAttempt() throws Exception {
+        RecordingSink sink = new RecordingSink();
+        var rows = new java.util.ArrayList<MessageAttemptResult>();
+        try (var context = new DefaultCamelContext()) {
+            context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
+                public void configure() {
+                    from("direct:input").routeId("input")
+                            .routePolicy(new MessageStoreRoutePolicy(result -> { sink.record(result); rows.add(result); }, "adapter-test"))
+                            .removeHeaders("*");
+                }
+            });
+            context.start();
+            for (Integer attempt : new Integer[]{null, 2}) {
+                context.createProducerTemplate().send("direct:input", e -> {
+                    e.getMessage().setHeader("CamelKafkaTopic", "synthetic-input");
+                    e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+                    e.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, "order-123");
+                    e.getMessage().setHeader(PlatformHeaders.CONTENT_TYPE, "application/xml");
+                    e.getMessage().setHeader(PlatformHeaders.SOURCE_SYSTEM, "pos");
+                    e.getMessage().setHeader(PlatformHeaders.TARGET_SYSTEM, "sap");
+                    if (attempt != null) e.getMessage().setHeader(PlatformHeaders.ATTEMPT, attempt);
+                    e.getMessage().setBody("{}");
+                });
+            }
+        }
+        assertEquals(List.of("message-123", "message-123"), rows.stream().map(MessageAttemptResult::messageId).toList());
+        assertEquals(List.of(1, 2), rows.stream().map(MessageAttemptResult::attempt).toList());
+        assertEquals("order-123", rows.getLast().correlationId());
+        assertEquals("application/xml", rows.getLast().contentType());
+        assertEquals("pos", rows.getLast().sourceSystem());
+        assertEquals("sap", rows.getLast().targetSystem());
+    }
+
     @Test
     void recordsCompletedResultBeforeKafkaCommit() {
         // Given a completed Kafka exchange with collected step results and a manual commit handle.
