@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
@@ -95,6 +96,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
         ensureMessageId(exchange);
+        normalizeKafkaCorrelationHeader(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             captureKafkaManualCommit(exchange);
         }
@@ -382,6 +384,15 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             return text.getBytes(StandardCharsets.UTF_8);
         }
         return null;
+    }
+
+    // Kafka exposes header values as bytes; receivers and the journal need the owned text.
+    // UTF-8 is the contract's envelope encoding, independent of the payload charset.
+    private void normalizeKafkaCorrelationHeader(Exchange exchange) {
+        if (KafkaRecordHeaders.topic(exchange.getMessage()) != null
+                && exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID) instanceof byte[] bytes) {
+            exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, new String(bytes, StandardCharsets.UTF_8));
+        }
     }
 
     private String ensureMessageId(Exchange exchange) {

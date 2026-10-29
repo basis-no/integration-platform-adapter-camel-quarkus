@@ -32,6 +32,34 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MessageStoreRoutePolicyTest {
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"kafka.TOPIC", "CamelKafkaTopic"})
+    void decodesKafkaCorrelationBytesAsUtf8UnderEitherCamelTopicHeaderName(String topicHeader) {
+        // camel-kafka 4.18.0 sets kafka.TOPIC; later 4.18.x releases set CamelKafkaTopic.
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.setProperty(Exchange.CHARSET_NAME, "ISO-8859-1");
+        exchange.getMessage().setHeader(topicHeader, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, "order-ø-€".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        exchange.getMessage().setBody("{}");
+        policy.onExchangeBegin(route("order-pipeline"), exchange);
+        assertEquals("order-ø-€", exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
+        policy.onExchangeDone(route("order-pipeline"), exchange);
+        assertEquals("order-ø-€", sink.result.correlationId());
+    }
+
+    @Test
+    void leavesCorrelationBytesOfNonKafkaExchangesUntouched() {
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(new RecordingSink(), "adapter-test");
+        Exchange exchange = exchange();
+        byte[] correlation = "order-1".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, correlation);
+        exchange.getMessage().setBody("{}");
+        policy.onExchangeBegin(route("order-pipeline"), exchange);
+        org.junit.jupiter.api.Assertions.assertSame(correlation, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
+    }
+
     @Test
     void recordsCompletedResultBeforeKafkaCommit() {
         // Given a completed Kafka exchange with collected step results and a manual commit handle.
