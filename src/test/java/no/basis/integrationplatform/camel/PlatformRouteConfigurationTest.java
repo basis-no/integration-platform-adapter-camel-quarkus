@@ -105,6 +105,26 @@ class PlatformRouteConfigurationTest {
     }
 
     @Test
+    void dlqParkingRestoresTheInputMessageIdAfterAFailedSendUnderAnotherId() {
+        Exchange exchange = exchange();
+        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, "input-message");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "derived-downstream-id");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("broker unavailable"));
+
+        configuration.markDlqParked(exchange);
+
+        assertEquals("input-message", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+    }
+
+    @Test
+    void dlqParkingWithoutACapturedInputKeepsTheMessageId() {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        configuration.markDlqParked(exchange);
+        assertEquals("message-123", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+    }
+
+    @Test
     void dlqParkingPrefersExchangeExceptionAndFallsBackToClassName() {
         Exchange exchange = exchange();
         exchange.setException(new IllegalStateException((String) null));
