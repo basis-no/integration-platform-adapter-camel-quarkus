@@ -250,6 +250,11 @@ public class DefaultStepTracker implements StepTracker {
         String stepId = currentStepId(exchange);
         if (stepId != null) {
             steps(exchange).add(StepResult.skipped(stepId, currentIdempotencyKey(exchange), currentEndpointUri(exchange)));
+            // A replayed message otherwise looks delivered in the logs although nothing was sent.
+            LOG.info("Step {} SKIPPED for message {}: an earlier attempt recorded it as delivered, so the send to {} "
+                            + "was not repeated in this attempt; list the step in {} to repeat it",
+                    stepId, exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID),
+                    currentEndpointUri(exchange), PlatformHeaders.REDO_STEPS);
         }
     }
 

@@ -451,6 +451,22 @@ class DefaultStepTrackerTest {
         }
     }
 
+    @Test
+    void skippedStepIsLoggedAtInfoWithoutClaimingDelivery() {
+        stepOutcomeStore.alreadyDelivered.add("message-skipped:send-file");
+        Exchange skipped = exchange("sftp://transfer:s3cr3t@files.example.com/outbound", "send-file");
+        skipped.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-skipped");
+        try (var logs = no.basis.integrationplatform.camel.LogCapture.of(DefaultStepTracker.class)) {
+            tracker.beforeSend(skipped);
+            tracker.recordSkipped(skipped);
+            var info = logs.at(java.util.logging.Level.INFO);
+            assertEquals(1, info.size());
+            String text = no.basis.integrationplatform.camel.LogCapture.text(info.getFirst());
+            assertTrue(text.startsWith("Step send-file SKIPPED for message message-skipped:"), text);
+            assertFalse(text.contains("s3cr3t"), text);
+        }
+    }
+
     private Exchange exchange(String endpointUri, String nodeId) {
         Exchange exchange = new DefaultExchange(new DefaultCamelContext());
         exchange.setProperty(Exchange.INTERCEPTED_ENDPOINT, endpointUri);
