@@ -64,6 +64,7 @@ without a replay, it marks this case.
   removes replay protection for every step, so a replay repeats delivered side
   effects.
 
-Changing the adapter's step identity is not part of 0.3.x. Existing
+0.4 gives each part and iteration its own step key; 0.3.6 is the last 0.3
+release. Changing the adapter's step identity is not part of 0.3.x. Existing
 `bip_step_outcome` keys would no longer match, and replays of earlier messages
 would repeat their sends.

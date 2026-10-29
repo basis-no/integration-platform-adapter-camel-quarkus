@@ -6,7 +6,8 @@ Maintenance release on the 0.3 line. The Kafka recovery baseline remains Message
 Store contract `v1.0.0-rc2`. No Message Store schema migration is required. The
 optional Key-Value Store uses the platform-provisioned `bip_key_value` table
 only when an application uses it. Tested with Quarkus 3.32.2 (Camel 4.18.0) and
-Quarkus 3.33.4 (Camel 4.18.4).
+Quarkus 3.33.4 (Camel 4.18.4). This is the last 0.3 release; later changes come
+with 0.4.
 
 ### Fixed
 
@@ -80,7 +81,8 @@ Quarkus 3.33.4 (Camel 4.18.4).
   the rest are skipped, also in the first attempt. Without `stopOnException()`,
   each failed part is parked separately while the input records `COMPLETED`. See
   the [split step identity advisory](docs/split-step-identity.md). This applies
-  to every 0.3.x release.
+  to every 0.3.x release. Fixed in 0.4, which gives each part and iteration its
+  own step key.
 - The Message Store is keyed by message id alone. A Kafka input adopts an
   incoming `x-bip-message-id`, and Camel's Kafka producer forwards it by default.
   When a message id reaches a second integration on the same Message Store, the
@@ -95,7 +97,8 @@ Quarkus 3.33.4 (Camel 4.18.4).
   already journaled. With the platform's message recovery SQL, or row-level
   isolation between integrations, that warning does not appear: the signal is
   the refused write itself (`RECOVERY_SCOPE_MISMATCH` or a row-level security
-  error) in the second integration's log.
+  error) in the second integration's log. Fixed in 0.4, where each integration
+  derives its own message id by default.
 - An invalid Kafka authentication stops the consumer for good while the process
   keeps running. A receiver can apply an effect and lose its response, so retries
   can repeat it; receivers must deduplicate on the stable `Idempotency-Key`.
@@ -107,6 +110,10 @@ Quarkus 3.33.4 (Camel 4.18.4).
 
 ### Upgrade notes
 
+- **Security: rotate credentials that may be in DLQ records.** Version 0.3.5 and
+  earlier wrote the values of request credential headers, such as
+  `Authorization` and API keys, in clear text to DLQ records. Rotate credentials
+  that may be in existing DLQ topics, and restrict who can read DLQ topics.
 - **Every tracked external send needs an explicit id.** An application whose
   routes contain a `to` or `toD` to an external endpoint without an `id` no
   longer starts; the error names the route and the endpoint. Generated ids such
