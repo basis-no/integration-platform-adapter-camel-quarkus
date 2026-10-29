@@ -417,11 +417,59 @@ wire taps and the adapter's own dead letter route are not checked.
 escape hatch only: the application then starts and logs a warning for each such
 send. Use it to restore service while the ids are added, not as a setting.
 
-Renaming a generated id, for example `to1` to `send-to-sap`, changes that step's
-key. Replaying or redoing a message recorded before the change repeats that send
-once. The startup check covers the routes as Camel builds them; the platform's
+The startup check covers the routes as Camel builds them; the platform's
 pre-build check reads the source and misses endpoints whose URIs are built
 elsewhere, such as placeholders and constants.
+
+### Upgrading from generated step ids
+
+Keep each send's current key: give it the id Camel generates for it today, for
+example `.to("sftp:...").id("to1")` or `id: to1` in YAML. The step key stays
+`<message-id>:to1`, and so does the receiver's `Idempotency-Key`. Messages
+recorded before the upgrade are then skipped on replay, and a redo repeats them
+under the same key. The startup check accepts any explicit id, including one
+that looks generated.
+
+Renaming a generated id, for example `to1` to `send-to-sap`, changes that step's
+key: replaying, redoing or resending a message recorded before the change sends
+it once more. Rename only once no message recorded under the old id will be
+processed again, for example after the message retention period. A kept `to1`
+is still the same id other integrations generate, so the advice on separate
+message ids above still applies.
+
+Generated numbers count per node kind (`to`, `toD`, ...) across every route in
+the application, in the order Camel builds them. They include the adapter's dead
+letter route, which holds one `toD`. Counting in the source is therefore only a
+guess. Confirm the ids before the upgrade:
+
+- With 0.3.6 in a development or test environment, start the unchanged
+  application once with `basis.message-store.step-ids.emergency-allow-generated=true`.
+  Each tracked send without an id is logged as a warning with its route,
+  endpoint and generated step id. The adapter's routes did not change from
+  0.3.5, so the ids are the same as on 0.3.5.
+- On 0.3.5, add `camel-quarkus-yaml-io` and set `camel.main.dump-routes=yaml`,
+  `camel.main.dump-routes-generated-ids=true` and
+  `camel.main.dump-routes-resolve-placeholders=false`. The routes are logged at
+  startup with their node ids. Without the last setting the dump can contain
+  resolved credentials.
+- In the Message Store, list the step ids an integration has recorded. Older
+  rows can contain endpoint credentials; this query masks the common forms:
+
+  ```sql
+  select o.step_id,
+         regexp_replace(regexp_replace(o.endpoint_uri, '//[^/@]*@', '//xxxxxx@'),
+           '(?i)((password|passphrase|secret[a-z_]*|[a-z_]*token|authpassword)=)[^&]*',
+           '\1xxxxxx', 'g') as endpoint,
+         count(*) as steps, max(o.occurred_at) as last_occurred_at
+  from bip_step_outcome o
+  where o.message_id in (select a.message_id from bip_message_attempt a
+                         where a.integration = 'order-pipeline')
+  group by o.step_id, 2
+  order by o.step_id, last_occurred_at desc;
+  ```
+
+  A step id listed with two endpoints changed meaning when the route was edited;
+  the latest rows show the current one.
 
 Prefer a new `x-bip-message-id` per integration and carry continuity in
 `x-bip-correlation-id`. Explicit ids must still be unique across the

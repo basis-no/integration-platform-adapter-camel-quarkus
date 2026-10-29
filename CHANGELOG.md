@@ -119,9 +119,17 @@ with 0.4.
   longer starts; the error names the route and the endpoint. Generated ids such
   as `to1` change when a route is edited and repeat across integrations, which
   can make one integration skip another's send. Add explicit ids before
-  upgrading. Renaming a generated id, for example `to1` to `send-to-sap`, changes
-  that step's key: replaying or redoing a message recorded before the change
-  repeats that send once. The startup check covers the routes as Camel builds
+  upgrading. To keep each send's key, use its current generated id as the
+  explicit id, for example `.id("to1")`; replays of earlier messages are then
+  still skipped. Generated numbers count across all routes, including the
+  adapter's dead letter route, so confirm them first: start the unchanged
+  application on 0.3.6 in a test environment with the emergency setting below,
+  which logs each send's generated id, and compare with the step ids recorded
+  in `bip_step_outcome`. The README's step tracking section has the query.
+  Renaming a generated id, for example `to1` to `send-to-sap`, changes that
+  step's key: replaying, redoing or resending a message recorded before the
+  change sends it once more. Rename only once no such message will be processed
+  again. The startup check covers the routes as Camel builds
   them; the platform's pre-build check reads the source and misses endpoints
   whose URIs are built elsewhere, such as placeholders and constants. Only in an
   emergency, `basis.message-store.step-ids.emergency-allow-generated=true` starts
