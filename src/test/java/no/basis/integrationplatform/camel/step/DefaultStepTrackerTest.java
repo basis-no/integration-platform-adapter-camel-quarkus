@@ -414,6 +414,43 @@ class DefaultStepTrackerTest {
         assertNull(exchange.getMessage().getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
     }
 
+    @Test
+    void journalsEndpointsWithoutCredentialsAndKeepsStepIdentity() {
+        String endpoint = "sftp://transfer:s3cr3t@files.example.com:22/outbound?username=transfer&password=s3cr3t";
+        Exchange delivered = exchange(endpoint, "send-file");
+        delivered.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        tracker.beforeSend(delivered);
+        tracker.recordDelivered(delivered);
+
+        stepOutcomeStore.alreadyDelivered.add("message-456:send-file");
+        Exchange skipped = exchange(endpoint, "send-file");
+        skipped.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-456");
+        tracker.beforeSend(skipped);
+        tracker.recordSkipped(skipped);
+
+        assertEquals("message-123:send-file", stepOutcomeStore.delivered.getFirst().idempotencyKey());
+        assertFalse(stepOutcomeStore.delivered.getFirst().endpointUri().contains("s3cr3t"));
+        assertTrue(stepOutcomeStore.delivered.getFirst().endpointUri().contains("files.example.com:22/outbound"));
+        assertFalse(steps(skipped).getFirst().endpointUri().contains("s3cr3t"));
+    }
+
+    @Test
+    void fallbackStepIdWarningMasksTheEndpointWithoutChangingTheId() throws Exception {
+        String endpoint = "sftp://transfer:s3cr3t@files.example.com/outbound?password=s3cr3t";
+        try (var logs = no.basis.integrationplatform.camel.LogCapture.of(DefaultStepTracker.class)) {
+            Exchange exchange = exchange(endpoint, null);
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+            tracker.beforeSend(exchange);
+            String digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(endpoint.getBytes(java.nio.charset.StandardCharsets.UTF_8)), 0, 6);
+            assertEquals("message-123:unknown-route:sftp:" + digest, exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+            String text = logs.records().stream().map(no.basis.integrationplatform.camel.LogCapture::text)
+                    .reduce("", (a, b) -> a + "\n" + b);
+            assertTrue(text.contains("no stable Camel node id"), text);
+            assertFalse(text.contains("s3cr3t"), text);
+        }
+    }
+
     private Exchange exchange(String endpointUri, String nodeId) {
         Exchange exchange = new DefaultExchange(new DefaultCamelContext());
         exchange.setProperty(Exchange.INTERCEPTED_ENDPOINT, endpointUri);
