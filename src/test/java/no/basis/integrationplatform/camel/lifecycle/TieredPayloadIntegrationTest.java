@@ -166,7 +166,7 @@ class TieredPayloadIntegrationTest {
     }
 
     @Test
-    void preservesInlinePayloadExpiryAcrossReplay() throws Exception {
+    void replayResetsInlinePayloadExpiryWithinTheCap() throws Exception {
         byte[] payload = "inline-payload".getBytes(StandardCharsets.UTF_8);
         PostgresMessageStoreSink sink = new PostgresMessageStoreSink(dataSource);
         MessageStoreRoutePolicy policy = policy(sink, "inline-payload-validation");
@@ -198,8 +198,11 @@ class TieredPayloadIntegrationTest {
             policy.onExchangeDone(route(), replayed);
         }
 
-        assertEquals(originalExpiry, value(INLINE_MESSAGE_ID, "payload_expires_at::text"));
-        assertEquals(originalExpiry, attemptValue(INLINE_MESSAGE_ID, 2, "payload_expires_at::text"));
+        // The replay captured the payload again: its expiry is reset, still within first receipt + 2x retention.
+        String replayedExpiry = attemptValue(INLINE_MESSAGE_ID, 2, "payload_expires_at::text");
+        assertEquals(replayedExpiry, value(INLINE_MESSAGE_ID, "payload_expires_at::text"));
+        assertEquals("true", attemptValue(INLINE_MESSAGE_ID, 2, "(payload_expires_at > (select first.payload_expires_at"
+                + " from bip_message_attempt first where first.message_id = '" + INLINE_MESSAGE_ID + "' and first.attempt = 1))::text"));
         assertEquals(originalSha256, attemptValue(INLINE_MESSAGE_ID, 2, "payload_sha256"));
     }
 
