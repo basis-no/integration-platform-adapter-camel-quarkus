@@ -103,6 +103,38 @@ class PostgresMessageStoreSinkTest {
         assertEquals("COMPLETED", singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 2"));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = MessageStatus.class, names = {"COMPLETED", "FAILED", "DLQ"})
+    void lateOlderAttemptKeepsTheNewerSummaryButRecordsItsHistory(MessageStatus latestStatus) {
+        MessageStatus olderStatus = latestStatus == MessageStatus.COMPLETED ? MessageStatus.FAILED : MessageStatus.COMPLETED;
+        sink.record(result(latestStatus, 2, "newer outcome"));
+        String before = singleValue("select row_to_json(m)::text from bip_message_log m where message_id = 'message-123'");
+
+        sink.record(result(olderStatus, 1, "late older outcome"));
+
+        assertEquals(before, singleValue("select row_to_json(m)::text from bip_message_log m where message_id = 'message-123'"));
+        assertEquals(olderStatus.name(), singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 1"));
+    }
+
+    @Test
+    void reconsumedOriginalInputAfterReplayKeepsTheReplayedLatestAttempt() {
+        sink.record(result(MessageStatus.FAILED, 1, "vendor unavailable"));
+        sink.record(result(MessageStatus.COMPLETED, 2, null));
+        sink.record(result(MessageStatus.COMPLETED, 1, null));
+
+        assertEquals("2", singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
+        assertEquals("COMPLETED", singleValue("select status from bip_message_log where message_id = 'message-123'"));
+    }
+
+    @Test
+    void lateOlderInlineAttemptKeepsItsOwnExpiry() {
+        var capped = new PostgresMessageStoreSink(dataSource, RETENTION);
+        capped.record(received(2, "postgres_inline", java.time.Duration.ofDays(1)));
+        capped.record(received(1, "postgres_inline", java.time.Duration.ZERO));
+        assertEquals(epoch(java.time.Duration.ofDays(31)), expiry("bip_message_log", ""));
+        assertEquals(epoch(java.time.Duration.ofDays(30)), expiry("bip_message_attempt", " and attempt = 1"));
+    }
+
     // Retention 30 days: a replay resets an inline expiry, at most to first receipt + 60 days.
     private static final java.time.Duration RETENTION = java.time.Duration.ofDays(30);
     private static final Instant T0 = Instant.parse("2026-06-14T12:00:00Z");
