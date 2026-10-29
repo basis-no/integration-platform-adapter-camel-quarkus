@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Validate explicit action and exact inputs
@@ -76,10 +76,10 @@ jobs:
     env:
       MAVEN_OPTS: -Xmx512m -XX:ActiveProcessorCount=2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.source_commit }}
           path: candidate
@@ -91,7 +91,7 @@ jobs:
           --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate
       - name: Validate candidate notes before unsigned build
         run: python3 .github/scripts/release-notes.py --tag "v$VERSION" --pom candidate/pom.xml --changelog candidate/CHANGELOG.md --output candidate-notes.md
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
         with:
           distribution: temurin
           java-version: '21'
@@ -110,7 +110,7 @@ jobs:
           python3 .github/scripts/release-candidate.py unsigned --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate --output evidence --workflow-run "$GITHUB_RUN_ID"
       - name: Retain unsigned candidate bytes and identity even after validation failure
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: unsigned-central-candidate-${{ inputs.version }}
           path: evidence/
@@ -118,7 +118,7 @@ jobs:
           retention-days: 90
       - name: Retain build diagnostics on failure or success
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: central-inspection-log-${{ github.run_id }}
           path: candidate-build.log

@@ -1,0 +1,337 @@
+name: Release from a protected tag (unsigned build, attest, sign and upload, publish)
+
+# Public-repository release path. Only a vX.Y.Z tag starts it; a tag ruleset
+# limits who can create one. Trust boundaries, one per job:
+# - build runs all project code with a read-only token, no secrets and no OIDC.
+# - attest runs no project code. It records checksums and is the only job with
+#   an OIDC token, used for GitHub build provenance.
+# - sign-upload runs in environment `release` (required reviewers). It checks out
+#   only the release tools at the admin-pinned TRUSTED_TOOLING_SHA, treats the
+#   candidate as data, signs with the signing subkey and uploads USER_MANAGED.
+# - publish runs in environment `release-publish` (second approval) and
+#   publishes the same validated deployment by its saved ID.
+# Public readback and the GitHub Release stay in release-page.yml.
+# See docs/releasing.md and docs/release-packaging.md.
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
+
+permissions: {}
+
+concurrency:
+  group: release-${{ github.ref_name }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  TAG: ${{ github.ref_name }}
+  SIGNER: ${{ vars.RELEASE_SIGNER_FINGERPRINT }}
+  # Release commits and release tools must be reachable from one of these.
+  REVIEWED_BRANCHES: main release/0.3
+
+jobs:
+  build:
+    if: github.server_url == 'https://github.com' && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    env:
+      MAVEN_OPTS: -Xmx512m -XX:ActiveProcessorCount=2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check tag, reviewed branch and clean snapshot source
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          version="$(.github/scripts/release-version-from-tag.sh "$TAG")"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          python3 -I .github/scripts/release-candidate.py source --tagged --version "$version" --commit "$GITHUB_SHA" --signer "$SIGNER" --path .
+          for branch in $REVIEWED_BRANCHES; do
+            if git merge-base --is-ancestor "$GITHUB_SHA" "refs/remotes/origin/$branch"; then exit 0; fi
+          done
+          echo "Tag $TAG is not on a reviewed branch ($REVIEWED_BRANCHES)." >&2
+          exit 1
+      - name: Validate release notes before the unsigned build
+        run: python3 -I candidate/.github/scripts/release-notes.py --tag "$TAG" --pom candidate/pom.xml --changelog candidate/CHANGELOG.md --output candidate-notes.md
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build unsigned candidate with no credentials
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          ./mvnw --batch-mode --no-transfer-progress versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+          ./mvnw --batch-mode --no-transfer-progress -Prelease -Dgpg.skip=true clean verify -DforkCount=1 -DreuseForks=true -DargLine='-Xmx256m -XX:ActiveProcessorCount=2' | tee ../candidate-build.log
+          ./mvnw --batch-mode --no-transfer-progress -Prelease help:effective-pom -Doutput=../candidate-effective-pom.xml
+      - name: Collect unsigned payloads and source provenance
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          python3 -I candidate/.github/scripts/release-candidate.py provenance --version "$VERSION" --commit "$GITHUB_SHA" --signer "$SIGNER" --path candidate --workflow-head "$GITHUB_SHA" --effective-pom candidate-effective-pom.xml --output evidence/provenance.json
+          cp candidate-effective-pom.xml evidence/effective-pom.xml
+          cp candidate-notes.md evidence/release-notes.md
+          python3 -I candidate/.github/scripts/release-candidate.py unsigned --version "$VERSION" --commit "$GITHUB_SHA" --signer "$SIGNER" --path candidate --output evidence --workflow-run "$GITHUB_RUN_ID"
+      - name: Retain unsigned candidate
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-central-candidate-${{ env.VERSION }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain build log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-build-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate-build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+    steps:
+      - name: Derive version from the tag
+        run: |
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          echo "VERSION=${BASH_REMATCH[1]}" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-central-candidate-${{ env.VERSION }}
+          path: candidate
+      - name: Record candidate checksums (data only, no checkout)
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          if [ -n "$(find . ! -type f ! -type d)" ]; then echo "Links or special files in candidate." >&2; exit 1; fi
+          find . -type f -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum -- > "$RUNNER_TEMP/candidate.sha256"
+          test "$(wc -l < "$RUNNER_TEMP/candidate.sha256")" -eq 8
+          mv "$RUNNER_TEMP/candidate.sha256" "$GITHUB_WORKSPACE/candidate.sha256"
+          { echo '```'; cat "$GITHUB_WORKSPACE/candidate.sha256"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: candidate.sha256
+      - name: Retain recorded checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-checksums-${{ env.VERSION }}
+          path: candidate.sha256
+          if-no-files-found: error
+          retention-days: 90
+
+  sign-upload:
+    needs: attest
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TOOLING: ${{ vars.TRUSTED_TOOLING_SHA }}
+    steps:
+      - name: Check inputs, environment protection, tag and reviewed commits
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          version="${BASH_REMATCH[1]}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          [[ "$SIGNER" =~ ^[A-F0-9]{40}$ ]] || { echo "RELEASE_SIGNER_FINGERPRINT is not a full fingerprint." >&2; exit 1; }
+          [[ "$TOOLING" =~ ^[a-f0-9]{40}$ ]] || { echo "TRUSTED_TOOLING_SHA is not a full commit SHA." >&2; exit 1; }
+          repo="repos/$GITHUB_REPOSITORY"
+          # Fail closed if the environment lost its reviewers or tag-only rule.
+          gh api "$repo/environments/release" | jq -e '
+            .can_admins_bypass == false
+            and .deployment_branch_policy.custom_branch_policies == true
+            and ([.protection_rules[] | select(.type == "required_reviewers")
+                  | select(.prevent_self_review == true and (.reviewers | length) >= 2)] | length) == 1' > /dev/null \
+            || { echo "Environment release is not protected as required." >&2; exit 1; }
+          gh api "$repo/environments/release/deployment-branch-policies" | jq -e '
+            .total_count >= 1 and all(.branch_policies[]; .type == "tag")' > /dev/null \
+            || { echo "Environment release must allow release tags only." >&2; exit 1; }
+          tag_object="$(gh api "$repo/git/ref/tags/$TAG" --jq '.object.type + " " + .object.sha')"
+          if [ "${tag_object% *}" = tag ]; then tag_object="$(gh api "$repo/git/tags/${tag_object#* }" --jq '.object.type + " " + .object.sha')"; fi
+          test "$tag_object" = "commit $GITHUB_SHA" || { echo "Tag $TAG no longer points at $GITHUB_SHA." >&2; exit 1; }
+          reviewed() {
+            for branch in $REVIEWED_BRANCHES; do
+              status="$(gh api "$repo/compare/$1...$branch" --jq .status)" || continue
+              case "$status" in ahead|identical) return 0 ;; esac
+            done
+            return 1
+          }
+          reviewed "$GITHUB_SHA" || { echo "Release commit is not on a reviewed branch." >&2; exit 1; }
+          reviewed "$TOOLING" || { echo "TRUSTED_TOOLING_SHA is not on a reviewed branch." >&2; exit 1; }
+          # A portal write is never repeated by a re-run; resume from the saved state instead.
+          count="$(gh api "$repo/actions/runs/$GITHUB_RUN_ID/artifacts?name=central-deployment-$version" --jq .total_count)"
+          test "$count" = 0 || { echo "This run already has deployment state; resume it, never upload again." >&2; exit 1; }
+      - name: Check out only the release tools at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ vars.TRUSTED_TOOLING_SHA }}
+          path: tooling
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-central-candidate-${{ env.VERSION }}
+          path: candidate
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-checksums-${{ env.VERSION }}
+          path: checksums
+      - name: Verify candidate bytes and build provenance (data only)
+        run: |
+          set -euo pipefail
+          test "$(git -C tooling rev-parse HEAD)" = "$TOOLING"
+          (cd candidate && sha256sum -c --strict --quiet ../checksums/candidate.sha256)
+          test "$(find candidate -type f | wc -l)" -eq "$(wc -l < checksums/candidate.sha256)"
+          python3 -I tooling/.github/scripts/sign-candidate.py verify --candidate candidate --version "$VERSION" --source-commit "$GITHUB_SHA" --candidate-run "$GITHUB_RUN_ID"
+          while read -r _ name; do
+            gh attestation verify "candidate/$name" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/release.yml" \
+              --signer-digest "$GITHUB_SHA" --source-ref "$GITHUB_REF" --source-digest "$GITHUB_SHA" \
+              --deny-self-hosted-runners > /dev/null
+          done < checksums/candidate.sha256
+      - name: Sign with the signing subkey in a throwaway keyring
+        env:
+          SIGNING_SUBKEY: ${{ secrets.RELEASE_SIGNING_SUBKEY }}
+          PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
+        run: |
+          set -euo pipefail
+          GNUPGHOME="$(mktemp -d -p /dev/shm release-signing-XXXXXX)"
+          export GNUPGHOME
+          trap 'gpgconf --kill all || true; rm -rf -- "$GNUPGHOME"' EXIT
+          test -n "$SIGNING_SUBKEY"
+          test -n "$PUBLIC_KEY"
+          test "$(printf '%s\n' "$PUBLIC_KEY" | gpg --no-options --batch --with-colons --import-options show-only --import | awk -F: '$1 == "fpr" { print $10; exit }')" = "$SIGNER"
+          printf '%s\n' "$SIGNING_SUBKEY" | gpg --no-options --batch --quiet --import
+          # Exactly one primary, the expected one, present only as a stub: the
+          # primary (certify) key never enters CI, only its signing subkey.
+          gpg --no-options --batch --with-colons --list-secret-keys > "$RUNNER_TEMP/secret-keys"
+          awk -F: -v signer="$SIGNER" '
+            $1 == "sec" { primaries++; stub = ($15 == "#") }
+            $1 == "fpr" && previous == "sec" { primary = $10 }
+            $1 == "ssb" && $12 ~ /s/ && $15 != "#" { signing++ }
+            { previous = $1 }
+            END { exit !(primaries == 1 && stub && primary == signer && signing >= 1) }' "$RUNNER_TEMP/secret-keys" \
+            || { echo "Signing secret must hold only the signing subkey of the expected key." >&2; exit 1; }
+          python3 -I tooling/.github/scripts/sign-candidate.py sign --candidate candidate --version "$VERSION" --source-commit "$GITHUB_SHA" --candidate-run "$GITHUB_RUN_ID" --signer "$SIGNER" --output signed > /dev/null
+          jq -e --arg tooling "$TOOLING" '.tool_checkout == {"commit": $tooling, "clean": true}' signed/signing.json > /dev/null
+          jq '{coordinate, bundle_sha256, entries_sha256, signer_fingerprint, tool_checkout}' signed/signing.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Record upload intent before any network request
+        run: |
+          set -euo pipefail
+          mkdir state
+          python3 -I tooling/.github/scripts/central-recovery.py --bundle signed/candidate.zip --receipt signed/candidate.json --state state/deployment.json --prepare-upload --approval-reference "environment release, run $GITHUB_RUN_ID"
+      - name: Upload once to Central (USER_MANAGED) and wait for validation
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.RELEASE_CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.RELEASE_CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          python3 -I tooling/.github/scripts/central-recovery.py --bundle signed/candidate.zip --receipt signed/candidate.json --state state/deployment.json --allow-upload --approval-reference "environment release, run $GITHUB_RUN_ID"
+          test "$(jq -r .phase state/deployment.json)" = VALIDATED
+          jq '{deployment_id, phase}' state/deployment.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain signed bundle and deployment state, also after a failure
+        if: always() && hashFiles('state/deployment.json') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: central-deployment-${{ env.VERSION }}
+          path: |
+            signed/
+            state/deployment.json
+          if-no-files-found: error
+          retention-days: 90
+
+  publish:
+    needs: sign-upload
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release-publish
+    permissions:
+      contents: read
+      actions: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TOOLING: ${{ vars.TRUSTED_TOOLING_SHA }}
+    steps:
+      - name: Check inputs and environment protection
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v([0-9]+\.[0-9]+\.[0-9]+)$ ]]
+          version="${BASH_REMATCH[1]}"
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          [[ "$TOOLING" =~ ^[a-f0-9]{40}$ ]] || { echo "TRUSTED_TOOLING_SHA is not a full commit SHA." >&2; exit 1; }
+          repo="repos/$GITHUB_REPOSITORY"
+          gh api "$repo/environments/release-publish" | jq -e '
+            .can_admins_bypass == false
+            and .deployment_branch_policy.custom_branch_policies == true
+            and ([.protection_rules[] | select(.type == "required_reviewers")
+                  | select(.prevent_self_review == true and (.reviewers | length) >= 2)] | length) == 1' > /dev/null \
+            || { echo "Environment release-publish is not protected as required." >&2; exit 1; }
+          gh api "$repo/environments/release-publish/deployment-branch-policies" | jq -e '
+            .total_count >= 1 and all(.branch_policies[]; .type == "tag")' > /dev/null \
+            || { echo "Environment release-publish must allow release tags only." >&2; exit 1; }
+          count="$(gh api "$repo/actions/runs/$GITHUB_RUN_ID/artifacts?name=central-publish-$version" --jq .total_count)"
+          test "$count" = 0 || { echo "This run already attempted publication; inspect and resume, never repeat." >&2; exit 1; }
+      - name: Check out only the release tools at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ vars.TRUSTED_TOOLING_SHA }}
+          path: tooling
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: central-deployment-${{ env.VERSION }}
+          path: deployment
+      - name: Check the deployment belongs to this tag and tool commit
+        run: |
+          set -euo pipefail
+          test "$(git -C tooling rev-parse HEAD)" = "$TOOLING"
+          jq -e --arg tooling "$TOOLING" --arg commit "$GITHUB_SHA" --arg version "$VERSION" --arg run "$GITHUB_RUN_ID" '
+            .tool_checkout == {"commit": $tooling, "clean": true} and .source_commit == $commit
+            and .version == $version and .candidate_run == $run' deployment/signed/signing.json > /dev/null
+          test "$(jq -r .phase deployment/state/deployment.json)" = VALIDATED
+      - name: Publish the validated deployment by its saved ID
+        id: publish
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.RELEASE_CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.RELEASE_CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          python3 -I tooling/.github/scripts/central-recovery.py --bundle deployment/signed/candidate.zip --receipt deployment/signed/candidate.json --state deployment/state/deployment.json --publish --approval-reference "environment release-publish, run $GITHUB_RUN_ID"
+          test "$(jq -r .phase deployment/state/deployment.json)" = PUBLISHED
+      - name: Retain publication state, also after a failure
+        if: always() && (steps.publish.outcome == 'success' || steps.publish.outcome == 'failure')
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: central-publish-${{ env.VERSION }}
+          path: deployment/state/deployment.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Show the release-page command
+        run: |
+          entries="$(jq -r .entries_sha256 deployment/signed/signing.json)"
+          {
+            echo 'After Central serves the files, create the GitHub Release from the same tag:'
+            echo '```sh'
+            echo "gh workflow run release-page.yml --ref $TAG -f tag=$TAG -f candidate_run=$GITHUB_RUN_ID -f signed_entries_sha256=$entries -f signer=$SIGNER"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

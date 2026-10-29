@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -231,7 +232,10 @@ class Fixtures(unittest.TestCase):
         self.assertNotIn('checkout@', snapshot)
         self.assertNotIn('mvnw', snapshot)
         # Post-publication readback only: public key variable, never a signer or portal token.
-        readback = (workflows / 'publish-central.yml').read_text()
+        # Renamed so the publish-central.yml workflow, tag-triggered in older revisions, stays disabled.
+        self.assertFalse((workflows / 'publish-central.yml').exists())
+        readback = (workflows / 'release-page.yml').read_text()
+        self.assertNotIn('push:', readback)
         self.assertNotIn('secrets.', readback)
         self.assertNotIn('central-recovery.py', readback)
         self.assertNotIn('mvnw', readback)
@@ -240,6 +244,60 @@ class Fixtures(unittest.TestCase):
         self.assertIn('name: unsigned-central-candidate-', readback)
         self.assertIn('sign-candidate.py verify', readback)
         self.assertNotIn('sign-candidate.py sign', readback)
+
+    def test_release_workflow_keeps_project_code_away_from_credentials(self):
+        workflows = Path(__file__).resolve().parents[1] / 'workflows'
+        texts = {path.name: path.read_text() for path in sorted(workflows.glob('*.yml'))}
+        for name, text in texts.items():
+            for line in text.splitlines():
+                if line.strip().startswith(('uses:', '- uses:')):
+                    self.assertRegex(line, r'@[0-9a-f]{40} # v', name + ': pin every action by full SHA')
+            for legacy in ('CENTRAL_TOKEN_USERNAME }}', 'CENTRAL_TOKEN_PASSWORD }}', 'GPG_PRIVATE_KEY', 'GPG_PASSPHRASE'):
+                self.assertNotIn('secrets.' + legacy, text, name + ': repository-level release secret')
+            for trigger in ('pull_request_target', 'workflow_run', 'issue_comment'):
+                self.assertNotIn(trigger, text, name)
+            if name != 'release.yml':
+                self.assertNotIn('secrets.', text, name)
+                self.assertNotRegex(text, r'(?m)^\s+tags:', name + ': only release.yml may start on a tag')
+        text = texts['release.yml']
+        head, body = text.split('\njobs:\n')
+        self.assertIn("  push:\n    tags:\n      - 'v[0-9]+.[0-9]+.[0-9]+'\n", head)
+        self.assertNotIn('workflow_dispatch', head)
+        self.assertIn('\npermissions: {}\n', head)
+        jobs = dict(re.findall(r'(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:\n|\Z)', body))
+        self.assertEqual(list(jobs), ['build', 'attest', 'sign-upload', 'publish'])
+        for name, job in jobs.items():
+            self.assertIn('    permissions:\n', job, name)
+            self.assertNotIn('cache', job, name + ': no shared caches next to release jobs')
+        build, attest, sign, publish = jobs.values()
+        self.assertIn('-Dgpg.skip=true', build)
+        self.assertIn('--workflow-run "$GITHUB_RUN_ID"', build)
+        self.assertIn('source --tagged', build)
+        for forbidden in ('secrets.', 'id-token', 'environment:', 'write'):
+            self.assertNotIn(forbidden, build)
+        # Only attest may request an OIDC token, and it runs no project code.
+        self.assertIn('id-token: write', attest)
+        for forbidden in ('secrets.', 'checkout@', 'mvnw', '.github/scripts', 'environment:'):
+            self.assertNotIn(forbidden, attest)
+        self.assertIn('subject-checksums:', attest)
+        for job, environment in ((sign, 'release'), (publish, 'release-publish')):
+            self.assertIn(f'    environment: {environment}\n', job)
+            self.assertIn(f'environments/{environment}', job)
+            for forbidden in ('id-token', 'mvnw', 'contents: write', 'candidate/.github', 'python3 .github'):
+                self.assertNotIn(forbidden, job)
+            self.assertEqual(job.count('checkout@'), 1)
+            self.assertIn('ref: ${{ vars.TRUSTED_TOOLING_SHA }}\n          path: tooling\n'
+                          '          sparse-checkout: .github/scripts\n', job)
+            self.assertEqual(set(re.findall(r'secrets\.([A-Z_]+)', job)) - {'RELEASE_SIGNING_SUBKEY'},
+                             {'RELEASE_CENTRAL_TOKEN_USERNAME', 'RELEASE_CENTRAL_TOKEN_PASSWORD'})
+            for script in re.findall(r'python3 (?:-I )?(\S+)', job):
+                self.assertTrue(script.startswith('tooling/.github/scripts/'), script)
+        self.assertIn('secrets.RELEASE_SIGNING_SUBKEY', sign)
+        self.assertNotIn('secrets.RELEASE_SIGNING_SUBKEY', publish)
+        self.assertIn('--prepare-upload', sign)
+        self.assertNotIn('--publish', sign)
+        self.assertNotIn('--allow-upload', publish)
+        self.assertIn('/dev/shm', sign)
 
     def test_candidate_selection_requires_exact_inputs_and_refuses_upload_rerun(self):
         candidate.selection('inspect', VERSION, 'a' * 40, SIGNER)
@@ -273,6 +331,17 @@ class Fixtures(unittest.TestCase):
         with patch.object(candidate.subprocess, 'check_output', side_effect=['a' * 40 + '\n', ' M pom.xml']):
             with self.assertRaises(ValueError):
                 candidate.source(self.root, VERSION, 'a' * 40)
+
+    def test_tagged_source_requires_the_tag_on_the_exact_commit(self):
+        pom = next(data for name, data in self.blobs.items() if name.endswith('.pom'))
+        (self.root / 'pom.xml').write_bytes(pom.replace(VERSION.encode(), (VERSION + '-SNAPSHOT').encode()))
+        head = 'a' * 40 + '\n'
+        with patch.object(candidate.subprocess, 'check_output', side_effect=[head, '', 'v' + VERSION, head]):
+            candidate.source(self.root, VERSION, 'a' * 40, tagged=True)
+        for outputs in ([head, '', ''], [head, '', 'v' + VERSION, 'b' * 40 + '\n']):
+            with patch.object(candidate.subprocess, 'check_output', side_effect=outputs):
+                with self.assertRaisesRegex(ValueError, 'tag'):
+                    candidate.source(self.root, VERSION, 'a' * 40, tagged=True)
 
     def test_release_notes_cli_uses_explicit_tagged_source_paths(self):
         pom = next(data for name, data in self.blobs.items() if name.endswith('.pom'))
@@ -654,6 +723,32 @@ class OfflineSigner(unittest.TestCase):
         self.output.mkdir()
         with self.assertRaisesRegex(ValueError, 'new'):
             self.sign()
+
+    def test_signing_subkey_only_keyring_signs_for_the_primary_fingerprint(self):
+        """The CI design: certify-only primary stays offline; CI holds one signing subkey."""
+        source, ci = (Path(self.keys.name) / name for name in ('primary-' + self.id()[-8:], 'ci-' + self.id()[-8:]))
+        for home in (source, ci):
+            home.mkdir(mode=0o700)
+            self.addCleanup(subprocess.run, ['gpgconf', '--homedir', str(home), '--kill', 'all'],
+                            capture_output=True, timeout=15)
+        uid = 'Synthetic Release <release@example.invalid>'
+        gpg(source, '--pinentry-mode', 'loopback', '--passphrase', '', '--quick-generate-key', uid, 'rsa3072', 'cert', '1d')
+        primary = next(line.split(':')[9] for line in gpg(source, '--with-colons', '--list-keys', uid)
+                       .stdout.decode().splitlines() if line.startswith('fpr:'))
+        gpg(source, '--pinentry-mode', 'loopback', '--passphrase', '', '--quick-add-key', primary, 'rsa3072', 'sign', '1d')
+        exported = gpg(source, '--armor', '--export-secret-subkeys', primary).stdout
+        subprocess.run(['gpg', '--no-options', '--batch', '--import'], input=exported, capture_output=True,
+                       env={**os.environ, 'GNUPGHOME': str(ci)}, check=True, timeout=60)
+        listing = gpg(ci, '--with-colons', '--list-secret-keys').stdout.decode().splitlines()
+        self.assertEqual([line.split(':')[14] for line in listing if line.startswith('sec:')], ['#'])
+        command = [sys.executable, '-I', str(Path(__file__).with_name('sign-candidate.py')), 'sign',
+                   '--candidate', str(self.candidate), '--version', VERSION, '--source-commit', self.COMMIT,
+                   '--candidate-run', self.RUN, '--pom', str(self.pom), '--signer', primary, '--output', str(self.output)]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120, env={**os.environ, 'GNUPGHOME': str(ci)})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads((self.output / 'signing.json').read_text())
+        self.assertEqual(receipt['signer_fingerprint'], primary)
+        self.assertEqual(receipt['result'], 'SIGNED_BUNDLE_VALIDATED_NOT_UPLOADED')
 
     def test_no_passphrase_input_and_no_candidate_execution(self):
         command = signer.sign_command(Path('payload'), Path('payload.asc'), self.fingerprint)
