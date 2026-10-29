@@ -24,9 +24,11 @@ public class MessageStoreSinkProducer {
             @ConfigProperty(name = "kafka.bootstrap.servers", defaultValue = "") String bootstrapServers,
             @ConfigProperty(name = "basis.message-store.status-topic",
                     defaultValue = KafkaMessageStoreSink.DEFAULT_STATUS_TOPIC) String statusTopic,
+            @ConfigProperty(name = "basis.message-store.payload.retention-days", defaultValue = "30") long retentionDays,
             Instance<DataSource> dataSource) {
         return switch (sink) {
-            case POSTGRES_SINK -> new PostgresMessageStoreSink(requiredDataSource(dataSource));
+            case POSTGRES_SINK -> new PostgresMessageStoreSink(requiredDataSource(dataSource),
+                    java.time.Duration.ofDays(retentionDays));
             case KAFKA_SINK -> new KafkaMessageStoreSink(
                     KafkaMessageStoreSink.kafkaProducer(requiredKafkaBootstrapServers(bootstrapServers)),
                     statusTopic,

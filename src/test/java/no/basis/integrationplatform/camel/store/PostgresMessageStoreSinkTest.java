@@ -246,58 +246,103 @@ class PostgresMessageStoreSinkTest {
         }
     }
 
+    // Retention 30 days: a replay resets the expiry, at most to first receipt + 60 days.
+    private static final java.time.Duration RETENTION = java.time.Duration.ofDays(30);
+    private static final Instant T0 = Instant.parse("2026-06-14T12:00:00Z");
+
+    private PostgresMessageStoreSink capped() {
+        return new PostgresMessageStoreSink(dataSource, RETENTION);
+    }
+
+    private MessageAttemptResult received(MessageStatus status, int attempt, java.time.Duration after, boolean inline) {
+        var base = expiring(status, attempt, inline ? T0.plus(after).plus(RETENTION) : null);
+        return new MessageAttemptResult(base.schemaVersion(), base.messageId(), base.correlationId(), base.contentType(),
+                base.sourceSystem(), base.targetSystem(), inline ? base.payloadStorage() : "metadata_only",
+                base.payloadSizeBytes(), inline ? base.payloadBytes() : null, base.payloadExpiresAt(),
+                base.payloadDeletedAt(), inline, base.replayDisabledReason(), base.integration(), base.routeId(),
+                base.attempt(), base.autoRedelivered(), base.autoRedeliveryCount(), base.autoRedeliveryMax(),
+                T0.plus(after), base.status(), base.steps(), base.error());
+    }
+
+    private static String at(java.time.Duration after) {
+        return T0.plus(after).toString();
+    }
+
     @Test
-    void replayKeepsTheFirstInlinePayloadExpiry() {
-        sink.record(expiring(MessageStatus.FAILED, 1, Instant.parse("2026-07-14T12:00:00Z")));
-        // A replay attempt captures the payload again and computes a later expiry.
-        sink.record(expiring(MessageStatus.COMPLETED, 2, Instant.parse("2026-08-20T09:00:00Z")));
+    void replayResetsTheInlinePayloadExpiry() {
+        var sink = capped();
+        sink.record(received(MessageStatus.FAILED, 1, java.time.Duration.ZERO, true));
+        sink.record(received(MessageStatus.COMPLETED, 2, java.time.Duration.ofDays(20), true));
+
+        assertEquals(at(java.time.Duration.ofDays(50)), expiry("bip_message_log", ""));
+        assertEquals(at(java.time.Duration.ofDays(50)), expiry("bip_message_attempt", " and attempt = 2"));
+        assertEquals(at(java.time.Duration.ofDays(30)), expiry("bip_message_attempt", " and attempt = 1"));
+    }
+
+    @Test
+    void replayExpiryIsCappedAtFirstReceiptPlusTwiceTheRetention() {
+        var sink = capped();
+        sink.record(received(MessageStatus.FAILED, 1, java.time.Duration.ZERO, true));
+        sink.record(received(MessageStatus.FAILED, 2, java.time.Duration.ofDays(20), true));
+        sink.record(received(MessageStatus.COMPLETED, 3, java.time.Duration.ofDays(45), true));
+
+        assertEquals(at(java.time.Duration.ofDays(60)), expiry("bip_message_log", ""));
+        assertEquals(at(java.time.Duration.ofDays(60)), expiry("bip_message_attempt", " and attempt = 3"));
+    }
+
+    @Test
+    void reconsumedFirstAttemptIsCappedFromItsOwnFirstReceipt() {
+        var sink = capped();
+        sink.record(received(MessageStatus.FAILED, 1, java.time.Duration.ZERO, true));
+        sink.record(received(MessageStatus.COMPLETED, 2, java.time.Duration.ofDays(20), true));
+        sink.record(received(MessageStatus.COMPLETED, 1, java.time.Duration.ofDays(40), true));
 
         assertEquals("2", singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
-        assertEquals("COMPLETED", singleValue("select status from bip_message_log where message_id = 'message-123'"));
-        assertEquals(EXPIRY_1, expiry("bip_message_log", ""));
-        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 2"));
-        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 1"));
+        assertEquals(at(java.time.Duration.ofDays(50)), expiry("bip_message_log", ""), "The newer summary is kept");
+        assertEquals(at(java.time.Duration.ofDays(60)), expiry("bip_message_attempt", " and attempt = 1"));
     }
 
     @Test
-    void reconsumedSameAttemptKeepsTheFirstInlinePayloadExpiry() {
-        sink.record(expiring(MessageStatus.COMPLETED, 1, Instant.parse("2026-07-14T12:00:00Z")));
-        sink.record(expiring(MessageStatus.COMPLETED, 1, Instant.parse("2026-08-20T09:00:00Z")));
+    void lateOlderInlineAttemptKeepsItsOwnCappedExpiryWhenTheSummaryHasNone() {
+        var sink = capped();
+        sink.record(received(MessageStatus.COMPLETED, 2, java.time.Duration.ofDays(1), false));
+        sink.record(received(MessageStatus.FAILED, 1, java.time.Duration.ZERO, true));
 
-        assertEquals(EXPIRY_1, expiry("bip_message_log", ""));
-        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 1"));
+        assertEquals(null, expiry("bip_message_log", ""));
+        assertEquals(at(java.time.Duration.ofDays(30)), expiry("bip_message_attempt", " and attempt = 1"),
+                "Inline bytes in a history row keep an expiry so retention can remove them");
     }
 
     @Test
-    void lateOlderAttemptHistoryTakesTheRetainedExpiry() {
-        sink.record(expiring(MessageStatus.COMPLETED, 2, Instant.parse("2026-07-14T12:00:00Z")));
-        sink.record(expiring(MessageStatus.FAILED, 1, Instant.parse("2026-08-20T09:00:00Z")));
-
-        assertEquals("2", singleValue("select last_attempt from bip_message_log where message_id = 'message-123'"));
-        assertEquals(EXPIRY_1, expiry("bip_message_log", ""));
-        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 1"));
-    }
-
-    @Test
-    void firstInlineCaptureAfterMetadataOnlyAttemptsSetsTheExpiry() {
-        sink.record(expiring(MessageStatus.FAILED, 1, null));
+    void metadataOnlyAttemptsHaveNoExpiryAndAFirstInlineCaptureGetsOne() {
+        var sink = capped();
+        sink.record(received(MessageStatus.FAILED, 1, java.time.Duration.ZERO, false));
         assertEquals(null, expiry("bip_message_log", ""));
 
-        sink.record(expiring(MessageStatus.COMPLETED, 2, Instant.parse("2026-07-14T12:00:00Z")));
-
-        assertEquals(EXPIRY_1, expiry("bip_message_log", ""));
-        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 2"));
+        sink.record(received(MessageStatus.COMPLETED, 2, java.time.Duration.ofDays(10), true));
+        assertEquals(at(java.time.Duration.ofDays(40)), expiry("bip_message_log", ""));
         assertEquals(null, expiry("bip_message_attempt", " and attempt = 1"));
     }
 
     @Test
-    void lateOlderInlineAttemptKeepsItsOwnExpiryWhenTheSummaryHasNone() {
-        sink.record(expiring(MessageStatus.COMPLETED, 2, null));
-        sink.record(expiring(MessageStatus.FAILED, 1, Instant.parse("2026-07-14T12:00:00Z")));
+    void withoutAConfiguredRetentionTheAttemptsOwnWindowIsUsed() {
+        // The public single-argument constructor derives the retention from expiry minus outcome time.
+        sink.record(received(MessageStatus.FAILED, 1, java.time.Duration.ZERO, true));
+        sink.record(received(MessageStatus.COMPLETED, 2, java.time.Duration.ofDays(45), true));
+        assertEquals(at(java.time.Duration.ofDays(60)), expiry("bip_message_log", ""));
+    }
 
-        assertEquals(null, expiry("bip_message_log", ""));
-        assertEquals(EXPIRY_1, expiry("bip_message_attempt", " and attempt = 1"),
-                "Inline bytes in a history row must keep an expiry so retention can remove them");
+    @Test
+    void anotherIntegrationsAttemptsDoNotMoveThisIntegrationsFirstReceipt() {
+        var sink = capped();
+        var other = received(MessageStatus.COMPLETED, 1, java.time.Duration.ZERO, true);
+        sink.record(new MessageAttemptResult(other.schemaVersion(), other.messageId(), other.correlationId(), other.contentType(),
+                other.sourceSystem(), other.targetSystem(), other.payloadStorage(), other.payloadSizeBytes(), other.payloadBytes(),
+                other.payloadExpiresAt(), other.payloadDeletedAt(), other.replayable(), other.replayDisabledReason(),
+                "another-integration", other.routeId(), 1, false, null, null, other.occurredAt(), other.status(), other.steps(), null));
+        sink.record(received(MessageStatus.COMPLETED, 2, java.time.Duration.ofDays(45), true));
+        assertEquals(at(java.time.Duration.ofDays(75)), expiry("bip_message_attempt", " and attempt = 2"),
+                "This integration's first receipt is its own first outcome");
     }
 
     private static final String EXPIRY_1 = "2026-07-14T12:00:00Z";
