@@ -22,6 +22,16 @@ delivery of every relevant record. The current v1 model is a single-delivery
 profile and must not be used to represent several independent receivers under
 one message id without the planned delivery-identity contract.
 
+An HTTP intake that publishes to Kafka must remove the caller's headers first,
+for example with `removeHeaders("*")` and then setting only the headers the
+message needs. Camel copies every request header onto the exchange, and the
+Kafka producer publishes them with the message, including `Authorization`, API
+keys and cookies, unmasked. Anyone who can read the topic can read them. A
+tracked send through Camel's `http` component does not forward credential-like
+headers that still hold a consumed record's bytes, and logs a warning that names
+the header, never its value. Other record headers still reach the receiver, as
+byte-array text unless they are `x-bip-*` headers.
+
 ## Non-Kafka Normalization
 
 Asynchronous non-Kafka sources should hand off to the canonical input topic:

@@ -20,6 +20,10 @@
   second DataSource from a `@Named` producer, no longer starts with the Postgres
   Message Store or step store, and the error names the ambiguity. Before, it
   started, reported ready and failed every message. Same rule as adapter 0.3.6.
+- A tracked send through Camel's `http` component no longer forwards
+  credential-like headers, such as `Authorization` or API keys, that still hold
+  a consumed Kafka record's bytes; it logs a warning once per step and header
+  name, without the value. Same rule as adapter 0.3.6.
 - A replay resets an inline payload's expiry, capped at first receipt plus twice
   the retention, instead of keeping the first expiry. First receipt is the
   earliest outcome this integration recorded for the message. Object payloads
