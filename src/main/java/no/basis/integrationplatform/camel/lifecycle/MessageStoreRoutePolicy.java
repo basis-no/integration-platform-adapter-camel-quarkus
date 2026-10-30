@@ -26,6 +26,7 @@ import java.util.UUID;
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
+    private static final String ENVELOPE_PREFIX = "x-bip-";
     private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
     private static final List<String> ENVELOPE_HEADERS = List.of(PlatformHeaders.ATTEMPT, PlatformHeaders.SCHEMA_VERSION,
             PlatformHeaders.CONTENT_TYPE, PlatformHeaders.SOURCE_SYSTEM, PlatformHeaders.TARGET_SYSTEM);
@@ -51,8 +52,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
+        normalizeKafkaEnvelopeHeaders(exchange);
         exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
-        normalizeKafkaCorrelationHeader(exchange);
         exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
         captureInputEnvelope(exchange);
         captureKafkaManualCommit(exchange);
@@ -272,12 +273,18 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return messageId;
     }
 
-    private void normalizeKafkaCorrelationHeader(Exchange exchange) {
-        // Kafka exposes bytes, but downstream HTTP components need the owned text header.
-        if (KafkaRecordHeaders.topic(exchange.getMessage()) != null
-                && exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID) instanceof byte[] bytes) {
-            String correlation = new String(bytes, StandardCharsets.UTF_8);
-            exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, correlation);
+    private void normalizeKafkaEnvelopeHeaders(Exchange exchange) {
+        // Kafka exposes bytes, but the x-bip-* headers are UTF-8 text. An HTTP component
+        // would send a byte array as its list of numbers, so keep the owned headers as text,
+        // independent of the payload charset. A Kafka producer sends the same bytes again.
+        if (KafkaRecordHeaders.topic(exchange.getMessage()) == null) {
+            return;
+        }
+        for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
+            if (name.regionMatches(true, 0, ENVELOPE_PREFIX, 0, ENVELOPE_PREFIX.length())
+                    && exchange.getMessage().getHeader(name) instanceof byte[] bytes) {
+                exchange.getMessage().setHeader(name, new String(bytes, StandardCharsets.UTF_8));
+            }
         }
     }
 

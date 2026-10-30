@@ -16,9 +16,12 @@ with 0.4.
   permission recorded a `FAILED` row without a record and stopped the consumer
   for good while the process stayed up, and another poll failure could move past
   the offset. An authentication failure still stops the consumer.
-- A UTF-8 `x-bip-correlation-id` from Kafka is kept as text before the route
-  runs, independent of the payload charset. Receivers get the same correlation
-  as the journal instead of byte-array text.
+- The `x-bip-*` headers of a Kafka record, such as `x-bip-message-id` and
+  `x-bip-correlation-id`, are kept as UTF-8 text before the route runs,
+  independent of the payload charset. HTTP receivers get the same ids as the
+  journal instead of byte-array text such as `[55, 101, …]`. A Kafka publish
+  sends the same bytes as before. A receiver that stored the byte-array form
+  as a key sees a different value from the upgrade on.
 - Kafka record headers are read under both Camel names: `kafka.TOPIC`,
   `kafka.PARTITION`, `kafka.OFFSET` and `kafka.RECORD_META` (Camel 4.18.0), and
   `CamelKafkaTopic`, `CamelKafkaPartition`, `CamelKafkaOffset` and
