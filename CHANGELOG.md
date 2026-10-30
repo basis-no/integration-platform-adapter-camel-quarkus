@@ -44,8 +44,12 @@ with 0.4.
   receipt is the earliest outcome this integration recorded for the message.
   Once the expiry has passed, replay is refused as for any expired payload.
   Every history row keeps its own expiry, including a late older attempt, and
-  metadata-only attempts have none. A Message Store with the platform's message
-  recovery SQL keeps the first expiry instead, which is stricter.
+  metadata-only attempts have none. The platform's optional message recovery
+  SQL applies the same cap in the database, so a replay is capped at first
+  receipt plus twice the retention with or without it. The database takes the
+  retention from the first captured attempt; if the retention setting changed
+  since then, the lower cap applies. The message recovery SQL is not part of
+  the next platform release.
 - A route that replaces the message without the platform headers, such as a
   split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
   records the outcome under a new random message id. The message id,
