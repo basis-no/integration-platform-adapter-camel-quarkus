@@ -42,6 +42,14 @@ internal failure propagation, not connectivity to a live environment.
 
 ## Application compatibility and limits
 
+The unreleased candidate preserves a UTF-8 Kafka correlation ID as a text header
+before downstream components forward it. The envelope is decoded with UTF-8,
+independently of the exchange or body charset. Verify the exact broker header bytes,
+journal correlation and receiver's HTTP header together; a typed journal read
+alone can hide a byte-array object forwarded as numeric text. Existing strings,
+unrelated binary headers and non-Kafka inputs are unchanged. ByteBuffer and list
+values are not a newly supported envelope representation.
+
 - Upgrade code, dependency and recovery ownership together. An application
   catch-all can still leave an input unparked; refusing to commit it is safer
   than claiming that it was handled, but can keep the partition blocked.
@@ -54,6 +62,9 @@ internal failure propagation, not connectivity to a live environment.
 - Previously acknowledged external effects can still repeat after a crash or
   whole-input replay unless a stable durable step/idempotency design covers
   those effects. This patch does not introduce transaction-level deduplication.
+  A lost response can repeat an applied effect during automatic retries too.
+  The receiver must enforce the stable key or domain uniqueness; establish its
+  outcome before replay. Receiver business acknowledgement remains an acceptance gate.
 - No blanket HTTP 500 policy, poll-timeout guarantee, memory tuning, queue
   cleanup or DLQ dismissal feature is included.
 - Replay refusal does not retroactively remove the old dashboard resend button.
@@ -146,3 +157,55 @@ but this adapter change requires no schema migration.
 
 This evidence does not qualify a specific business receiver, its mapping, input
 size, timeouts, deployment memory, or all applications using this dependency.
+
+## Optional bounded service fixtures
+
+The PostgreSQL sink and Kafka failure-progress test classes accept the test-only
+`bip.test.bounded-services=true` system property. That mode requires a fresh,
+explicit `bip.test.run-id`, refuses image pulls and uses the reviewed cached
+image digests. PostgreSQL is capped at 256 MiB/one CPU; Kafka at 768 MiB/one CPU
+with a 256 MiB broker heap. Memory-plus-swap equals each memory limit, so
+these containers cannot add VM swap. PID limits are 64 for PostgreSQL and 256
+for Kafka. Every exposed fixture port binds to loopback.
+Normal CI behavior is unchanged when the option is absent.
+
+The resource controller must inspect exact cached images and current capacity
+before execution, retain the run label/session and exact container/volume/network
+ownership, and verify cleanup afterward. A Docker memory limit is capacity, not
+available headroom. Disabling Ryuk for a local run requires explicit external
+cleanup ownership; it is not permission to leave resources behind.
+These tests cover transient poll/durability failures and PostgreSQL ordering.
+They do not establish real ACL recovery, idle-versus-dead consumer readiness,
+booted runtime behavior or contract certification.
+
+
+## Actual ACL recovery and readiness composition
+
+The standalone [Kafka recovery fixture](../integration-tests/kafka-recovery-smoke/README.md)
+passed the SmallRye-only baseline and optional upstream bridge profile on
+Quarkus 3.32.2/Camel Quarkus 3.32.0/Camel 4.18.0. It proves real scoped ACL recovery,
+source identity and offset, plus healthy-idle versus stopped-auth readiness.
+Its in-memory sink is not PostgreSQL durability evidence.
+
+The adapter library does not add or implement this bridge. An application using
+SmallRye health can add the upstream extension under its own Camel Quarkus BOM:
+
+```xml
+<dependency>
+  <groupId>org.apache.camel.quarkus</groupId>
+  <artifactId>camel-quarkus-microprofile-health</artifactId>
+</dependency>
+```
+
+Qualify that application's actual BOM and route lifecycle. The baseline stayed
+HTTP Ready 200 after polling stopped; with the bridge the fixture returned idle HTTP 200
+and three consecutive route-attributed dead-poller HTTP 503 responses over a finite
+window of at least two seconds, while unrelated consumers remained healthy.
+Denial/reconnect responses fluctuated before the observed HTTP 503; this is not a
+continuous-DOWN guarantee during permission recovery. A different template BOM
+is not qualified by this fixture. No custom health framework, automatic adapter
+dependency/default, existing application rewrite or release is implied.
+
+RECONNECT does not provide general recovery from permanently invalid credentials
+or poison records. Correct configuration and follow the application's controlled
+restart/recovery procedure where polling has stopped.

@@ -8,6 +8,7 @@ import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.StepResult;
 import org.apache.camel.Exchange;
+import org.apache.camel.util.URISupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -42,7 +43,10 @@ public class DefaultStepTracker implements StepTracker {
     public void beforeSend(Exchange exchange) {
         String endpointUri = exchange.getProperty(Exchange.INTERCEPTED_ENDPOINT, String.class);
         clearCurrentStep(exchange);
-        exchange.setProperty(PlatformExchangeProperties.CURRENT_ENDPOINT_URI, endpointUri);
+        // The journal keeps the endpoint without credentials: a resolved password or
+        // token in the URI must never reach the Message Store. Step ids still derive
+        // from the exact URI, so existing step identities are unchanged.
+        exchange.setProperty(PlatformExchangeProperties.CURRENT_ENDPOINT_URI, URISupport.sanitizeUri(endpointUri));
 
         if (isInternalEndpoint(endpointUri)) {
             exchange.setProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, true);
@@ -141,6 +145,11 @@ public class DefaultStepTracker implements StepTracker {
         String stepId = currentStepId(exchange);
         if (stepId != null) {
             steps(exchange).add(StepResult.skipped(stepId, currentIdempotencyKey(exchange), currentEndpointUri(exchange)));
+            // A replayed message otherwise looks delivered in the logs although nothing was sent.
+            LOG.info("Step {} SKIPPED for message {}: an earlier attempt recorded it as delivered, so the send to {} "
+                            + "was not repeated in this attempt; list the step in {} to repeat it",
+                    stepId, exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID),
+                    currentEndpointUri(exchange), PlatformHeaders.REDO_STEPS);
         }
     }
 
@@ -191,7 +200,7 @@ public class DefaultStepTracker implements StepTracker {
 
         String routeId = exchange.getFromRouteId() == null ? "unknown-route" : exchange.getFromRouteId();
         String fallback = routeId + ":" + scheme(endpointUri) + ":" + shortHash(endpointUri);
-        LOG.warn("Endpoint {} has no stable Camel node id; using generated step id {}", endpointUri, fallback);
+        LOG.warn("Endpoint {} has no stable Camel node id; using generated step id {}", URISupport.sanitizeUri(endpointUri), fallback);
         return fallback;
     }
 
@@ -218,8 +227,16 @@ public class DefaultStepTracker implements StepTracker {
     }
 
     private boolean isInternalEndpoint(String endpointUri) {
-        String scheme = scheme(endpointUri);
-        return DEFAULT_INTERNAL_SCHEMES.contains(scheme);
+        return isInternal(endpointUri);
+    }
+
+    /** Whether a send to this endpoint is internal and never tracked as a step. */
+    static boolean isInternal(String endpointUri) {
+        if (endpointUri == null) {
+            return DEFAULT_INTERNAL_SCHEMES.contains("unknown");
+        }
+        int colon = endpointUri.indexOf(':');
+        return DEFAULT_INTERNAL_SCHEMES.contains(colon < 0 ? endpointUri : endpointUri.substring(0, colon));
     }
 
     private String currentStepId(Exchange exchange) {

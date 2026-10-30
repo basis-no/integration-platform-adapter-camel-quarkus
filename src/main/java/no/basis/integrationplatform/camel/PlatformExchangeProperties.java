@@ -8,6 +8,8 @@ public final class PlatformExchangeProperties {
     public static final String STEP_SHOULD_SKIP = "basis.messageStore.stepShouldSkip";
     public static final String REDO_STEPS = "basis.messageStore.redoSteps";
     public static final String STEP_ALREADY_DELIVERED = "basis.messageStore.stepAlreadyDelivered";
+    /** The consumed input's message id, captured when a recorded exchange begins. */
+    public static final String INPUT_MESSAGE_ID = "basis.messageStore.inputMessageId";
     public static final String KAFKA_MANUAL_COMMIT = "basis.messageStore.kafkaManualCommit";
     public static final String DLQ_PARKED = "basis.messageStore.dlqParked";
     public static final String PAYLOAD_STORAGE = "basis.messageStore.payloadStorage";

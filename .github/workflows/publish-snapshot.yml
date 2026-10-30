@@ -1,50 +1,19 @@
-name: Publish Maven SNAPSHOT
+name: Snapshot publication suspended pending credential isolation
 
-# Manually publishes the current pom's X.Y.Z-SNAPSHOT version to Sonatype's
-# separate snapshot repository. It does not create a Git tag or a Maven Central
-# release version.
-
+# Existing signed releases and previously published snapshots are unaffected.
+# Do not restore repository signing or publisher credentials to a source build.
 on:
   workflow_dispatch:
 
-concurrency:
-  group: publish-camel-adapter-snapshot
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
-  publish:
-    if: github.server_url == 'https://github.com'
+  suspended:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 1
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate matching version changelog
-        run: python3 scripts/check_changelog.py
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-          server-id: central
-          server-username: CENTRAL_TOKEN_USERNAME
-          server-password: CENTRAL_TOKEN_PASSWORD
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          gpg-passphrase: GPG_PASSPHRASE
-
-      - name: Verify snapshot version
+      - name: Refuse credential-bearing source builds
         run: |
-          version="$(./mvnw --quiet --non-recursive help:evaluate -Dexpression=project.version -DforceStdout)"
-          case "$version" in
-            *-SNAPSHOT) echo "Publishing $version from $GITHUB_SHA" ;;
-            *) echo "Refusing to snapshot-publish non-SNAPSHOT version: $version" >&2; exit 1 ;;
-          esac
-
-      - name: Test and publish snapshot
-        run: ./mvnw --batch-mode --no-transfer-progress -Prelease deploy
-        env:
-          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          echo "Snapshot publication is suspended. See docs/release-packaging.md." >&2
+          exit 1

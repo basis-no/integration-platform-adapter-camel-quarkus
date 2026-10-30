@@ -215,6 +215,50 @@ class PostgresKafkaMessageReplayServiceTest {
     }
 
     @Test
+    void consumedResendKeepsOriginalCorrelationForReceiverAndJournal() throws Exception {
+        sink.record(result("message-resend", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        var receiver = new no.basis.integrationplatform.camel.ReceiverComponent();
+        // A topic of its own, so the other tests' consumers never see this resend.
+        String resendTopic = "bip.order-pipeline.resend";
+        try (var consumer = new DefaultCamelContext()) {
+            consumer.addComponent("vendor", receiver);
+            consumer.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + resendTopic + "?brokers=" + KAFKA.getBootstrapServers()
+                            + "&groupId=resend-" + UUID.randomUUID()
+                            + "&autoOffsetReset=earliest&autoCommitEnable=false&allowManualCommit=true")
+                        .routeId("camel-route-id")
+                        .routePolicy(new no.basis.integrationplatform.camel.lifecycle.MessageStoreRoutePolicy(
+                                sink, "order-pipeline"))
+                        .filter(header(PlatformHeaders.MESSAGE_ID).isEqualTo("message-resend"))
+                            .to("vendor:orders").id("sftp");
+                }
+            });
+            consumer.start();
+
+            new PostgresKafkaMessageReplayService(dataSource, KAFKA.getBootstrapServers(), "bip.%s.resend",
+                    consumer, "order-pipeline")
+                    .replay(new MessageReplayRequest("message-resend", "operator", "redo", List.of("sftp")));
+
+            Instant deadline = Instant.now().plusSeconds(60);
+            while (receiver.received().isEmpty()
+                    || "0".equals(singleValue("select count(*) from bip_message_attempt where message_id = 'message-resend' and attempt = 2"))) {
+                if (Instant.now().isAfter(deadline)) throw new AssertionError("Resend was not consumed and journaled");
+                Thread.sleep(100);
+            }
+        }
+
+        // The receiver gets the text header, not Kafka's bytes, and the journal keeps one correlation.
+        assertEquals(List.of("order-456"), receiver.correlations());
+        assertEquals("order-456", singleValue(
+                "select correlation_id from bip_message_attempt where message_id = 'message-resend' and attempt = 2"));
+        assertEquals("1", singleValue(
+                "select count(distinct correlation_id) from bip_message_attempt where message_id = 'message-resend'"));
+        assertEquals("2", singleValue("select last_attempt from bip_message_log where message_id = 'message-resend'"));
+        assertEquals("order-456", singleValue("select correlation_id from bip_message_log where message_id = 'message-resend'"));
+    }
+
+    @Test
     void rejectsNonReplayableMessageBeforePublishing() {
         sink.record(result("message-456", 1, null, false, "payload storage mode is metadata-only"));
 

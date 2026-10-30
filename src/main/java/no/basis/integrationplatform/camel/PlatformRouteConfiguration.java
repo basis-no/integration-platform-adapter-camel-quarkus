@@ -3,14 +3,26 @@ package no.basis.integrationplatform.camel;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteConfigurationBuilder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.List;
+import java.util.Locale;
+import java.util.Set;
 
 @ApplicationScoped
 public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
+    private static final Logger LOG = LoggerFactory.getLogger(PlatformRouteConfiguration.class);
     public static final String SLOW_BACKEND = "ip-slow-backend";
     public static final String NO_RETRY = "ip-no-retry";
     static final String DLQ_URI = "direct:bip-confirmed-dead-letter";
+    static final String MASKED = "xxxxxx";
+    private static final Set<String> CREDENTIAL_HEADERS = Set.of(
+            "authorization", "proxy-authorization", "cookie", "set-cookie", "www-authenticate", "proxy-authenticate");
+    private static final List<String> CREDENTIAL_PARTS = List.of(
+            "secret", "token", "password", "passwd", "credential", "session", "signature",
+            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth");
 
     @Override
     public void configuration() {
@@ -67,6 +79,21 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     void prepareDlq(Exchange exchange) {
         exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, false);
 
+        // The parked record is the consumed input. A route may have set another id for a
+        // send to another integration and failed before restoring it; park and journal the
+        // failure under the input's id, not the downstream one.
+        String inputMessageId = exchange.getProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, String.class);
+        if (inputMessageId != null && !inputMessageId.isBlank()) {
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, inputMessageId);
+        }
+
+        // The DLQ header keeps only the message; operators need the stack trace to diagnose it.
+        Throwable failure = failure(exchange);
+        if (failure != null) {
+            LOG.error("Message {} failed after its configured retries and is being sent to the dead letter queue",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+        }
+
         // Contract §8: the DLQ record must carry the ORIGINAL consumed payload,
         // not a mid-transformation body. Restore it from the capture made at
         // route start when the payload was capturable; metadata_only /
@@ -76,18 +103,44 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
             exchange.getMessage().setBody(originalPayload);
         }
 
+        maskCredentialHeaders(exchange);
         exchange.getMessage().setHeader(PlatformHeaders.ERROR, failureMessage(exchange));
         exchange.getMessage().setHeader(PlatformHeaders.DLQ_AT, Instant.now().toString());
     }
 
-    private String failureMessage(Exchange exchange) {
-        Throwable failure = exchange.getException();
-        if (failure == null) {
-            failure = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
+    /**
+     * The Kafka DLQ producer forwards every message header. Request headers a route set
+     * for a receiver, and response headers copied back from a successful call, can carry
+     * credentials and session cookies. Keep the names for diagnosis, mask the values.
+     */
+    static void maskCredentialHeaders(Exchange exchange) {
+        for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
+            if (isCredentialHeader(name)) {
+                exchange.getMessage().setHeader(name, MASKED);
+            }
         }
+    }
+
+    static boolean isCredentialHeader(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("x-bip-") || lower.equals("idempotency-key")) {
+            return false;
+        }
+        // Names ending in -key or _key (x-functions-key, x-access-key, x-client-key) carry keys too.
+        return CREDENTIAL_HEADERS.contains(lower) || CREDENTIAL_PARTS.stream().anyMatch(lower::contains)
+                || lower.endsWith("-key") || lower.endsWith("_key");
+    }
+
+    private String failureMessage(Exchange exchange) {
+        Throwable failure = failure(exchange);
         if (failure == null) {
             return "unknown failure";
         }
         return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+    }
+
+    private Throwable failure(Exchange exchange) {
+        Throwable failure = exchange.getException();
+        return failure != null ? failure : exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
     }
 }

@@ -7,10 +7,12 @@ import org.junit.jupiter.api.Test;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
+import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class PlatformRouteConfigurationTest {
@@ -55,6 +57,77 @@ class PlatformRouteConfigurationTest {
         assertEquals("stream-derived body", exchange.getMessage().getBody());
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
         assertNotNull(exchange.getMessage().getHeader(PlatformHeaders.DLQ_AT));
+    }
+
+    @Test
+    void dlqParkingLogsTheFailureWithItsStackTrace() {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        var failure = new IllegalStateException("vendor unavailable");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
+
+        try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
+            configuration.prepareDlq(exchange);
+
+            var errors = logs.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            assertSame(failure, errors.getFirst().getThrown());
+            assertEquals("Message message-123 failed after its configured retries and is being sent to the dead letter queue",
+                    LogCapture.text(errors.getFirst()));
+        }
+    }
+
+    @Test
+    void dlqParkingMasksCredentialHeaderValuesButKeepsTheirNames() {
+        Exchange exchange = exchange();
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("after receiver success"));
+        var message = exchange.getMessage();
+        // Request headers a route set for a receiver.
+        message.setHeader("Authorization", "Bearer request-secret-token");
+        message.setHeader("client_secret", "request-client-secret");
+        message.setHeader("Ocp-Apim-Subscription-Key", "request-subscription-key");
+        message.setHeader("X-API-Key", "key-value");
+        message.setHeader("x-functions-key", "functions-key-value");
+        message.setHeader("X-Access-Key", "access-key-value");
+        message.setHeader("x_client_key", "client-key-value");
+        // Kafka record-key headers name the record key, not a credential.
+        message.setHeader("CamelKafkaKey", "order-1");
+        message.setHeader("kafka.KEY", "order-1");
+        // Response headers copied back from a successful receiver call.
+        message.setHeader("Set-Cookie", "SESSION=receiver-session-cookie");
+        message.setHeader("WWW-Authenticate", "Bearer error=\"invalid_token\"");
+        message.setHeader("X-Request-Token-Echo", "receiver-echoed-token");
+        // Envelope and diagnostics that must stay readable.
+        message.setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        message.setHeader(PlatformHeaders.IDEMPOTENCY_KEY, "message-123:deliver");
+        message.setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, "message-123:deliver");
+        message.setHeader("Content-Type", "application/xml");
+        message.setHeader("CamelHttpResponseCode", 200);
+
+        configuration.prepareDlq(exchange);
+
+        for (String name : List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
+                "x-functions-key", "X-Access-Key", "x_client_key",
+                "Set-Cookie", "WWW-Authenticate", "X-Request-Token-Echo")) {
+            assertEquals("xxxxxx", message.getHeader(name), name);
+        }
+        assertEquals("message-123", message.getHeader(PlatformHeaders.MESSAGE_ID));
+        assertEquals("message-123:deliver", message.getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+        assertEquals("message-123:deliver", message.getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
+        assertEquals("application/xml", message.getHeader("Content-Type"));
+        assertEquals("order-1", message.getHeader("CamelKafkaKey"));
+        assertEquals("order-1", message.getHeader("kafka.KEY"));
+        assertEquals(200, message.getHeader("CamelHttpResponseCode"));
+        assertEquals("after receiver success", message.getHeader(PlatformHeaders.ERROR));
+    }
+
+    @Test
+    void dlqParkingWithoutAFailureLogsNoError() {
+        try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
+            configuration.prepareDlq(exchange());
+
+            assertTrue(logs.records().isEmpty());
+        }
     }
 
     @Test

@@ -26,15 +26,12 @@ This library is a Camel/Quarkus runtime adapter. It is self-contained: the
 tables, topics and headers it reads and writes are documented in this README,
 and the schema it expects ships in `src/main/resources/db/message-store/`.
 
-See the [changelog](CHANGELOG.md) for maintenance changes, upgrade actions and limitations.
-Candidate CI and snapshot publication validate exactly one nonempty section for
-the source POM version with `python3 scripts/check_changelog.py`. Stable publication
-also runs `python3 scripts/check_changelog.py --tag vX.Y.Z` before rewriting the POM
-or loading publication credentials: the tag must match the source version and its
-notes must have an approved ISO release date and no pending release status in
-the heading or an explicit status declaration. Technical prose about pending
-deliveries or candidate validation remains valid. Finalize
-those notes only as part of an approved release; older sections need no invented dates.
+See the [changelog](CHANGELOG.md) for candidate changes, upgrade actions and
+limitations. [Release tooling](docs/release-packaging.md) builds unsigned candidates
+without production credentials. Production signing and snapshot publication are
+suspended pending an enforceable isolated signer and credential review. A tag
+never rebuilds or uploads a release. Final notes need an approved date and exact
+artifact provenance; source preparation does not authorize publication.
 
 ## 0.3.5 maintenance line
 
@@ -79,6 +76,13 @@ Stable release coordinates (verify the tag publication completed before upgradin
 
 ## V1 Semantics
 
+The unreleased 0.3.6 candidate converts the owned `x-bip-correlation-id` from
+Kafka's byte-array header representation to text before downstream processing.
+This preserves the same ID through HTTP forwarding and journal recording. It
+does not convert unrelated binary headers or introduce support for arbitrary
+header types. Envelope decoding uses UTF-8 independently of the business payload
+charset. See [maintenance qualification](docs/maintenance-qualification.md).
+
 The adapter aims for:
 
 ```text
@@ -100,6 +104,10 @@ stored can still lead to a repeated call on replay. External side effects
 therefore still need domain idempotency, for example a unique database key,
 deterministic file name, stable Kafka event id, or a target API that honors
 `Idempotency-Key`.
+A receiver can also apply an effect and lose its response; automatic delivery
+retries can then repeat that effect before any operator replay. The receiver must
+enforce the stable key or equivalent domain uniqueness. Establish the receiver
+outcome before requesting replay when acknowledgement is missing.
 
 ## Message Status Semantics
 
@@ -113,6 +121,15 @@ redeliveries do not increment `attempt`; they are captured with:
 - `auto_redelivered`
 - `auto_redelivery_count`
 - `auto_redelivery_max`
+
+The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
+client inside Camel's `http` component (Apache HttpClient 5) also retries by
+itself, within one Camel attempt: it repeats a request answered with 503 or 429
+once after a short delay. Two 503 answers and then success can therefore record
+one redelivery for three requests; with the default policy, a receiver that
+keeps answering 503 can get eight requests before the message is parked. Set
+`camel.component.http.automatic-retries-disabled=true` to leave every retry to
+the platform's policy.
 
 - `COMPLETED`: route processing finished and the outcome was safely recorded.
 - `DLQ`: retries were exhausted and the message was parked for operator/platform action.
@@ -145,6 +162,7 @@ its own `application.properties`:
 camel.component.kafka.auto-commit-enable=false
 camel.component.kafka.allow-manual-commit=true
 camel.component.kafka.break-on-first-error=true
+camel.component.kafka.poll-on-error=RECONNECT
 ```
 
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
@@ -154,6 +172,20 @@ outcome, failed journal write or failed commit leaves the exchange failed.
 that unresolved input. Applications must not override these safety defaults.
 This can intentionally block processing during a durability outage; it is not a
 promise that every failure always progresses.
+
+A failure while polling, before any record reaches a route, reconnects the
+consumer and polls the same position again. Camel's default for poll failures
+would route the exception to the error handler without a record, move past the
+offset and, after an authorization error, stop polling for good while the
+process stays up. A missing read permission, for example while a new topic's
+permission is still being applied, now delays consumption instead of ending it.
+An authentication failure still stops the consumer.
+
+The current Message Store summary follows the highest recorded attempt. A late
+write from an older attempt still records its attempt history but cannot replace
+the newer summary's status, payload, error or timestamps. Repeated writes for the
+same attempt may update that attempt and its current summary; this is not a
+within-attempt event-ordering guarantee.
 
 ## Retry and DLQ
 
@@ -178,12 +210,55 @@ request routes should use `ip-no-retry` when the input route owns retry, to avoi
 multiplying attempts. Splits that belong to the same input must share the unit
 of work so failure reaches the input's terminal outcome.
 
+Known split limitations in 0.3.x: split parts keep the input's message id, and
+a send node has one step id, so all parts share one idempotency key. With
+`basis.message-store.step-outcome-store=postgres`, only the first part sent
+through a node is delivered; later parts are `SKIPPED`, also in the first
+attempt. Without `stopOnException()`, each failed part is parked separately and
+the input still records `COMPLETED`; with it, the first failure parks the input
+once and records `DLQ`. Per-part identity is not part of 0.3.x; 0.4 adds it. See the
+[split step identity advisory](docs/split-step-identity.md) for the exact
+conditions under which a part is not sent, and the safe configuration.
+
 Processing time still needs an application-specific budget: bounded receiver
 timeouts and retries, number of transactions per input, poll batch size and
 `max.poll.interval.ms` must fit together. This patch does not classify every
 HTTP 500 as permanent or automatically resize application memory.
 
-The DLQ record follows contract section 8:
+On Camel 4's `http` component, bound a receiver call with `responseTimeout`
+and `connectTimeout`, on the endpoint URI or as `camel.component.http.*`
+settings. `socketTimeout`, a Camel 3 option, does not exist on Camel 4. The
+endpoint does not reject unknown options: it sends them to the receiver as
+query parameters, and the call then waits up to the client's default of three
+minutes. The adapter does not check endpoint options. Camel's own component
+metadata does not help here: it lists the timeouts as component options only,
+although the endpoint accepts them.
+
+A timeout does not mean the receiver did nothing. A receiver can apply the
+effect after the client gave up, and the message is then retried and parked
+although the effect happened. The step is recorded `FAILED`, so a replay sends
+it again, with the same `Idempotency-Key` (`<message-id>:<step-id>`) as every
+earlier try. Only a receiver that deduplicates on that key avoids a second
+effect. Republishing the parked record under a new message id changes the key,
+so even such a receiver applies it again.
+
+The DLQ record follows contract section 8. It also carries the other message
+headers present at failure, because the Kafka producer forwards them. From 0.3.6
+the values of credential-like headers are masked as `xxxxxx`: `Authorization`,
+`Cookie`, `Set-Cookie`, `WWW-Authenticate`, and names containing secret, token,
+password, credential, session, signature or auth, or ending in `-key` or `_key`. The
+names stay visible. Remove any other receiver header you do not want on the
+shared DLQ before the failing step.
+
+An HTTP intake that publishes to Kafka must remove the caller's headers first,
+for example with `removeHeaders("*")` and then setting only the headers the
+message needs. Camel copies every request header onto the exchange, and the
+Kafka producer publishes them with the message, including `Authorization`, API
+keys and cookies, unmasked. Anyone who can read the topic can read them. From
+0.3.6 a tracked send through Camel's `http` component does not forward
+credential-like headers that still hold a consumed record's bytes, and logs a
+warning that names the header. Other record headers still reach the receiver,
+as byte-array text unless they are `x-bip-*` headers.
 
 - the body is the **original consumed payload**, restored from the payload
   captured at route start — not a mid-transformation body. When the payload
@@ -365,9 +440,80 @@ stable step names, use normal Camel ids on important external sends:
     uri: "sftp:vendor/orders?fileName=order-${header.x-bip-correlation-id}.xml"
 ```
 
-If no id is present, the adapter derives a fallback key from route and endpoint
-metadata. Fallback keys are acceptable for audit, but explicit ids are better
-for dashboard display and future partial replay.
+Every tracked external send must have an explicit id. Without one, Camel
+generates a node id such as `to1`. It changes when the route is edited, and other
+integrations generate the same ids: when a message id reaches another
+integration on the same Message Store, the second integration's
+`<message-id>:to1` matches the first one's delivered step and its own send is
+skipped. From 0.3.6 the application therefore fails to start when a tracked send
+(`to` or `toD` to an external endpoint) has no explicit id. Internal endpoints,
+wire taps and the adapter's own dead letter route are not checked.
+
+`basis.message-store.step-ids.emergency-allow-generated=true` is an emergency
+escape hatch only: the application then starts and logs a warning for each such
+send. Use it to restore service while the ids are added, not as a setting.
+
+The startup check covers the routes as Camel builds them; the platform's
+pre-build check reads the source and misses endpoints whose URIs are built
+elsewhere, such as placeholders and constants.
+
+### Upgrading from generated step ids
+
+Keep each send's current key: give it the id Camel generates for it today, for
+example `.to("sftp:...").id("to1")` or `id: to1` in YAML. The step key stays
+`<message-id>:to1`, and so does the receiver's `Idempotency-Key`. Messages
+recorded before the upgrade are then skipped on replay, and a redo repeats them
+under the same key. The startup check accepts any explicit id, including one
+that looks generated.
+
+Renaming a generated id, for example `to1` to `send-to-sap`, changes that step's
+key: replaying, redoing or resending a message recorded before the change sends
+it once more. Rename only once no message recorded under the old id will be
+processed again, for example after the message retention period. A kept `to1`
+is still the same id other integrations generate, so the advice on separate
+message ids above still applies.
+
+Generated numbers count per node kind (`to`, `toD`, ...) across every route in
+the application, in the order Camel builds them. They include the adapter's dead
+letter route, which holds one `toD`. Counting in the source is therefore only a
+guess. Confirm the ids before the upgrade:
+
+- With 0.3.6 in a development or test environment, start the unchanged
+  application once with `basis.message-store.step-ids.emergency-allow-generated=true`.
+  Each tracked send without an id is logged as a warning with its route,
+  endpoint and generated step id. The adapter's routes did not change from
+  0.3.5, so the ids are the same as on 0.3.5.
+- On 0.3.5, add `camel-quarkus-yaml-io` and set `camel.main.dump-routes=yaml`,
+  `camel.main.dump-routes-generated-ids=true` and
+  `camel.main.dump-routes-resolve-placeholders=false`. The routes are logged at
+  startup with their node ids. Without the last setting the dump can contain
+  resolved credentials.
+- In the Message Store, list the step ids an integration has recorded. Older
+  rows can contain endpoint credentials; this query masks the common forms:
+
+  ```sql
+  select o.step_id,
+         regexp_replace(regexp_replace(o.endpoint_uri, '//[^/@]*@', '//xxxxxx@'),
+           '(?i)((password|passphrase|secret[a-z_]*|[a-z_]*token|authpassword)=)[^&]*',
+           '\1xxxxxx', 'g') as endpoint,
+         count(*) as steps, max(o.occurred_at) as last_occurred_at
+  from bip_step_outcome o
+  where o.message_id in (select a.message_id from bip_message_attempt a
+                         where a.integration = 'order-pipeline')
+  group by o.step_id, 2
+  order by o.step_id, last_occurred_at desc;
+  ```
+
+  A step id listed with two endpoints changed meaning when the route was edited;
+  the latest rows show the current one.
+
+Prefer a new `x-bip-message-id` per integration and carry continuity in
+`x-bip-correlation-id`. Explicit ids must still be unique across the
+integrations that can see the same message id.
+
+If no node id is available at all, the adapter derives a fallback key from route
+and endpoint metadata. Fallback keys are acceptable for audit, but explicit ids
+are better for dashboard display and future partial replay.
 
 Internal Camel endpoints such as `direct:`, `log:`, `bean:`, `mock:`, `seda:`,
 `timer:`, and `micrometer:` are ignored. External sends get:
@@ -378,6 +524,35 @@ Internal Camel endpoints such as `direct:`, `log:`, `bean:`, `mock:`, `seda:`,
 The adapter records `DELIVERED`, `FAILED`, or `SKIPPED` step outcomes in the
 message attempt. `SKIPPED` means the configured `StepOutcomeStore` says the same
 idempotency key was already delivered, so the endpoint send was not repeated.
+From 0.3.6 each skip is logged at INFO with the step, message id and masked
+endpoint, and the logging sink counts delivered, skipped and failed steps
+separately. A route log placed after a send cannot tell by itself whether the send
+happened. Directly after the send, the exchange property
+`basis.messageStore.stepAlreadyDelivered`
+(`PlatformExchangeProperties.STEP_ALREADY_DELIVERED`) is `true` only when that
+send was skipped. Every later `to`/`toD`, including `log:` and `direct:`, resets
+it, so read it in the step that follows the send, for example a `choice` or
+`setProperty`. Do not log "delivered" without checking it.
+
+Each recorded step keeps its endpoint URI with credentials masked the way Camel
+masks them in logs: a password in the user info and options such as `password`,
+`passphrase`, `secretKey` or `accessToken` are stored as `xxxxxx`. Step ids are
+derived from the exact URI, so masking does not change them. Failed and skipped
+step entries use the same masked endpoint, as does the warning emitted when a
+send has no stable Camel node id. This masks the endpoint field, not arbitrary
+exception messages or application logs. Existing rows, logs and backups are not
+rewritten; review their access and retention separately.
+
+## Key-Value Store
+
+The combined local `0.3.6-SNAPSHOT` candidate adds
+[`KeyValueStore`](docs/key-value-store.md) for small integration-scoped JSON
+cursors and markers in the platform-provisioned `bip_key_value` table of draft
+contract `1.2.0-rc2`. It keeps the full maintenance baseline and adds no leases
+or Trusted Message Store service. It is not a published or certified pin.
+Calls have their own transactions; they are not atomic with delivery or polling.
+The feature is lazy and has no effect when unused. Calls fail explicitly if the
+table is unavailable; no schema or metadata is created at startup.
 
 ## Sink and Store Selection
 
@@ -448,8 +623,10 @@ Configuration reference:
 | --- | --- | --- | --- |
 | `basis.delivery-audit.routes` | comma-separated exact route ids | empty | Select independent `direct:` delivery requests for non-replayable audit. |
 | `basis.input-audit.routes` | comma-separated exact route ids | empty | Select non-Kafka input inspection without changing source recovery. |
+| `basis.message-store.key-value.sweep-interval-seconds` | integer seconds, `1..3600` | `3600` | Once the candidate Key-Value Store is used, sweep this integration’s expired keys in bounded batches. |
 | `basis.message-store.sink` | `log`, `postgres`, `kafka` | `log` | Selects where terminal message outcomes go. |
 | `basis.message-store.step-outcome-store` | `noop`, `postgres` | `noop` | Selects whether delivered-step checks are durable. |
+| `basis.message-store.step-ids.emergency-allow-generated` | `true`, `false` | `false` | Emergency escape hatch: start even though a tracked send has no explicit id, with a warning for each. See [step tracking](#step-tracking). |
 | `basis.message-store.payload.mode` | `postgres-inline`, `metadata-only` | `postgres-inline` | Selects whether safely capturable payloads are stored inline for replay. |
 | `basis.message-store.status-topic` | Kafka topic name | `bip.message.status` | Used only when `basis.message-store.sink=kafka`. |
 | `basis.message-store.dlq-uri` | Camel endpoint URI | `kafka:bip.message.dlq` | Target used by the shared dead letter channel. |
@@ -557,6 +734,20 @@ patch does not rewrite historical rows or remove records already published to
 Kafka. Safe input replay still retains message identity, increments the manual
 attempt and preserves the existing redo-step contract. Request acceptance is
 not proof of delivery or of successful offset commit.
+
+The [application database continuity fixture](integration-tests/application-data-smoke/README.md)
+checks a named business datasource alongside a legacy Message Store with no KV
+table. Its baseline and candidate results must be recorded separately; upgrading
+the adapter does not move application state.
+
+## Optional activity metrics candidate
+
+The unreleased candidate adds explicitly selected Kafka admission and
+broker-confirmed publication counters through an existing Micrometer registry.
+They measure activity, not unique transactions or downstream completion. Defaults
+remain disabled; missing or incomplete coverage is unknown. See
+[activity metrics](docs/activity-metrics.md) and
+[configuration](docs/configuration.md#optional-kafka-activity-metrics).
 
 ## How this project is developed
 

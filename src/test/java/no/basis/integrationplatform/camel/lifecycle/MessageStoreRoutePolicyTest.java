@@ -26,6 +26,109 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class MessageStoreRoutePolicyTest {
+
+    @Test
+    void decodesCorrelationAsUtf8IndependentlyOfBodyCharset() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        String correlation = "order-ø-€";
+        byte[] body = {(byte) 0xe5};
+        exchange.setProperty(Exchange.CHARSET_NAME, "ISO-8859-1");
+        exchange.getMessage().setHeader(KafkaConstants.TOPIC, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID,
+                correlation.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        exchange.getMessage().setBody(body);
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+        assertEquals(correlation, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
+        org.junit.jupiter.api.Assertions.assertArrayEquals(body, exchange.getMessage().getBody(byte[].class));
+        assertEquals("ISO-8859-1", exchange.getProperty(Exchange.CHARSET_NAME));
+        policy.onExchangeDone(route("synthetic-input"), exchange);
+        assertEquals(correlation, sink.result.correlationId());
+    }
+
+    @Test
+    void normalizesKafkaByteArrayCorrelationForDownstreamHeaders() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        String correlation = "00000000-0000-0000-0000-000000000099";
+        byte[] encoded = correlation.getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exchange.getMessage().setHeader(KafkaConstants.TOPIC, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, encoded);
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+        assertEquals(correlation, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID),
+                "Downstream components must see text, not the Kafka byte-array object");
+        policy.onExchangeDone(route("synthetic-input"), exchange);
+        assertEquals(correlation, sink.result.correlationId());
+    }
+
+    @Test
+    void keepsEveryKafkaEnvelopeHeaderAsTextForDownstreamHeaders() {
+        // A receiver keyed on x-bip-message-id got "[55, 101, ...]" when the id stayed a byte array.
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        byte[] unowned = {0, 1, 2};
+        exchange.setProperty(Exchange.CHARSET_NAME, "ISO-8859-1");
+        exchange.getMessage().setHeader(KafkaConstants.TOPIC, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "7e5a-ø".getBytes(utf8));
+        exchange.getMessage().setHeader(PlatformHeaders.ATTEMPT, "2".getBytes(utf8));
+        exchange.getMessage().setHeader(PlatformHeaders.SOURCE_SYSTEM, "lager-ø".getBytes(utf8));
+        exchange.getMessage().setHeader(PlatformHeaders.REPLAY, "true".getBytes(utf8));
+        exchange.getMessage().setHeader("X-Binary-Context", unowned);
+
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+
+        assertEquals("7e5a-ø", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+        assertEquals("2", exchange.getMessage().getHeader(PlatformHeaders.ATTEMPT));
+        assertEquals("lager-ø", exchange.getMessage().getHeader(PlatformHeaders.SOURCE_SYSTEM));
+        assertEquals("true", exchange.getMessage().getHeader(PlatformHeaders.REPLAY));
+        org.junit.jupiter.api.Assertions.assertSame(unowned, exchange.getMessage().getHeader("X-Binary-Context"));
+        policy.onExchangeDone(route("synthetic-input"), exchange);
+        assertEquals("7e5a-ø", sink.result.messageId());
+        assertEquals(2, sink.result.attempt());
+        assertEquals("lager-ø", sink.result.sourceSystem());
+    }
+
+    @Test
+    void leavesEnvelopeBytesOfNonKafkaExchangesUntouched() {
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(result -> {}, "adapter-test");
+        Exchange exchange = exchange();
+        byte[] id = "direct-id".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, id);
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+        org.junit.jupiter.api.Assertions.assertSame(id, exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {"kafka.TOPIC", "CamelKafkaTopic"})
+    void normalizesCorrelationUnderEitherCamelTopicHeaderName(String topicHeader) {
+        // camel-kafka 4.18.0 sets kafka.TOPIC; later 4.18.x releases set CamelKafkaTopic.
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(topicHeader, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, "order-ø".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+        assertEquals("order-ø", exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
+    }
+
+    @Test
+    void keepsOtherCorrelationTypesAndUnownedHeadersUntouched() {
+        Object[] values = {"already-text", java.nio.ByteBuffer.wrap(new byte[]{65}), List.of(65), new byte[]{65}};
+        for (Object value : values) {
+            MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(result -> {}, "adapter-test");
+            Exchange exchange = exchange();
+            byte[] unowned = {0, 1, 2};
+            exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, value);
+            exchange.getMessage().setHeader("X-Binary-Context", unowned);
+            policy.onExchangeBegin(route("synthetic-input"), exchange);
+            org.junit.jupiter.api.Assertions.assertSame(value, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
+            org.junit.jupiter.api.Assertions.assertSame(unowned, exchange.getMessage().getHeader("X-Binary-Context"));
+        }
+    }
     @Test
     void recordsCompletedResultBeforeKafkaCommit() {
         // Given a completed Kafka exchange with collected step results and a manual commit handle.
