@@ -13,7 +13,11 @@ bundle = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(bundle)
 
 
-def verify(pom, version, signer, expected_receipt, output):
+def verify(pom, version, signer, expected_receipt, output, unsigned_receipt=None, entries_sha256=None):
+    """Compare public bytes with the offline validation receipt, or in CI with the
+    unsigned candidate receipt plus the signed-entries digest from the signing receipt."""
+    if bool(expected_receipt) == bool(unsigned_receipt) or bool(unsigned_receipt) != bool(entries_sha256):
+        raise ValueError('Use either --expected-receipt or --unsigned-receipt with --entries-sha256')
     ns = {'p': 'http://maven.apache.org/POM/4.0.0'}
     project = ET.parse(pom).getroot()
     group = project.findtext('p:groupId', namespaces=ns)
@@ -22,7 +26,6 @@ def verify(pom, version, signer, expected_receipt, output):
     if source_version not in (version, version + '-SNAPSHOT'):
         raise ValueError('Tag source version mismatch')
     _, payloads = bundle.coordinate(group, artifact, version)
-    expected = json.loads(expected_receipt.read_text())
     with tempfile.TemporaryDirectory(prefix='central-readback-') as directory:
         root = Path(directory)
         for name in payloads:
@@ -43,8 +46,18 @@ def verify(pom, version, signer, expected_receipt, output):
         archive = root / 'public.zip'
         bundle.assemble(root, archive, group, artifact, version)
         actual = bundle.validate(archive, group, artifact, version, signer)
-    if (actual['coordinate'] != expected['coordinate'] or actual['signer_fingerprint'] != expected['signer_fingerprint']
-            or actual['entries'] != expected['entries']):
+    if expected_receipt:
+        expected = json.loads(expected_receipt.read_text())
+        matches = (actual['coordinate'] == expected['coordinate']
+                   and actual['signer_fingerprint'] == expected['signer_fingerprint']
+                   and actual['entries'] == expected['entries'])
+    else:
+        unsigned = json.loads(unsigned_receipt.read_text())
+        matches = (unsigned.get('qualification') == 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE'
+                   and unsigned.get('version') == version
+                   and {Path(name).name: actual['entries'][name] for name in payloads} == unsigned.get('payload_sha256')
+                   and actual['entries_sha256'] == entries_sha256)
+    if not matches:
         raise ValueError('Public artifact bytes differ from the reviewed candidate; investigate without re-upload')
     actual['result'] = 'PUBLIC_BYTES_MATCH_REVIEWED_CANDIDATE'
     with output.open('x') as handle:
@@ -57,10 +70,13 @@ def main():
     parser.add_argument('--pom', type=Path, required=True)
     parser.add_argument('--version', required=True)
     parser.add_argument('--signer', required=True)
-    parser.add_argument('--expected-receipt', type=Path, required=True)
+    parser.add_argument('--expected-receipt', type=Path, help='Offline validation receipt (candidate.json)')
+    parser.add_argument('--unsigned-receipt', type=Path, help='Unsigned candidate receipt (unsigned.json)')
+    parser.add_argument('--entries-sha256', help='entries_sha256 from the offline signing receipt')
     parser.add_argument('--output', type=Path, required=True)
     args = parser.parse_args()
-    verify(args.pom, args.version, args.signer, args.expected_receipt, args.output)
+    verify(args.pom, args.version, args.signer, args.expected_receipt, args.output,
+           args.unsigned_receipt, args.entries_sha256)
 
 
 if __name__ == '__main__':

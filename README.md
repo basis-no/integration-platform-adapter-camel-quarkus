@@ -84,9 +84,11 @@ JDK 21 is required. Use the repository Maven wrapper:
 Behavior and configuration changes must update the relevant local documentation.
 Cross-runtime semantic changes require a coordinated contract change.
 
-Use `X.Y.Z-SNAPSHOT` builds from Sonatype's separate snapshot repository for
-remote acceptance. Create a `vX.Y.Z` tag only after local and remote acceptance
-is complete; that tag publishes the immutable final artifact to Maven Central.
+Use locally built `X.Y.Z-SNAPSHOT` artifacts for acceptance; snapshot
+publication is suspended. Create a `vX.Y.Z` tag only after acceptance is
+complete. Tags never trigger publication. Final releases are signed and uploaded
+offline by the release manager from reviewed tooling; the production key never
+exists in GitHub.
 See [Releasing](docs/releasing.md) for the full workflow and checklist.
 
 ## License and Support

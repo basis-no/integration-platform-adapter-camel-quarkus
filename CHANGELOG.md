@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Remove production signing and publisher credentials from candidate inspection.
+  Inspection now retains unsigned evidence only, and its receipt records the
+  producing workflow run. Existing artifacts remain unchanged.
+- Sign releases offline: the new `sign-candidate.py` verifies a downloaded
+  unsigned candidate against its receipt, signs exactly its four payloads through
+  the release manager's gpg-agent, verifies each signature against the pinned
+  fingerprint and assembles the validated Central bundle with a signing receipt.
+  Upload and publication run from the release workstation with
+  `central-recovery.py`; the production key and portal token never exist in
+  GitHub. Post-publication readback compares public bytes with the unsigned
+  receipt and the signed-entries digest. Snapshot publication stays suspended;
+  acceptance uses locally built artifacts.
+
 - Separate mutable `X.Y.Z-SNAPSHOT` remote-acceptance builds from immutable
   final `vX.Y.Z` Maven Central releases.
 - Avoid a null-method classification failure for ordinary Camel HTTP producers,
