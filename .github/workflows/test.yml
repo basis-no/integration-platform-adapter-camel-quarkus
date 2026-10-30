@@ -1,0 +1,62 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - release/0.3
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Verify matching version changelog and its guard
+        run: |
+          python3 -m unittest discover -s tests -p "test_changelog.py"
+          python3 scripts/check_changelog.py
+
+      - name: Test release notes extraction
+        run: python3 -m unittest discover -s tests -p "test_release_notes.py"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      - name: Test and install adapter for the startup fixture
+        run: >-
+          ./mvnw
+          --batch-mode
+          --no-transfer-progress
+          install
+
+      - name: Verify Quarkus registration and dependency defaults
+        run: >-
+          ./mvnw
+          --batch-mode
+          --no-transfer-progress
+          -f integration-tests/maintenance-smoke/pom.xml
+          verify
+
+      - name: Verify public API documentation
+        run: >-
+          ./mvnw
+          --batch-mode
+          --no-transfer-progress
+          -DskipTests
+          javadoc:javadoc
