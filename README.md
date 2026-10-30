@@ -28,11 +28,12 @@ and the schema it expects ships in `src/main/resources/db/message-store/`.
 
 See the [changelog](CHANGELOG.md) for candidate changes, upgrade actions and
 limitations. [Release tooling](docs/release-packaging.md) builds unsigned candidates
-without production credentials. Final releases are signed and uploaded offline
-by the release manager from reviewed tooling; the production key never exists in
-GitHub. Snapshot publication is suspended. A tag never rebuilds or uploads a
-release. Final notes need an approved date and exact artifact provenance; source
-preparation does not authorize publication. See [Releasing](docs/releasing.md).
+without production credentials. Final releases are signed and uploaded either by
+a protected tag run that waits for reviewer approval before signing with a CI
+signing subkey, or offline by the release manager; the primary release key never
+exists in GitHub. Snapshot publication is suspended. Final notes need an approved
+date and exact artifact provenance; source preparation does not authorize
+publication. See [Releasing](docs/releasing.md).
 
 ## 0.3.5 maintenance line
 

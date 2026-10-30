@@ -9,26 +9,38 @@ GitHub Release from the same existing tag. Include changes/fixes, compatibility,
 upgrade actions and known limitations. Do not present planned behavior as shipped.
 A release is complete only after Maven Central publication and artifact verification,
 GitHub release-note readback and the applicable qualification/documentation gates.
-Candidate inspection retains unsigned evidence only. Signing, Central upload and
-publication happen offline on the release workstation (see below); snapshot
-publication is suspended. The release-page workflow verifies actual public
-bytes before creating notes. Tags never trigger another build/upload. The
-synthetic CI gate does not replace full candidate review, the offline signer's
-receipt or portal validation before release. Never rebuild or republish packages merely to repair missing release notes. Historical backfills use verified
-existing tags and must not replace the latest release. See `docs/releasing.md`.
+A `vX.Y.Z` tag starts `release.yml`, which builds an unsigned candidate and then
+waits for human approval in protected environments before signing, uploading and
+publishing; the alternative is offline signing on the release workstation (see
+below). Snapshot publication is suspended. The release-page workflow verifies
+actual public bytes before creating notes. The synthetic CI gate does not replace
+full candidate review, the signer's receipt or portal validation before release.
+Never rebuild or republish packages merely to repair missing release notes.
+Historical backfills use verified existing tags and must not replace the latest
+release. See `docs/releasing.md`.
 
 ## Production credential boundary
 
-The production signing key and Central portal token never exist in GitHub, CI,
-agent or development hosts. A human release manager signs the reviewed unsigned
-candidate on the trusted release workstation with `sign-candidate.py` and
-uploads/publishes with `central-recovery.py`, both run from reviewed `main`,
-also for a `release/0.3` source commit; the signer never executes candidate code. Never add signing or portal
-credentials to repository secrets or workflows, pass them to Maven, wrappers,
-plugins, tests, dependencies or candidate code, or dispatch historical workflow
-revisions that used them. Moving signing back into automation requires an
-enforceable approval boundary; workflow prose, an exact SHA, manual dispatch and
-synthetic tests are not one. Agents never run the release signing step or handle
-the release key, its passphrase or portal tokens; they may run the signer tests,
-which use throwaway keys in temporary keyrings. See
+The primary (certify) release key never exists in GitHub, CI, agent or development
+hosts. Signing and Central upload happen in exactly one of two places:
+
+- `release.yml` jobs `sign-upload` and `publish`, which run in the protected
+  environments `release` and `release-publish` (required reviewers, tag-only
+  deployment rule), check out only the release tools at `TRUSTED_TOOLING_SHA` and
+  never run Maven, the wrapper, tests or candidate files. Only their environment
+  secrets hold the CI signing subkey and a Central token. This path exists only
+  once the repository is public and those settings are in place.
+- The trusted release workstation, where a human release manager runs
+  `sign-candidate.py` and `central-recovery.py` from reviewed `main` (also for a
+  `release/0.3` source commit).
+
+Never add signing or portal credentials to repository or organization secrets, to
+any other workflow or job, or to a job that builds, tests or runs candidate code;
+never pass them to Maven, wrappers, plugins, tests or dependencies. Never give
+`id-token: write` to a job that runs project code. Do not dispatch historical
+workflow revisions that used credentials. Agents never run the release signing
+step, approve a release environment or handle the release key, its passphrase,
+the CI subkey or portal tokens; they may run the signer tests, which use
+throwaway keys in temporary keyrings. See
+`docs/release-packaging.md#protected-tag-release-in-ci` and
 `docs/release-packaging.md#offline-release-signing`.
