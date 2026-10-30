@@ -37,8 +37,10 @@ public final class ForwardedCredentialHeaders {
         if (endpointUri == null) {
             return false;
         }
-        int colon = endpointUri.indexOf(':');
-        return colon > 0 && HTTP_SCHEMES.contains(endpointUri.substring(0, colon).toLowerCase(Locale.ROOT));
+        // Camel trims a resolved endpoint URI before it picks the component.
+        String uri = endpointUri.trim();
+        int colon = uri.indexOf(':');
+        return colon > 0 && HTTP_SCHEMES.contains(uri.substring(0, colon).toLowerCase(Locale.ROOT));
     }
 
     /**

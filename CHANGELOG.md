@@ -44,8 +44,10 @@ with 0.4.
   to its own receiver as byte-array text (`[66, 101, …]`), which decodes to the
   credential. The adapter logs a warning once per step and header name,
   without the value. The route keeps the header after the send. A credential
-  header the route sets itself is text and is sent as before. Other HTTP
-  components, such as `vertx-http`, are unchanged.
+  header the route sets itself is text and is sent as before. A `toD` that
+  chooses its component only when it sends, such as `${header.receiverUrl}` or
+  `language:header:receiverUrl`, is treated as an HTTP send. Other HTTP components, such as
+  `vertx-http`, are unchanged.
 - An outcome from an older attempt that arrives late cannot replace a newer
   attempt's message summary. This includes the original Kafka record consumed
   again as attempt 1 after a replay recovered it, which used to reset the

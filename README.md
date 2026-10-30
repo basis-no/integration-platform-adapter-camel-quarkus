@@ -257,7 +257,8 @@ Kafka producer publishes them with the message, including `Authorization`, API
 keys and cookies, unmasked. Anyone who can read the topic can read them. From
 0.3.6 a tracked send through Camel's `http` component does not forward
 credential-like headers that still hold a consumed record's bytes, and logs a
-warning that names the header. Other record headers still reach the receiver,
+warning that names the header. A `toD` that chooses its component only when it
+sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver,
 as byte-array text unless they are `x-bip-*` headers.
 
 - the body is the **original consumed payload**, restored from the payload
