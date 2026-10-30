@@ -14,6 +14,32 @@ The global route configuration applies unless a route selects a variant:
 Retries use exponential backoff. Automatic redelivery does not increment the
 platform attempt; it adds diagnostics to that attempt.
 
+The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
+client inside Camel's `http` component (Apache HttpClient 5) also retries by
+itself, within one Camel attempt: it repeats a request answered with 503 or 429
+once after a short delay. Two 503 answers and then success can therefore record
+one redelivery for three requests; with the default policy, a receiver that
+keeps answering 503 can get eight requests before the message is parked. Set
+`camel.component.http.automatic-retries-disabled=true` to leave every retry to
+the platform's policy.
+
+On Camel 4's `http` component, bound a receiver call with `responseTimeout`
+and `connectTimeout`, on the endpoint URI or as `camel.component.http.*`
+settings. `socketTimeout`, a Camel 3 option, does not exist on Camel 4. The
+endpoint does not reject unknown options: it sends them to the receiver as
+query parameters, and the call then waits up to the client's default of three
+minutes. The adapter does not check endpoint options. Camel's own component
+metadata does not help here: it lists the timeouts as component options only,
+although the endpoint accepts them.
+
+A timeout does not mean the receiver did nothing. A receiver can apply the
+effect after the client gave up, and the message is then retried and parked
+although the effect happened. The step is recorded `FAILED`, so a replay sends
+it again, with the same `Idempotency-Key` (`<message-id>:<step-id>`) as every
+earlier try. Only a receiver that deduplicates on that key avoids a second
+effect. Republishing the parked record under a new message id changes the key,
+so even such a receiver applies it again.
+
 ## Terminal Kafka Failure
 
 `basis.message-store.failure-mode=dlq` is required for Kafka lifecycle
