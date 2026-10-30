@@ -509,4 +509,65 @@ class StepTrackingInterceptStrategyTest {
             return future.apply(exchange);
         }
     }
+
+    @org.junit.jupiter.api.Test
+    void sendWithoutAnExplicitIdFailsRouteCreationByDefault() throws Exception {
+        try (var context = enforcing(false)) {
+            context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
+                public void configure() {
+                    from("direct:in").routeId("deliveries").to("receiver:generated?password=s3cr3t");
+                }
+            });
+            Exception failure = org.junit.jupiter.api.Assertions.assertThrows(Exception.class, context::start);
+            Throwable cause = failure;
+            while (cause.getCause() != null && !(cause instanceof IllegalStateException)) cause = cause.getCause();
+            org.junit.jupiter.api.Assertions.assertTrue(cause.getMessage().startsWith(
+                    "Endpoint send to receiver://generated?password=xxxxxx in route deliveries has no explicit id"), cause.getMessage());
+            org.junit.jupiter.api.Assertions.assertTrue(cause.getMessage().contains(
+                    StepTrackingInterceptStrategy.EMERGENCY_ALLOW_GENERATED_STEP_IDS + "=true"));
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void explicitIdsInternalEndpointsAndWireTapsAreNotChecked() throws Exception {
+        try (var context = enforcing(false)) {
+            context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
+                public void configure() {
+                    from("direct:in").routeId("deliveries")
+                            .to("receiver:named").id("named-send")
+                            .toD("receiver:${header.target}").id("dynamic-send")
+                            .to("direct:internal")
+                            .wireTap("receiver:audit-copy");
+                    from("direct:internal").setBody(constant("internal"));
+                }
+            });
+            context.start();
+            org.junit.jupiter.api.Assertions.assertTrue(context.isStarted());
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void emergencyFlagStartsWithAWarning() throws Exception {
+        try (var logs = no.basis.integrationplatform.camel.LogCapture.of(StepTrackingInterceptStrategy.class);
+             var context = enforcing(true)) {
+            context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
+                public void configure() {
+                    from("direct:in").routeId("deliveries").to("receiver:generated");
+                }
+            });
+            context.start();
+            var warnings = logs.at(java.util.logging.Level.WARNING);
+            org.junit.jupiter.api.Assertions.assertEquals(1, warnings.size());
+            org.junit.jupiter.api.Assertions.assertTrue(no.basis.integrationplatform.camel.LogCapture.text(warnings.getFirst())
+                    .contains(StepTrackingInterceptStrategy.EMERGENCY_ALLOW_GENERATED_STEP_IDS + "=true is set"));
+        }
+    }
+
+    private org.apache.camel.impl.DefaultCamelContext enforcing(boolean allowGenerated) {
+        var context = new org.apache.camel.impl.DefaultCamelContext();
+        context.addComponent("receiver", new no.basis.integrationplatform.camel.ReceiverComponent());
+        context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
+                new DefaultStepTracker(new NoopStepOutcomeStore()), allowGenerated));
+        return context;
+    }
 }

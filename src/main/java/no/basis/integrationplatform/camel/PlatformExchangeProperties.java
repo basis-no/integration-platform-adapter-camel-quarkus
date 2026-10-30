@@ -4,6 +4,8 @@ package no.basis.integrationplatform.camel;
 public final class PlatformExchangeProperties {
     /** Collected per-attempt durable step outcomes. */
     public static final String STEPS = "basis.messageStore.steps";
+    /** The consumed input's message id, captured when a recorded exchange begins. */
+    public static final String INPUT_MESSAGE_ID = "basis.messageStore.inputMessageId";
     /** Current intercepted stable step id. */
     public static final String CURRENT_STEP_ID = "basis.messageStore.currentStepId";
     /** Current intercepted side-effect idempotency key. */

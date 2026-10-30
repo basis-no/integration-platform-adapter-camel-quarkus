@@ -9,11 +9,20 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.time.Instant;
+import java.util.Set;
+import java.util.Locale;
+import java.util.List;
 
 /** Shared retry, DLQ, and source-propagation route configurations. */
 @ApplicationScoped
 public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     private static final Logger LOG = LoggerFactory.getLogger(PlatformRouteConfiguration.class);
+    static final String MASKED = "xxxxxx";
+    private static final Set<String> CREDENTIAL_HEADERS = Set.of(
+            "authorization", "proxy-authorization", "cookie", "set-cookie", "www-authenticate", "proxy-authenticate");
+    private static final List<String> CREDENTIAL_PARTS = List.of(
+            "secret", "token", "password", "passwd", "credential", "session", "signature",
+            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth");
     /** Named profile for slow external backends. */
     public static final String SLOW_BACKEND = "ip-slow-backend";
     /** Named profile disabling automatic redelivery. */
@@ -140,6 +149,14 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     void markDlqParked(Exchange exchange) {
         exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, true);
 
+        // The parked record is the consumed input. A route may have set another id for a
+        // send to another integration and failed before restoring it; park and journal the
+        // failure under the input's id, not the downstream one.
+        String inputMessageId = exchange.getProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, String.class);
+        if (inputMessageId != null && !inputMessageId.isBlank()) {
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, inputMessageId);
+        }
+
         Throwable failure = exchange.getException();
         if (failure == null) {
             failure = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
@@ -163,8 +180,31 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
             exchange.getMessage().setBody(originalPayload);
         }
 
+        maskCredentialHeaders(exchange);
         exchange.getMessage().setHeader(PlatformHeaders.ERROR, failureMessage(exchange));
         exchange.getMessage().setHeader(PlatformHeaders.DLQ_AT, Instant.now().toString());
+    }
+
+    /**
+     * The Kafka DLQ producer forwards every message header. Request headers a route set
+     * for a receiver, and response headers copied back from a successful call, can carry
+     * credentials and session cookies. Keep the names for diagnosis, mask the values.
+     */
+    static void maskCredentialHeaders(Exchange exchange) {
+        for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
+            if (isCredentialHeader(name)) {
+                exchange.getMessage().setHeader(name, MASKED);
+            }
+        }
+    }
+
+    static boolean isCredentialHeader(String name) {
+        String lower = name.toLowerCase(Locale.ROOT);
+        if (lower.startsWith("x-bip-") || lower.equals("idempotency-key")) {
+            return false;
+        }
+        return CREDENTIAL_HEADERS.contains(lower) || CREDENTIAL_PARTS.stream().anyMatch(lower::contains)
+                || lower.endsWith("-key") || lower.endsWith("_key");
     }
 
     private String failureMessage(Exchange exchange) {

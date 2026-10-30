@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
@@ -23,13 +24,19 @@ import java.io.SequenceInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /** Records terminal lifecycle outcomes and owns the Kafka acknowledgement boundary. */
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
+    private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
+    private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
+    private static final List<String> ENVELOPE_HEADERS = List.of(PlatformHeaders.ATTEMPT, PlatformHeaders.SCHEMA_VERSION,
+            PlatformHeaders.CONTENT_TYPE, PlatformHeaders.SOURCE_SYSTEM, PlatformHeaders.TARGET_SYSTEM);
 
     private final MessageStoreSink sink;
     private final String integrationName;
@@ -94,7 +101,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
-        ensureMessageId(exchange);
+        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
+        normalizeKafkaCorrelationHeader(exchange);
+        exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
+        captureInputEnvelope(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             captureKafkaManualCommit(exchange);
         }
@@ -141,11 +151,11 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
         return new MessageAttemptResult(
                 schemaVersion(exchange),
-                ensureMessageId(exchange),
-                exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class),
-                exchange.getMessage().getHeader(PlatformHeaders.CONTENT_TYPE, String.class),
-                exchange.getMessage().getHeader(PlatformHeaders.SOURCE_SYSTEM, String.class),
-                exchange.getMessage().getHeader(PlatformHeaders.TARGET_SYSTEM, String.class),
+                messageId(exchange),
+                correlationId(exchange),
+                envelope(exchange, PlatformHeaders.CONTENT_TYPE, String.class),
+                envelope(exchange, PlatformHeaders.SOURCE_SYSTEM, String.class),
+                envelope(exchange, PlatformHeaders.TARGET_SYSTEM, String.class),
                 payloadStorage(exchange),
                 payloadSizeBytes(exchange),
                 payloadBytes(exchange),
@@ -384,6 +394,54 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return null;
     }
 
+    // A route or aggregation strategy can replace the message without the platform headers
+    // (a grouped split, removeHeaders). The outcome still belongs to the consumed input, and a
+    // replay stays its own attempt instead of overwriting attempt 1's history row.
+    private String messageId(Exchange exchange) {
+        String current = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
+        String input = exchange.getProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, String.class);
+        if ((current == null || current.isBlank()) && input != null) {
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, input);
+        }
+        return ensureMessageId(exchange);
+    }
+
+    private String correlationId(Exchange exchange) {
+        String current = exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class);
+        return current != null ? current : exchange.getProperty(INPUT_CORRELATION_ID, String.class);
+    }
+
+    private void captureInputEnvelope(Exchange exchange) {
+        Map<String, Object> envelope = new HashMap<>();
+        for (String name : ENVELOPE_HEADERS) {
+            Object value = exchange.getMessage().getHeader(name);
+            if (value != null) {
+                envelope.put(name, value);
+            }
+        }
+        exchange.setProperty(INPUT_ENVELOPE, Map.copyOf(envelope));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T envelope(Exchange exchange, String name, Class<T> type) {
+        T current = exchange.getMessage().getHeader(name, type);
+        if (current != null) {
+            return current;
+        }
+        Map<String, Object> input = exchange.getProperty(INPUT_ENVELOPE, Map.class);
+        Object captured = input == null ? null : input.get(name);
+        return captured == null ? null : exchange.getContext().getTypeConverter().convertTo(type, exchange, captured);
+    }
+
+    // Kafka exposes header values as bytes; receivers and the journal need the owned text.
+    // UTF-8 is the contract's envelope encoding, independent of the payload charset.
+    private void normalizeKafkaCorrelationHeader(Exchange exchange) {
+        if (KafkaRecordHeaders.topic(exchange.getMessage()) != null
+                && exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID) instanceof byte[] bytes) {
+            exchange.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, new String(bytes, StandardCharsets.UTF_8));
+        }
+    }
+
     private String ensureMessageId(Exchange exchange) {
         String messageId = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
         if (messageId != null && !messageId.isBlank()) {
@@ -396,12 +454,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     }
 
     private int schemaVersion(Exchange exchange) {
-        Integer version = exchange.getMessage().getHeader(PlatformHeaders.SCHEMA_VERSION, Integer.class);
+        Integer version = envelope(exchange, PlatformHeaders.SCHEMA_VERSION, Integer.class);
         return version == null ? 1 : version;
     }
 
     private int attempt(Exchange exchange) {
-        Integer attempt = exchange.getMessage().getHeader(PlatformHeaders.ATTEMPT, Integer.class);
+        Integer attempt = envelope(exchange, PlatformHeaders.ATTEMPT, Integer.class);
         return attempt == null || attempt < 1 ? 1 : attempt;
     }
 

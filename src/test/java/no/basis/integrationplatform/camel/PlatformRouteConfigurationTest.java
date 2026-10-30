@@ -74,6 +74,57 @@ class PlatformRouteConfigurationTest {
     }
 
     @Test
+    void dlqParkingMasksCredentialHeaderValuesButKeepsTheirNames() {
+        Exchange exchange = exchange();
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("after receiver success"));
+        var message = exchange.getMessage();
+        for (String name : java.util.List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
+                "x-functions-key", "X-Access-Key", "x_client_key", "Set-Cookie", "WWW-Authenticate", "X-Request-Token-Echo")) {
+            message.setHeader(name, "credential-value");
+        }
+        message.setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        message.setHeader(PlatformHeaders.IDEMPOTENCY_KEY, "message-123:deliver");
+        message.setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, "message-123:deliver");
+        message.setHeader("CamelKafkaKey", "order-1");
+        message.setHeader("kafka.KEY", "order-1");
+        message.setHeader("Content-Type", "application/xml");
+
+        configuration.markDlqParked(exchange);
+
+        for (String name : java.util.List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
+                "x-functions-key", "X-Access-Key", "x_client_key", "Set-Cookie", "WWW-Authenticate", "X-Request-Token-Echo")) {
+            assertEquals("xxxxxx", message.getHeader(name), name);
+        }
+        assertEquals("message-123", message.getHeader(PlatformHeaders.MESSAGE_ID));
+        assertEquals("message-123:deliver", message.getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+        assertEquals("message-123:deliver", message.getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
+        assertEquals("order-1", message.getHeader("CamelKafkaKey"));
+        assertEquals("order-1", message.getHeader("kafka.KEY"));
+        assertEquals("application/xml", message.getHeader("Content-Type"));
+        assertEquals("after receiver success", message.getHeader(PlatformHeaders.ERROR));
+    }
+
+    @Test
+    void dlqParkingRestoresTheInputMessageIdAfterAFailedSendUnderAnotherId() {
+        Exchange exchange = exchange();
+        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, "input-message");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "derived-downstream-id");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("broker unavailable"));
+
+        configuration.markDlqParked(exchange);
+
+        assertEquals("input-message", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+    }
+
+    @Test
+    void dlqParkingWithoutACapturedInputKeepsTheMessageId() {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        configuration.markDlqParked(exchange);
+        assertEquals("message-123", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+    }
+
+    @Test
     void dlqParkingPrefersExchangeExceptionAndFallsBackToClassName() {
         Exchange exchange = exchange();
         exchange.setException(new IllegalStateException((String) null));

@@ -30,6 +30,39 @@ method is explicit. Other HTTP operations, multi-operation components such as
 S3, and unknown schemes remain ambiguous because their URI alone does not prove
 whether they read or write.
 
+Every endpoint send that is not an internal Camel endpoint must have an explicit
+id: the application fails to start otherwise. A generated id such as `to1`
+changes when a route is edited, repeats across integrations, and cannot be
+named in the classification lists. `basis.message-store.step-ids.emergency-allow-generated=true`
+is an emergency escape hatch that starts the application with a warning per send.
+
+To upgrade without changing keys, give each send the id Camel generates for it
+today, for example `id: to1`. The step key `<message-id>:to1`, the receiver's
+`Idempotency-Key` and classification lists that name `to1` stay valid, so a
+message processed again is still skipped where it was delivered. Any explicit id
+is accepted, including one that looks generated. Generated numbers count per node
+kind across all routes in the application, in the order Camel builds them, so
+confirm them: start the unchanged application once with the emergency setting,
+which logs each send's generated id, or list the step ids an integration has
+recorded:
+
+```sql
+select o.step_id,
+       regexp_replace(regexp_replace(o.endpoint_uri, '//[^/@]*@', '//xxxxxx@'),
+         '(?i)((password|passphrase|secret[a-z_]*|[a-z_]*token|authpassword)=)[^&]*',
+         '\1xxxxxx', 'g') as endpoint,
+       count(*) as steps, max(o.occurred_at) as last_occurred_at
+from bip_step_outcome o
+where o.message_id in (select a.message_id from bip_message_attempt a
+                       where a.integration = 'order-pipeline')
+group by o.step_id, 2
+order by o.step_id, last_occurred_at desc;
+```
+
+Renaming a generated id changes that step's key: replaying, redoing or resending
+a message recorded before the change sends it once more. Rename only once no
+such message will be processed again.
+
 ## Explicit Classification
 
 Use stable node ids and classify exact ids when automatic classification is

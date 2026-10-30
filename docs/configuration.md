@@ -27,6 +27,7 @@ not be copied into integration repositories.
 | `basis.message-store.ingress.normalization-routes` | `BASIS_MESSAGE_STORE_INGRESS_NORMALIZATION_ROUTES` | exact route ids; default empty | App-owned opt-in for source-to-Kafka routes; requires Postgres step store. |
 | `basis.message-store.deployment-replicas` | `BASIS_MESSAGE_STORE_DEPLOYMENT_REPLICAS` | integer `>= 1`; no library default | Chart-owned Deployment count. Never set or guess it in the app. |
 | `basis.message-store.failure-mode` | `BASIS_MESSAGE_STORE_FAILURE_MODE` | `dlq`, `record-failed`; default `dlq` | Kafka requires `dlq`; audit-only non-Kafka preview requires `record-failed`. |
+| `basis.message-store.step-ids.emergency-allow-generated` | `BASIS_MESSAGE_STORE_STEP_IDS_EMERGENCY_ALLOW_GENERATED` | `true`, `false`; default `false` | Emergency escape hatch only. By default an endpoint send without an explicit id fails startup; `true` starts with a warning per send. |
 | `basis.message-store.step.internal-ids` | `BASIS_MESSAGE_STORE_STEP_INTERNAL_IDS` | exact node ids; default empty | App-owned replay classification. |
 | `basis.message-store.step.repeatable-ids` | `BASIS_MESSAGE_STORE_STEP_REPEATABLE_IDS` | exact node ids; default empty | App-owned replay classification for safe reads/authentication. |
 | `basis.message-store.step.side-effect-ids` | `BASIS_MESSAGE_STORE_STEP_SIDE_EFFECT_IDS` | exact node ids; default empty | App-owned durable write classification. Requires stable ids. |
