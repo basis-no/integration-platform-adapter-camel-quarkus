@@ -89,11 +89,58 @@ class ForwardedCredentialHeadersTest {
     }
 
     @Test
+    void aSendThatPicksItsComponentAtSendTimeIsTreatedAsHttp() throws Exception {
+        List<Object> seen = new ArrayList<>();
+        List<String> picked = new ArrayList<>();
+        try (var context = new DefaultCamelContext()) {
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(new NoStepTracker()));
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    interceptSendToEndpoint("http*").skipSendToOriginalEndpoint()
+                            .process(e -> seen.add(e.getMessage().getHeader("Authorization")));
+                    from("direct:expression").toD("${header.receiverUrl}").id("send-expression");
+                    from("direct:language").toD("language:header:receiverUrl").id("send-language");
+                    from("direct:picked").toD("${body}").id("send-picked");
+                    from("direct:first").process(e -> picked.add("first"));
+                    from("direct:second").process(e -> picked.add("second"));
+                }
+            });
+            context.start();
+            try (var producer = context.createProducerTemplate()) {
+                for (String route : List.of("direct:expression", "direct:language")) {
+                    for (String url : List.of("http://receiver.example/orders", "  http://receiver.example/orders  ")) {
+                        producer.send(route, e -> {
+                            e.getMessage().setHeader("receiverUrl", url);
+                            e.getMessage().setHeader("Authorization", CALLER_AUTHORIZATION);
+                            e.getMessage().setBody("{}");
+                        });
+                    }
+                }
+                producer.sendBody("direct:picked", new Picker());
+            }
+            assertEquals(java.util.Arrays.asList(null, null, null, null), seen);
+            // The URI expression is evaluated once, by Camel, as without the adapter.
+            assertEquals(List.of("first"), picked);
+        }
+    }
+
+    /** A destination that differs on each evaluation. */
+    private static final class Picker {
+        private int calls;
+
+        @Override
+        public synchronized String toString() {
+            return ++calls == 1 ? "direct:first" : "direct:second";
+        }
+    }
+
+    @Test
     void coversCamelsHttpComponentOnly() {
         assertTrue(ForwardedCredentialHeaders.isHttp("https://receiver.example/orders"));
         assertTrue(ForwardedCredentialHeaders.isHttp("HTTP://receiver.example/orders"));
         assertFalse(ForwardedCredentialHeaders.isHttp("vertx-http:https://receiver.example"),
                 "Other HTTP producers may send the bytes as text, which a route can rely on");
+        assertTrue(ForwardedCredentialHeaders.isHttp("  https://receiver.example/orders"));
         assertFalse(ForwardedCredentialHeaders.isHttp("kafka:bip.orders.in"));
         assertFalse(ForwardedCredentialHeaders.isHttp("sql:select 1"));
         assertFalse(ForwardedCredentialHeaders.isHttp(null));

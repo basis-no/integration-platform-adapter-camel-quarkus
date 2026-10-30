@@ -23,7 +23,9 @@
 - A tracked send through Camel's `http` component no longer forwards
   credential-like headers, such as `Authorization` or API keys, that still hold
   a consumed Kafka record's bytes; it logs a warning once per step and header
-  name, without the value. Same rule as adapter 0.3.6.
+  name, without the value. A `toD` that chooses its component only when it
+  sends, such as `${header.receiverUrl}` or `language:header:receiverUrl`, is
+  treated as an HTTP send. Same rule as adapter 0.3.6.
 - Document the HTTP client's own 503/429 retry inside one Camel attempt, the
   Camel 4 HTTP timeout options (`socketTimeout` is not one), and what a replay
   does after a timed-out call whose effect happened.

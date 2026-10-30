@@ -68,7 +68,23 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         checkStepId(definition, endpointSend);
 
         AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
-        return new StepTrackingProcessor(delegate, endpointSend, stepTracker);
+        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, dynamicScheme(target, endpointSend));
+    }
+
+    /**
+     * Whether a {@code toD} chooses its component only when it sends, such as
+     * {@code ${header.receiverUrl}} or {@code language:header:receiverUrl}. Its expression is
+     * not evaluated here: an expression may change on each evaluation, and Camel evaluates
+     * it once for the send.
+     */
+    private static boolean dynamicScheme(Processor target, EndpointSend endpointSend) {
+        if (!(target instanceof SendDynamicProcessor) || endpointSend.endpointUri() == null) {
+            return false;
+        }
+        String uri = endpointSend.endpointUri().trim();
+        int colon = uri.indexOf(':');
+        String scheme = colon < 0 ? uri : uri.substring(0, colon);
+        return scheme.contains("$") || scheme.contains("{") || scheme.equalsIgnoreCase("language");
     }
 
     /**
@@ -128,12 +144,19 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         private final EndpointSend endpointSend;
         private final StepTracker stepTracker;
         private final boolean httpSend;
+        private final boolean dynamicScheme;
 
         StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker) {
+            this(delegate, endpointSend, stepTracker, false);
+        }
+
+        StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker,
+                boolean dynamicScheme) {
             this.delegate = delegate;
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
             this.httpSend = ForwardedCredentialHeaders.isHttp(endpointSend.endpointUri());
+            this.dynamicScheme = dynamicScheme;
         }
 
         @Override
@@ -228,7 +251,9 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         }
 
         private java.util.Map<String, Object> withholdCredentials(Exchange exchange) {
-            return httpSend ? ForwardedCredentialHeaders.withhold(exchange, endpointSend.nodeId()) : java.util.Map.of();
+            // A send that picks its component at send time may be http, so it is treated as one.
+            return httpSend || dynamicScheme
+                    ? ForwardedCredentialHeaders.withhold(exchange, endpointSend.nodeId()) : java.util.Map.of();
         }
 
         private boolean alreadyDelivered(Exchange exchange) {
