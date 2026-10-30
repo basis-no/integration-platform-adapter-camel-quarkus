@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.step;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
+import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.AsyncProcessor;
@@ -145,6 +146,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         private final EndpointSend endpointSend;
         private final StepTracker stepTracker;
         private final TrafficSignals trafficSignals;
+        private final boolean httpSend;
 
         private StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker) {
             this(delegate, endpointSend, stepTracker, null);
@@ -156,6 +158,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
             this.trafficSignals = trafficSignals;
+            this.httpSend = ForwardedCredentialHeaders.isHttp(endpointSend.endpointUri());
         }
 
         @Override
@@ -166,10 +169,14 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 return;
             }
             var trafficSnapshot = beforePublish(exchange);
+            var withheld = withholdCredentials(exchange);
             try {
                 boolean returned = false;
                 try { delegate.process(exchange); returned = true; }
-                finally { afterPublish(trafficSnapshot, exchange, returned && exchange.getException() == null); }
+                finally {
+                    ForwardedCredentialHeaders.restore(exchange, withheld);
+                    afterPublish(trafficSnapshot, exchange, returned && exchange.getException() == null);
+                }
                 if (exchange.getException() == null) {
                     stepTracker.recordDelivered(exchange);
                 } else {
@@ -192,7 +199,9 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             }
 
             var trafficSnapshot = beforePublish(exchange);
+            var withheld = withholdCredentials(exchange);
             return delegate.process(exchange, doneSync -> {
+                ForwardedCredentialHeaders.restore(exchange, withheld);
                 afterPublish(trafficSnapshot, exchange, exchange.getException() == null);
                 if (exchange.getException() == null) {
                     stepTracker.recordDelivered(exchange);
@@ -217,8 +226,10 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 return java.util.concurrent.CompletableFuture.completedFuture(exchange);
             }
             var trafficSnapshot = beforePublish(exchange);
+            var withheld = withholdCredentials(exchange);
             return delegate.processAsync(exchange).whenComplete((result, failure) -> {
                 Exchange completedExchange = result != null ? result : exchange;
+                ForwardedCredentialHeaders.restore(completedExchange, withheld);
                 afterPublish(trafficSnapshot, completedExchange, failure == null && completedExchange.getException() == null);
                 if (failure == null && completedExchange.getException() == null) {
                     stepTracker.recordDelivered(completedExchange);
@@ -229,6 +240,10 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                     stepTracker.recordFailed(completedExchange);
                 }
             });
+        }
+
+        private java.util.Map<String, Object> withholdCredentials(Exchange exchange) {
+            return httpSend ? ForwardedCredentialHeaders.withhold(exchange, endpointSend.nodeId()) : java.util.Map.of();
         }
 
         private TrafficSignals.PublishSnapshot beforePublish(Exchange exchange) {

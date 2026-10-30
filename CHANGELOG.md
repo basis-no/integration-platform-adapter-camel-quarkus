@@ -37,6 +37,15 @@ with 0.4.
   `-key` or `_key`. Before, request credentials set by a route and response
   headers from a successful receiver call reached the shared DLQ in clear text.
   Header names, `x-bip-*` and `Idempotency-Key` are unchanged.
+- A tracked send through Camel's `http` component no longer forwards
+  credential-like headers that still hold a consumed Kafka record's bytes, by
+  the same name rule. An HTTP intake that keeps the caller's headers publishes
+  the caller's `Authorization` with the message. The next route then sent it
+  to its own receiver as byte-array text (`[66, 101, …]`), which decodes to the
+  credential. The adapter logs a warning once per step and header name,
+  without the value. The route keeps the header after the send. A credential
+  header the route sets itself is text and is sent as before. Other HTTP
+  components, such as `vertx-http`, are unchanged.
 - An outcome from an older attempt that arrives late cannot replace a newer
   attempt's message summary. This includes the original Kafka record consumed
   again as attempt 1 after a replay recovered it, which used to reset the

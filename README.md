@@ -224,6 +224,16 @@ password, credential, session, signature or auth, or ending in `-key` or `_key`.
 names stay visible. Remove any other receiver header you do not want on the
 shared DLQ before the failing step.
 
+An HTTP intake that publishes to Kafka must remove the caller's headers first,
+for example with `removeHeaders("*")` and then setting only the headers the
+message needs. Camel copies every request header onto the exchange, and the
+Kafka producer publishes them with the message, including `Authorization`, API
+keys and cookies, unmasked. Anyone who can read the topic can read them. From
+0.3.6 a tracked send through Camel's `http` component does not forward
+credential-like headers that still hold a consumed record's bytes, and logs a
+warning that names the header. Other record headers still reach the receiver,
+as byte-array text unless they are `x-bip-*` headers.
+
 - the body is the **original consumed payload**, restored from the payload
   captured at route start — not a mid-transformation body. When the payload
   could not be captured (`metadata_only` mode or an uncapturable body type),
