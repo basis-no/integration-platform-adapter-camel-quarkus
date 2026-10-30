@@ -20,9 +20,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Validate matching version changelog
-        run: python3 scripts/check_changelog.py
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

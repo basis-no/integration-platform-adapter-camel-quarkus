@@ -6,17 +6,30 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
+/** Serializes terminal adapter results into contract-compatible JSON. */
 public class MessageStatusEventJson {
     private final ObjectMapper objectMapper;
 
+    /** Creates a serializer with the adapter's default Jackson configuration. */
     public MessageStatusEventJson() {
         this(defaultObjectMapper());
     }
 
+    /**
+     * Creates a serializer with a supplied object mapper.
+     *
+     * @param objectMapper configured JSON mapper
+     */
     public MessageStatusEventJson(ObjectMapper objectMapper) {
         this.objectMapper = objectMapper;
     }
 
+    /**
+     * Serializes a complete terminal lifecycle event.
+     *
+     * @param result terminal adapter result
+     * @return JSON lifecycle event
+     */
     public String serialize(MessageAttemptResult result) {
         try {
             return objectMapper.writeValueAsString(MessageStatusEvent.from(result));
@@ -25,6 +38,12 @@ public class MessageStatusEventJson {
         }
     }
 
+    /**
+     * Serializes the contract step array for Postgres JSONB storage.
+     *
+     * @param result terminal adapter result
+     * @return JSON step array
+     */
     public String serializeSteps(MessageAttemptResult result) {
         try {
             return objectMapper.writeValueAsString(MessageStatusEvent.from(result).steps());

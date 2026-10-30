@@ -14,7 +14,10 @@ import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
+import java.time.Instant;
+import java.util.Map;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -104,6 +107,81 @@ class PostgresStepOutcomeStoreTest {
 
         assertTrue(store.wasDelivered("message-123:write-product"));
         assertEquals("DELIVERED", status("message-123:write-product"));
+    }
+
+    @Test
+    void storesDeliveredMarkerAndOutputCheckpointInSameRow() {
+        StepResult delivered = StepResult.delivered(
+                "create-order",
+                "message-123:create-order",
+                "https://partner.example.test/orders");
+
+        store.recordDelivered(delivered, checkpoint("partner-order-42"));
+
+        StepOutputCheckpoint restored = store.readCheckpoint("message-123:create-order").orElseThrow();
+        assertTrue(store.wasDelivered("message-123:create-order"));
+        assertEquals(StepOutputCheckpoint.POSTGRES_INLINE, restored.storage());
+        assertArrayEquals("partner-order-42".getBytes(StandardCharsets.UTF_8), restored.bodyBytes());
+        assertEquals("request-123", restored.headers().get("Partner-Request-Id"));
+        assertEquals(202, restored.properties().get("partnerStatus"));
+    }
+
+    @Test
+    void failedOutcomeCannotEraseDeliveredCheckpoint() {
+        StepResult delivered = StepResult.delivered(
+                "create-order",
+                "message-123:create-order",
+                "https://partner.example.test/orders");
+        store.recordDelivered(delivered, checkpoint("partner-order-42"));
+
+        store.recordFailed(StepResult.failed(
+                "create-order",
+                "message-123:create-order",
+                "https://partner.example.test/orders",
+                new IllegalStateException("late route failure")));
+
+        StepOutputCheckpoint restored = store.readCheckpoint("message-123:create-order").orElseThrow();
+        assertEquals("partner-order-42", new String(restored.bodyBytes(), StandardCharsets.UTF_8));
+        assertEquals("DELIVERED", status("message-123:create-order"));
+    }
+
+    @Test
+    void explicitRedoReplacesCheckpointForSameStableKey() {
+        StepResult delivered = StepResult.delivered(
+                "create-order",
+                "message-123:create-order",
+                "https://partner.example.test/orders");
+        store.recordDelivered(delivered, checkpoint("partner-order-42"));
+
+        store.recordDelivered(delivered, checkpoint("partner-order-43"));
+
+        StepOutputCheckpoint restored = store.readCheckpoint("message-123:create-order").orElseThrow();
+        assertEquals("partner-order-43", new String(restored.bodyBytes(), StandardCharsets.UTF_8));
+        assertEquals(1, rowCount());
+    }
+
+    private StepOutputCheckpoint checkpoint(String body) {
+        byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
+        return new StepOutputCheckpoint(
+                StepOutputCheckpoint.POSTGRES_INLINE,
+                bytes,
+                null,
+                bytes.length,
+                sha256(bytes),
+                StepOutputCheckpoint.UTF8_BODY,
+                "text/plain",
+                Instant.now().plusSeconds(3600),
+                Map.of("Partner-Request-Id", "request-123"),
+                Map.of("partnerStatus", 202));
+    }
+
+    private String sha256(byte[] bytes) {
+        try {
+            return java.util.HexFormat.of().formatHex(
+                    java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
     }
 
     private String status(String idempotencyKey) {

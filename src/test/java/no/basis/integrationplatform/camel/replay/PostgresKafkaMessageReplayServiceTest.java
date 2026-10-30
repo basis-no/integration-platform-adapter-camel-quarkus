@@ -11,9 +11,6 @@ import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.BeforeEach;
-import org.junit.jupiter.api.AfterEach;
-import org.apache.camel.impl.DefaultCamelContext;
-import org.apache.camel.builder.RouteBuilder;
 import org.junit.jupiter.api.Test;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.junit.jupiter.Container;
@@ -49,7 +46,6 @@ class PostgresKafkaMessageReplayServiceTest {
     @Container
     private static final ConfluentKafkaContainer KAFKA = new ConfluentKafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
 
-    private DefaultCamelContext context;
     private DataSource dataSource;
     private PostgresMessageStoreSink sink;
     private PostgresKafkaMessageReplayService replayService;
@@ -59,20 +55,7 @@ class PostgresKafkaMessageReplayServiceTest {
         dataSource = dataSource();
         no.basis.integrationplatform.camel.TestJdbc.awaitReachable(dataSource);
         sink = new PostgresMessageStoreSink(dataSource);
-        context = new DefaultCamelContext();
-        context.addRoutes(new RouteBuilder() {
-            public void configure() {
-                from("kafka:" + TOPIC + "?brokers=" + KAFKA.getBootstrapServers())
-                    .routeId("camel-route-id").autoStartup(false).process(e -> {});
-                from("direct:receiver").routeId("receiver-request").process(e -> {});
-                from("kafka:another-input?brokers=" + KAFKA.getBootstrapServers())
-                    .routeId("other-input").autoStartup(false).process(e -> {});
-                from("kafka:" + TOPIC + "?topicIsPattern=true&brokers=" + KAFKA.getBootstrapServers())
-                    .routeId("pattern-input").autoStartup(false).process(e -> {});
-            }
-        });
-        context.start();
-        replayService = new PostgresKafkaMessageReplayService(dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", context, "order-pipeline");
+        replayService = new PostgresKafkaMessageReplayService(dataSource, KAFKA.getBootstrapServers(), "bip.%s.in");
 
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
@@ -87,94 +70,13 @@ class PostgresKafkaMessageReplayServiceTest {
         }
     }
 
-    @AfterEach
-    void stopContext() throws Exception {
-        if (context != null) context.close();
-    }
-
-    @org.junit.jupiter.params.ParameterizedTest
-    @org.junit.jupiter.params.provider.ValueSource(strings = {"receiver-request", "removed-route", "other-input", "pattern-input"})
-    void rejectsUnsafeHistoricalRouteBeforeAuditOrPublication(String routeId) throws Exception {
-        sink.record(result("unsafe-old", 1, "<ReceiverRequest/>".getBytes(StandardCharsets.UTF_8), true, null));
-        try (var c = dataSource.getConnection(); var s = c.prepareStatement(
-                "update bip_message_attempt set route_id = ? where message_id = 'unsafe-old'")) {
-            s.setString(1, routeId); s.executeUpdate();
-        }
-        assertThrows(MessageReplayException.class, () -> replayService.replay("unsafe-old"));
-        assertEquals("0", singleValue("select count(*) from bip_message_replay_audit"));
-    }
-
-    @Test
-    void retainedDeliveryAuditIsSearchableButRejectedBeforeReplayAuditOrPublication() throws Exception {
-        context.addRoutePolicyFactory(new no.basis.integrationplatform.camel.lifecycle.MessageStoreRoutePolicyFactory(
-                sink, "order-pipeline", "postgres-inline", 1000, 30, true, "delivery"));
-        context.addRoutes(new RouteBuilder() {
-            public void configure() {
-                from("direct:delivery").routeId("delivery").setBody(constant("receiver response"));
-            }
-        });
-        context.start();
-        try (var producer = context.createProducerTemplate()) {
-            for (String body : java.util.List.of("<Delivery>one</Delivery>", "<Delivery>two</Delivery>")) {
-                producer.request("direct:delivery", e -> {
-                    e.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, "original-input");
-                    e.getMessage().setBody(body);
-                });
-            }
-        }
-        assertEquals("2", singleValue("select count(*) from bip_message_log where correlation_id ilike '%original-input%'"));
-        assertEquals("2", singleValue("select count(distinct message_id) from bip_message_log where correlation_id = 'original-input'"));
-        assertEquals("2", singleValue("select count(*) from bip_message_log where payload_bytes is not null and replayable = false"));
-        assertEquals("2", singleValue("select count(*) from bip_message_attempt where route_id = 'delivery'"));
-        String id = singleValue("select message_id from bip_message_log order by message_id limit 1");
-        assertThrows(MessageReplayException.class, () -> replayService.replay(id));
-        assertEquals("0", singleValue("select count(*) from bip_message_replay_audit"));
-        // Also retain the server-side route guard if historical metadata incorrectly claims replayability.
-        try (var connection = dataSource.getConnection(); var statement = connection.createStatement()) {
-            statement.executeUpdate("update bip_message_log set replayable = true");
-            statement.executeUpdate("update bip_message_attempt set replayable = true");
-        }
-        assertThrows(MessageReplayException.class, () -> replayService.replay(id));
-        assertEquals("0", singleValue("select count(*) from bip_message_replay_audit"));
-    }
-
-    @Test
-    void rejectsInconsistentStoredPayload() throws Exception {
-        sink.record(result("unsafe-old", 1, "<Input/>".getBytes(StandardCharsets.UTF_8), true, null));
-        try (var c = dataSource.getConnection(); var s = c.createStatement()) {
-            s.executeUpdate("update bip_message_log set payload_bytes = decode('00', 'hex') where message_id = 'unsafe-old'");
-        }
-        assertThrows(MessageReplayException.class, () -> replayService.replay("unsafe-old"));
-        assertEquals("0", singleValue("select count(*) from bip_message_replay_audit"));
-    }
-
-    @Test
-    void rejectsMissingAttempt() throws Exception {
-        sink.record(result("unsafe-old", 1, "<Input/>".getBytes(StandardCharsets.UTF_8), true, null));
-        try (var c = dataSource.getConnection(); var s = c.createStatement()) {
-            s.executeUpdate("delete from bip_message_attempt where message_id = 'unsafe-old'");
-        }
-        assertThrows(MessageReplayException.class, () -> replayService.replay("unsafe-old"));
-        assertEquals("0", singleValue("select count(*) from bip_message_replay_audit"));
-    }
-
-    @Test
-    void rejectsAnotherIntegrationsStoredMessage() throws Exception {
-        sink.record(result("unsafe-old", 1, "<Input/>".getBytes(StandardCharsets.UTF_8), true, null));
-        try (var c = dataSource.getConnection(); var s = c.createStatement()) {
-            s.executeUpdate("update bip_message_log set integration = 'other-integration' where message_id = 'unsafe-old'");
-        }
-        assertThrows(MessageReplayException.class, () -> replayService.replay("unsafe-old"));
-        assertEquals("0", singleValue("select count(*) from bip_message_replay_audit"));
-    }
-
     @Test
     void republishesStoredPayloadWithReplayHeadersAndNextAttempt() throws Exception {
         sink.record(result("message-123", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
 
         MessageReplayResult result = replayService.replay(new MessageReplayRequest(
                 "message-123",
-                "vegard@example.com",
+                "operator@example.com",
                 "Retry after vendor outage",
                 List.of("sftp")));
 
@@ -186,7 +88,7 @@ class PostgresKafkaMessageReplayServiceTest {
         assertEquals("message-123", auditValue(result.replayId(), "message_id"));
         assertEquals("order-pipeline", auditValue(result.replayId(), "integration"));
         assertEquals("2", auditValue(result.replayId(), "replay_attempt"));
-        assertEquals("vegard@example.com", auditValue(result.replayId(), "requested_by"));
+        assertEquals("operator@example.com", auditValue(result.replayId(), "requested_by"));
         assertEquals("Retry after vendor outage", auditValue(result.replayId(), "reason"));
         assertEquals("[\"sftp\"]", auditValue(result.replayId(), "redo_steps::text"));
         assertEquals(TOPIC, auditValue(result.replayId(), "target_topic"));

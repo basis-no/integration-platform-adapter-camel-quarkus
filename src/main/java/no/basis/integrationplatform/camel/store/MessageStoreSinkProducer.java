@@ -5,35 +5,48 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Disposes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
+import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import javax.sql.DataSource;
+import java.util.Optional;
 
+/** CDI producer selecting the configured terminal outcome sink. */
 @ApplicationScoped
 public class MessageStoreSinkProducer {
+    /** Configuration value selecting the non-durable logging sink. */
     public static final String LOGGING_SINK = "log";
+    /** Configuration value selecting direct Postgres persistence. */
     public static final String POSTGRES_SINK = "postgres";
+    /** Configuration value selecting Kafka lifecycle-event publication. */
     public static final String KAFKA_SINK = "kafka";
+    /** Comma-separated supported sink configuration values. */
     public static final String SUPPORTED_SINKS = LOGGING_SINK + ", " + POSTGRES_SINK + ", " + KAFKA_SINK;
+
+    /** Creates the stateless CDI producer. */
+    public MessageStoreSinkProducer() {
+    }
 
     @Produces
     @DefaultBean
     @ApplicationScoped
     MessageStoreSink messageStoreSink(
             @ConfigProperty(name = "basis.message-store.sink", defaultValue = LOGGING_SINK) String sink,
-            @ConfigProperty(name = "kafka.bootstrap.servers", defaultValue = "") String bootstrapServers,
+            @ConfigProperty(name = "kafka.bootstrap.servers") Optional<String> bootstrapServers,
             @ConfigProperty(name = "basis.message-store.status-topic",
                     defaultValue = KafkaMessageStoreSink.DEFAULT_STATUS_TOPIC) String statusTopic,
-            Instance<DataSource> dataSource) {
-        return switch (sink) {
+            Instance<DataSource> dataSource,
+            MessageStoreTestProfileConfig testProfile) {
+        String effectiveSink = testProfile.effectiveSink(sink);
+        return switch (effectiveSink) {
             case POSTGRES_SINK -> new PostgresMessageStoreSink(requiredDataSource(dataSource));
             case KAFKA_SINK -> new KafkaMessageStoreSink(
-                    KafkaMessageStoreSink.kafkaProducer(requiredKafkaBootstrapServers(bootstrapServers)),
+                    KafkaMessageStoreSink.kafkaProducer(requiredKafkaBootstrapServers(bootstrapServers.orElse(""))),
                     statusTopic,
                     new MessageStatusEventJson());
             case LOGGING_SINK -> new LoggingMessageStoreSink();
             default -> throw new IllegalArgumentException(
-                    "Unsupported basis.message-store.sink value: " + sink
+                    "Unsupported basis.message-store.sink value: " + effectiveSink
                             + ". Supported values: " + SUPPORTED_SINKS);
         };
     }

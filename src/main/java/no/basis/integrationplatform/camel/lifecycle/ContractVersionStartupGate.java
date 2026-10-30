@@ -5,6 +5,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -26,6 +27,7 @@ import java.util.function.Supplier;
  */
 @ApplicationScoped
 public class ContractVersionStartupGate {
+    /** Contract major implemented by this adapter. */
     public static final int EXPECTED_CONTRACT_MAJOR = 1;
 
     static final String CONTRACT_TABLE = "bip_contract";
@@ -49,11 +51,19 @@ public class ContractVersionStartupGate {
     private final int maxAttempts;
     private final long retryDelayMs;
 
+    /**
+     * Creates the startup gate from the effective sink and optional datasource.
+     *
+     * @param sinkMode configured message-store sink
+     * @param dataSource Quarkus datasource handle
+     * @param testProfile active test-profile policy
+     */
     @Inject
     public ContractVersionStartupGate(
             @ConfigProperty(name = "basis.message-store.sink", defaultValue = "log") String sinkMode,
-            Instance<DataSource> dataSource) {
-        this(sinkMode, () -> dataSource.isResolvable() ? dataSource.get() : null);
+            Instance<DataSource> dataSource,
+            MessageStoreTestProfileConfig testProfile) {
+        this(testProfile.effectiveSink(sinkMode), () -> dataSource.isResolvable() ? dataSource.get() : null);
     }
 
     ContractVersionStartupGate(String sinkMode, Supplier<DataSource> dataSource) {

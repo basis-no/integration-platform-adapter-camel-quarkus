@@ -23,7 +23,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class DefaultStepTrackerTest {
     private final RecordingStepOutcomeStore stepOutcomeStore = new RecordingStepOutcomeStore();
-    private final DefaultStepTracker tracker = new DefaultStepTracker(stepOutcomeStore);
+    private final DefaultStepTracker tracker = new DefaultStepTracker(
+            stepOutcomeStore,
+            new DefaultStepClassifier("", "", "notify-vendor"));
 
     @Test
     void injectsIdempotencyKeyFromMessageIdAndInterceptedNodeId() {
@@ -112,7 +114,9 @@ class DefaultStepTrackerTest {
         tracker.recordDelivered(exchange);
 
         // Then the original send may continue, but no platform step is recorded.
-        assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        assertEquals(StepRole.INTERNAL.name(),
+                exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class));
+        assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
         assertNull(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
         assertNull(exchange.getProperty(PlatformExchangeProperties.STEPS));
         assertTrue(stepOutcomeStore.checkedKeys.isEmpty());
@@ -128,7 +132,9 @@ class DefaultStepTrackerTest {
             tracker.beforeSend(exchange);
             tracker.recordDelivered(exchange);
 
-            assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+            assertEquals(StepRole.INTERNAL.name(),
+                    exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class));
+            assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
             assertNull(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
             assertNull(exchange.getProperty(PlatformExchangeProperties.STEPS));
         }
@@ -172,7 +178,8 @@ class DefaultStepTrackerTest {
         tracker.beforeSend(exchange);
 
         // Then the step is executed and recorded again instead of being skipped.
-        assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        assertFalse(Boolean.TRUE.equals(
+                exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class)));
         assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, Boolean.class));
 
         tracker.recordDelivered(exchange);
@@ -238,7 +245,7 @@ class DefaultStepTrackerTest {
     @Test
     void derivesFallbackStepIdWhenNodeIdIsMissing() {
         // Given an external endpoint without a Camel node id.
-        Exchange exchange = exchange("sql:insert into products values (?)", null);
+        Exchange exchange = exchange("kafka:products", null);
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
 
         // When the adapter has to identify the step anyway.
@@ -248,8 +255,8 @@ class DefaultStepTrackerTest {
         // Then it derives a stable, non-sensitive fallback instead of exposing full SQL.
         String stepId = exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ID, String.class);
         assertNotNull(stepId);
-        assertTrue(stepId.startsWith("unknown-route:sql:"));
-        assertFalse(stepId.contains("insert into products values (?)"));
+        assertTrue(stepId.startsWith("unknown-route:kafka:"));
+        assertFalse(stepId.contains("products"));
         assertEquals("message-123:" + stepId, exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
     }
 
@@ -275,6 +282,136 @@ class DefaultStepTrackerTest {
         assertEquals(StepStatus.FAILED, steps.getFirst().status());
         assertEquals("vendor unavailable", steps.getFirst().error());
         assertEquals(steps.getFirst(), stepOutcomeStore.failed.getFirst());
+    }
+
+    @Test
+    void suppressedExchangeDoesNotReadOrWriteTheStepOutcomeStore() {
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.setProperty(PlatformExchangeProperties.RECORD_MESSAGE, "false");
+
+        tracker.beforeSend(exchange);
+        tracker.recordDelivered(exchange);
+
+        assertFalse(Boolean.TRUE.equals(
+                exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class)));
+        assertNull(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+        assertNull(exchange.getProperty(PlatformExchangeProperties.STEPS));
+        assertTrue(stepOutcomeStore.checkedKeys.isEmpty());
+        assertTrue(stepOutcomeStore.delivered.isEmpty());
+    }
+
+    @Test
+    void configuredAuthenticationCallExecutesWithoutUsingStepLedger() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:fetch-token");
+        DefaultStepTracker repeatableTracker = new DefaultStepTracker(
+                stepOutcomeStore,
+                new DefaultStepClassifier("", "fetch-token", ""));
+        Exchange exchange = exchange("https://api.example.test/token", "fetch-token");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(Exchange.HTTP_METHOD, "POST");
+
+        repeatableTracker.beforeSend(exchange);
+        repeatableTracker.recordDelivered(exchange);
+
+        assertEquals(StepRole.REPEATABLE.name(),
+                exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class));
+        assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, Boolean.class));
+        assertNull(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+        assertTrue(stepOutcomeStore.checkedKeys.isEmpty());
+        assertNull(exchange.getProperty(PlatformExchangeProperties.STEPS));
+    }
+
+    @Test
+    void safeHttpReadExecutesOnEveryReplayWithoutUsingStepLedger() {
+        DefaultStepTracker repeatableTracker = new DefaultStepTracker(
+                stepOutcomeStore,
+                DefaultStepClassifier.defaults());
+        Exchange exchange = exchange("https://api.example.test/orders", "fetch-orders");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(Exchange.HTTP_METHOD, "GET");
+
+        repeatableTracker.beforeSend(exchange);
+        repeatableTracker.recordDelivered(exchange);
+
+        assertEquals(StepRole.REPEATABLE.name(),
+                exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class));
+        assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, Boolean.class));
+        assertTrue(stepOutcomeStore.checkedKeys.isEmpty());
+        assertNull(exchange.getProperty(PlatformExchangeProperties.STEPS));
+    }
+
+    @Test
+    void ambiguousEndpointExecutesWithoutUnsafeDeduplication() {
+        DefaultStepTracker defaultTracker = new DefaultStepTracker(
+                stepOutcomeStore,
+                DefaultStepClassifier.defaults());
+        Exchange exchange = exchange("https://api.example.test/operation", "unknown-operation");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(Exchange.HTTP_METHOD, "POST");
+
+        defaultTracker.beforeSend(exchange);
+        defaultTracker.recordDelivered(exchange);
+
+        assertEquals(StepRole.AMBIGUOUS.name(),
+                exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class));
+        assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, Boolean.class));
+        assertNull(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+        assertTrue(stepOutcomeStore.checkedKeys.isEmpty());
+        assertNull(exchange.getProperty(PlatformExchangeProperties.STEPS));
+    }
+
+    @Test
+    void customClassifierCanProtectAComponentUnknownToTheAdapter() {
+        StepClassifier customClassifier = context -> StepRole.SIDE_EFFECT;
+        DefaultStepTracker customTracker = new DefaultStepTracker(stepOutcomeStore, customClassifier);
+        Exchange exchange = exchange("custom-client:write", "write-custom-record");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+
+        customTracker.beforeSend(exchange);
+        customTracker.recordDelivered(exchange);
+
+        assertEquals("message-123:write-custom-record",
+                exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+        assertEquals(1, stepOutcomeStore.checkedKeys.size());
+        assertEquals(1, stepOutcomeStore.delivered.size());
+    }
+
+    @Test
+    void outputProducingStepRejectsNoopStoreBeforeExternalSend() {
+        DefaultStepTracker outputTracker = new DefaultStepTracker(
+                new NoopStepOutcomeStore(),
+                new DefaultStepClassifier("", "", "", "create-order"),
+                null);
+        Exchange exchange = exchange("https://api.example.test/orders", "create-order");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+
+        StepOutputCheckpointException failure = assertThrows(
+                StepOutputCheckpointException.class,
+                () -> outputTracker.beforeSend(exchange));
+
+        assertTrue(failure.getMessage().contains("step-outcome-store=postgres"));
+    }
+
+    @Test
+    void repeatableCallDoesNotInheritAdapterIdempotencyHeadersFromPreviousWrite() {
+        Exchange exchange = exchange("kafka:orders", "publish-order");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+
+        tracker.beforeSend(exchange);
+        tracker.recordDelivered(exchange);
+        assertEquals("message-123:publish-order",
+                exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+
+        exchange.setProperty(Exchange.INTERCEPTED_ENDPOINT, "https://api.example.test/orders");
+        exchange.setProperty(Exchange.INTERCEPTED_NODE_ID, "fetch-orders");
+        exchange.getMessage().setHeader(Exchange.HTTP_METHOD, "GET");
+        tracker.beforeSend(exchange);
+
+        assertEquals(StepRole.REPEATABLE.name(),
+                exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class));
+        assertNull(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+        assertNull(exchange.getMessage().getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
     }
 
     private Exchange exchange(String endpointUri, String nodeId) {

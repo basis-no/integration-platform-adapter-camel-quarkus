@@ -28,10 +28,10 @@ class PlatformRouteConfigurationTest {
         Instant before = Instant.now();
 
         // When the dead letter channel prepares the exchange for parking.
-        configuration.prepareDlq(exchange);
+        configuration.markDlqParked(exchange);
 
         // Then the DLQ record carries the original consumed payload plus diagnostics.
-        assertEquals(false, exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
+        assertTrue(Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class)));
         assertEquals("{\"original\":true}",
                 new String(exchange.getMessage().getBody(byte[].class), StandardCharsets.UTF_8));
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
@@ -50,7 +50,7 @@ class PlatformRouteConfigurationTest {
         exchange.getMessage().setBody("stream-derived body");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
 
-        configuration.prepareDlq(exchange);
+        configuration.markDlqParked(exchange);
 
         assertEquals("stream-derived body", exchange.getMessage().getBody());
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
@@ -58,11 +58,27 @@ class PlatformRouteConfigurationTest {
     }
 
     @Test
+    void dlqParkingUsesClaimCheckForObjectBackedPayload() {
+        byte[] claimCheck = "{\"storage\":\"s3_object\"}".getBytes(StandardCharsets.UTF_8);
+        Exchange exchange = exchange();
+        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK, claimCheck);
+        exchange.getMessage().setBody("transformed body");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("target unavailable"));
+
+        configuration.markDlqParked(exchange);
+
+        assertEquals("{\"storage\":\"s3_object\"}",
+                new String(exchange.getMessage().getBody(byte[].class), StandardCharsets.UTF_8));
+        assertEquals(no.basis.integrationplatform.camel.payload.PayloadReference.CONTENT_TYPE,
+                exchange.getMessage().getHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE));
+    }
+
+    @Test
     void dlqParkingPrefersExchangeExceptionAndFallsBackToClassName() {
         Exchange exchange = exchange();
         exchange.setException(new IllegalStateException((String) null));
 
-        configuration.prepareDlq(exchange);
+        configuration.markDlqParked(exchange);
 
         assertEquals(IllegalStateException.class.getName(), exchange.getMessage().getHeader(PlatformHeaders.ERROR));
     }

@@ -6,6 +6,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.ingress.IngressMessageIdentity;
 import no.basis.integrationplatform.camel.model.StepResult;
 import org.apache.camel.Exchange;
 import org.slf4j.Logger;
@@ -20,39 +21,114 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 
+/** Default replay-aware tracker used by the endpoint interception strategy. */
 @ApplicationScoped
 public class DefaultStepTracker implements StepTracker {
     private static final Logger LOG = LoggerFactory.getLogger(DefaultStepTracker.class);
 
-    private static final Set<String> DEFAULT_INTERNAL_SCHEMES = Set.of(
-            "bean", "controlbus", "dataformat", "direct", "language", "log", "mock",
-            "micrometer", "seda", "stub", "timer", "validator", "vm", "xslt", "xslt-saxon");
-
     private static final ObjectMapper REDO_STEPS_READER = new ObjectMapper();
 
     private final StepOutcomeStore stepOutcomeStore;
+    private final StepClassifier stepClassifier;
+    private final StepOutputCheckpointService checkpointService;
+    private final IngressMessageIdentity ingressMessageIdentity;
+    private final Set<String> warnedAmbiguousEndpoints = ConcurrentHashMap.newKeySet();
 
+    /**
+     * Creates the CDI tracker with durable storage, classification, and checkpoint services.
+     *
+     * @param stepOutcomeStore durable step outcome store
+     * @param stepClassifier replay-semantic endpoint classifier
+     * @param checkpointService output checkpoint service
+     * @param ingressMessageIdentity non-Kafka ingress identity helper
+     */
     @Inject
-    public DefaultStepTracker(StepOutcomeStore stepOutcomeStore) {
+    public DefaultStepTracker(
+            StepOutcomeStore stepOutcomeStore,
+            StepClassifier stepClassifier,
+            StepOutputCheckpointService checkpointService,
+            IngressMessageIdentity ingressMessageIdentity) {
         this.stepOutcomeStore = stepOutcomeStore;
+        this.stepClassifier = stepClassifier;
+        this.checkpointService = checkpointService;
+        this.ingressMessageIdentity = ingressMessageIdentity;
+    }
+
+    /**
+     * Creates a tracker without output-checkpoint or ingress-normalization support.
+     *
+     * @param stepOutcomeStore step outcome store
+     * @param stepClassifier replay-semantic endpoint classifier
+     */
+    public DefaultStepTracker(StepOutcomeStore stepOutcomeStore, StepClassifier stepClassifier) {
+        this(stepOutcomeStore, stepClassifier, null, null);
+    }
+
+    /**
+     * Creates a tracker with output checkpoints but without ingress normalization.
+     *
+     * @param stepOutcomeStore step outcome store
+     * @param stepClassifier replay-semantic endpoint classifier
+     * @param checkpointService output checkpoint service
+     */
+    public DefaultStepTracker(
+            StepOutcomeStore stepOutcomeStore,
+            StepClassifier stepClassifier,
+            StepOutputCheckpointService checkpointService) {
+        this(stepOutcomeStore, stepClassifier, checkpointService, null);
+    }
+
+    /**
+     * Creates a tracker using the default endpoint classifier.
+     *
+     * @param stepOutcomeStore step outcome store
+     */
+    public DefaultStepTracker(StepOutcomeStore stepOutcomeStore) {
+        this(stepOutcomeStore, DefaultStepClassifier.defaults());
     }
 
     @Override
     public void beforeSend(Exchange exchange) {
         String endpointUri = exchange.getProperty(Exchange.INTERCEPTED_ENDPOINT, String.class);
+        if (ingressMessageIdentity != null) {
+            ingressMessageIdentity.prepareKafkaPublish(exchange, endpointUri);
+        }
+        clearInjectedIdempotencyHeaders(exchange);
         clearCurrentStep(exchange);
         exchange.setProperty(PlatformExchangeProperties.CURRENT_ENDPOINT_URI, endpointUri);
 
-        if (isInternalEndpoint(endpointUri)) {
-            exchange.setProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, true);
-            exchange.setProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, false);
+        if (recordingSuppressed(exchange)) {
+            exchange.setProperty(PlatformExchangeProperties.STEP_TRACKING_SUPPRESSED, true);
+            return;
+        }
+
+        String nodeId = exchange.getProperty(Exchange.INTERCEPTED_NODE_ID, String.class);
+        StepClassificationContext context = new StepClassificationContext(endpointUri, nodeId, exchange);
+        StepRole role = stepClassifier.classify(context);
+        exchange.setProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, role.name());
+
+        if (role != StepRole.SIDE_EFFECT && role != StepRole.OUTPUT_SIDE_EFFECT) {
+            suppressStepTracking(exchange);
+            if (role == StepRole.AMBIGUOUS) {
+                warnAmbiguous(context);
+            }
             return;
         }
 
         String stepId = resolveStepId(exchange, endpointUri);
         String messageId = ensureMessageId(exchange);
         String idempotencyKey = messageId + ":" + stepId;
+        if (role == StepRole.OUTPUT_SIDE_EFFECT) {
+            if (!stepOutcomeStore.supportsOutputCheckpoints()) {
+                throw new StepOutputCheckpointException(
+                        "Output-producing step '" + stepId
+                                + "' requires a durable checkpoint-capable step outcome store; "
+                                + "configure basis.message-store.step-outcome-store=postgres");
+            }
+            requiredCheckpointService(stepId).ensureCaptureAvailable(stepId);
+        }
         boolean alreadyDelivered = stepOutcomeStore.wasDelivered(idempotencyKey);
 
         // Contract §9 (DECISION D1): steps listed in x-bip-redo-steps MUST be
@@ -68,8 +144,18 @@ public class DefaultStepTracker implements StepTracker {
         exchange.setProperty(PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY, idempotencyKey);
         exchange.setProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, skip);
         exchange.setProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, skip);
+        if (skip && role == StepRole.OUTPUT_SIDE_EFFECT) {
+            StepOutputCheckpoint checkpoint = stepOutcomeStore.readCheckpoint(idempotencyKey)
+                    .orElseThrow(() -> new StepOutputCheckpointException(
+                            "Cannot safely replay output-producing step '" + stepId
+                                    + "': its DELIVERED ledger entry has no output checkpoint. "
+                                    + "Restore the checkpoint or request explicit redo only when the receiver "
+                                    + "honors its stable idempotency key."));
+            exchange.setProperty(PlatformExchangeProperties.CURRENT_STEP_CHECKPOINT, checkpoint);
+        }
         exchange.getMessage().setHeader(PlatformHeaders.IDEMPOTENCY_KEY, idempotencyKey);
         exchange.getMessage().setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, idempotencyKey);
+        exchange.setProperty(PlatformExchangeProperties.INJECTED_IDEMPOTENCY_KEY, idempotencyKey);
     }
 
     @SuppressWarnings("unchecked")
@@ -128,16 +214,35 @@ public class DefaultStepTracker implements StepTracker {
 
     @Override
     public void recordDelivered(Exchange exchange) {
-        if (shouldSkip(exchange)) {
+        if (shouldSkip(exchange) || stepTrackingSuppressed(exchange)) {
             return;
         }
         StepResult step = StepResult.delivered(currentStepId(exchange), currentIdempotencyKey(exchange), currentEndpointUri(exchange));
         steps(exchange).add(step);
-        stepOutcomeStore.recordDelivered(step);
+        if (currentStepRole(exchange) == StepRole.OUTPUT_SIDE_EFFECT) {
+            String messageId = ensureMessageId(exchange);
+            StepOutputCheckpoint checkpoint = requiredCheckpointService(step.step())
+                    .capture(exchange, messageId, step.step());
+            stepOutcomeStore.recordDelivered(step, checkpoint);
+        } else {
+            stepOutcomeStore.recordDelivered(step);
+        }
+    }
+
+    @Override
+    public void restoreSkippedOutput(Exchange exchange) {
+        StepOutputCheckpoint checkpoint = exchange.getProperty(
+                PlatformExchangeProperties.CURRENT_STEP_CHECKPOINT, StepOutputCheckpoint.class);
+        if (checkpoint != null) {
+            requiredCheckpointService(currentStepId(exchange)).restore(exchange, currentStepId(exchange), checkpoint);
+        }
     }
 
     @Override
     public void recordSkipped(Exchange exchange) {
+        if (stepTrackingSuppressed(exchange)) {
+            return;
+        }
         String stepId = currentStepId(exchange);
         if (stepId != null) {
             steps(exchange).add(StepResult.skipped(stepId, currentIdempotencyKey(exchange), currentEndpointUri(exchange)));
@@ -160,7 +265,7 @@ public class DefaultStepTracker implements StepTracker {
 
     @Override
     public void recordFailed(Exchange exchange) {
-        if (shouldSkip(exchange)) {
+        if (shouldSkip(exchange) || stepTrackingSuppressed(exchange)) {
             return;
         }
         Throwable failure = exchange.getException();
@@ -177,10 +282,36 @@ public class DefaultStepTracker implements StepTracker {
         exchange.removeProperty(PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY);
         exchange.removeProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP);
         exchange.removeProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED);
+        exchange.removeProperty(PlatformExchangeProperties.STEP_TRACKING_SUPPRESSED);
+        exchange.removeProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE);
+        exchange.removeProperty(PlatformExchangeProperties.CURRENT_STEP_CHECKPOINT);
     }
 
     private boolean shouldSkip(Exchange exchange) {
         return Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+    }
+
+    private boolean recordingSuppressed(Exchange exchange) {
+        Boolean recordMessage = exchange.getProperty(PlatformExchangeProperties.RECORD_MESSAGE, Boolean.class);
+        return Boolean.FALSE.equals(recordMessage);
+    }
+
+    private boolean stepTrackingSuppressed(Exchange exchange) {
+        return Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.STEP_TRACKING_SUPPRESSED, Boolean.class));
+    }
+
+    private void clearInjectedIdempotencyHeaders(Exchange exchange) {
+        String injectedKey = exchange.getProperty(PlatformExchangeProperties.INJECTED_IDEMPOTENCY_KEY, String.class);
+        if (injectedKey == null) {
+            return;
+        }
+        if (injectedKey.equals(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY))) {
+            exchange.getMessage().removeHeader(PlatformHeaders.IDEMPOTENCY_KEY);
+        }
+        if (injectedKey.equals(exchange.getMessage().getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY))) {
+            exchange.getMessage().removeHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY);
+        }
+        exchange.removeProperty(PlatformExchangeProperties.INJECTED_IDEMPOTENCY_KEY);
     }
 
     private String resolveStepId(Exchange exchange, String endpointUri) {
@@ -217,9 +348,23 @@ public class DefaultStepTracker implements StepTracker {
         return steps;
     }
 
-    private boolean isInternalEndpoint(String endpointUri) {
-        String scheme = scheme(endpointUri);
-        return DEFAULT_INTERNAL_SCHEMES.contains(scheme);
+    private void suppressStepTracking(Exchange exchange) {
+        exchange.setProperty(PlatformExchangeProperties.STEP_TRACKING_SUPPRESSED, true);
+        exchange.setProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, false);
+        exchange.setProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, false);
+    }
+
+    private void warnAmbiguous(StepClassificationContext context) {
+        String nodeId = hasText(context.nodeId()) ? context.nodeId() : "<missing>";
+        String warningKey = nodeId + ":" + context.scheme();
+        if (warnedAmbiguousEndpoints.add(warningKey)) {
+            LOG.warn("Endpoint send node {} with scheme {} has ambiguous replay semantics; "
+                            + "it will execute on every replay and is not protected by the step ledger. "
+                            + "Classify the node with basis.message-store.step.internal-ids, "
+                            + "basis.message-store.step.repeatable-ids, or "
+                            + "basis.message-store.step.side-effect-ids/output-side-effect-ids",
+                    nodeId, context.scheme());
+        }
     }
 
     private String currentStepId(Exchange exchange) {
@@ -232,6 +377,19 @@ public class DefaultStepTracker implements StepTracker {
 
     private String currentEndpointUri(Exchange exchange) {
         return exchange.getProperty(PlatformExchangeProperties.CURRENT_ENDPOINT_URI, String.class);
+    }
+
+    private StepRole currentStepRole(Exchange exchange) {
+        String role = exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class);
+        return role == null ? null : StepRole.valueOf(role);
+    }
+
+    private StepOutputCheckpointService requiredCheckpointService(String stepId) {
+        if (checkpointService == null) {
+            throw new StepOutputCheckpointException(
+                    "Output-producing step '" + stepId + "' requires output checkpoint support");
+        }
+        return checkpointService;
     }
 
     private String scheme(String endpointUri) {

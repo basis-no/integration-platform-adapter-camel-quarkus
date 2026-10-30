@@ -6,12 +6,12 @@
 
   <groupId>no.basis.integrationplatform</groupId>
   <artifactId>integration-platform-adapter-camel-quarkus</artifactId>
-  <version>0.3.5-SNAPSHOT</version>
+  <version>0.4.0-SNAPSHOT</version>
   <packaging>jar</packaging>
 
-  <name>Basis Integration Platform Camel Quarkus Adapter</name>
-  <description>Camel Quarkus runtime adapter for the Basis integration platform
-    message store: Kafka consume with manual commit, retry/DLQ, step and
+  <name>Camel Quarkus Adapter</name>
+  <description>Camel Quarkus runtime adapter for message-store integration:
+    Kafka consume with manual commit, retry/DLQ, step and
     idempotency ledger, journaling and message resend, per message-store
     contract v1.</description>
   <url>https://github.com/basis-no/integration-platform-adapter-camel-quarkus</url>
@@ -48,6 +48,7 @@
     <compiler-plugin.version>3.15.0</compiler-plugin.version>
     <surefire-plugin.version>3.5.4</surefire-plugin.version>
     <jandex-plugin.version>3.5.0</jandex-plugin.version>
+    <javadoc-plugin.version>3.12.0</javadoc-plugin.version>
   </properties>
 
   <dependencyManagement>
@@ -66,6 +67,13 @@
         <type>pom</type>
         <scope>import</scope>
       </dependency>
+      <dependency>
+        <groupId>${quarkus.platform.group-id}</groupId>
+        <artifactId>quarkus-amazon-services-bom</artifactId>
+        <version>${quarkus.platform.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
     </dependencies>
   </dependencyManagement>
 
@@ -77,6 +85,14 @@
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-rest-jackson</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>io.quarkiverse.amazonservices</groupId>
+      <artifactId>quarkus-amazon-s3</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>software.amazon.awssdk</groupId>
+      <artifactId>url-connection-client</artifactId>
     </dependency>
     <dependency>
       <groupId>org.apache.camel</groupId>
@@ -99,6 +115,10 @@
       <artifactId>slf4j-api</artifactId>
     </dependency>
     <dependency>
+      <groupId>org.eclipse.microprofile.health</groupId>
+      <artifactId>microprofile-health-api</artifactId>
+    </dependency>
+    <dependency>
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
     </dependency>
@@ -109,6 +129,21 @@
     <dependency>
       <groupId>org.junit.jupiter</groupId>
       <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>io.smallrye</groupId>
+      <artifactId>smallrye-health</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId>
+      <artifactId>camel-direct</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId>
+      <artifactId>camel-core-languages</artifactId>
       <scope>test</scope>
     </dependency>
     <!-- Testcontainers 2.x module artifacts; versions managed by quarkus-bom. -->
@@ -131,13 +166,6 @@
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.camel</groupId><artifactId>camel-core-languages</artifactId><scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.camel.quarkus</groupId>
-      <artifactId>camel-quarkus-direct</artifactId>
     </dependency>
   </dependencies>
 
@@ -173,6 +201,15 @@
           </systemPropertyVariables>
         </configuration>
       </plugin>
+      <plugin>
+        <artifactId>maven-javadoc-plugin</artifactId>
+        <version>${javadoc-plugin.version}</version>
+        <configuration>
+          <doclint>all</doclint>
+          <failOnWarnings>true</failOnWarnings>
+          <quiet>true</quiet>
+        </configuration>
+      </plugin>
     </plugins>
   </build>
 
@@ -198,11 +235,6 @@
           </plugin>
           <plugin>
             <artifactId>maven-javadoc-plugin</artifactId>
-            <version>3.11.2</version>
-            <configuration>
-              <doclint>none</doclint>
-              <quiet>true</quiet>
-            </configuration>
             <executions>
               <execution>
                 <id>attach-javadocs</id>

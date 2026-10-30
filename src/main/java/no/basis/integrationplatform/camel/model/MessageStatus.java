@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.model;
 
+/** Message-store lifecycle status vocabulary shared with the runtime contract. */
 public enum MessageStatus {
     /**
      * Reserved for platform capture: the message has entered durable platform custody.

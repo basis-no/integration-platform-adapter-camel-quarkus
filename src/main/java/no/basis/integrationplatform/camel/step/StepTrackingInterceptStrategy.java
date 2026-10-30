@@ -8,16 +8,21 @@ import org.apache.camel.CamelContext;
 import org.apache.camel.Exchange;
 import org.apache.camel.NamedNode;
 import org.apache.camel.Processor;
-import org.apache.camel.model.RouteDefinition;
 import org.apache.camel.processor.SendDynamicProcessor;
 import org.apache.camel.processor.SendProcessor;
 import org.apache.camel.spi.InterceptStrategy;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
 
+/** Wraps endpoint-send processors with automatic classification and step tracking. */
 @ApplicationScoped
 public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private final StepTracker stepTracker;
 
+    /**
+     * Creates the intercept strategy.
+     *
+     * @param stepTracker tracker that owns classification and durable outcomes
+     */
     public StepTrackingInterceptStrategy(StepTracker stepTracker) {
         this.stepTracker = stepTracker;
     }
@@ -29,12 +34,6 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             Processor target,
             Processor nextTarget) {
 
-        // Parking is infrastructure work, not a replay-skippable business step.
-        for (NamedNode node = definition; node != null; node = node.getParent()) {
-            if (node instanceof RouteDefinition && "bip-confirmed-dead-letter".equals(node.getId())) {
-                return target;
-            }
-        }
         EndpointSend endpointSend = endpointSend(definition, target);
         if (endpointSend == null) {
             return target;
@@ -64,15 +63,15 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         return processorId;
     }
 
-    private record EndpointSend(String endpointUri, String nodeId) {
+    record EndpointSend(String endpointUri, String nodeId) {
     }
 
-    private static class StepTrackingProcessor implements AsyncProcessor {
+    static class StepTrackingProcessor implements AsyncProcessor {
         private final AsyncProcessor delegate;
         private final EndpointSend endpointSend;
         private final StepTracker stepTracker;
 
-        private StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker) {
+        StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker) {
             this.delegate = delegate;
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
@@ -82,6 +81,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         public void process(Exchange exchange) throws Exception {
             stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
             if (alreadyDelivered(exchange)) {
+                stepTracker.restoreSkippedOutput(exchange);
                 stepTracker.recordSkipped(exchange);
                 return;
             }
@@ -101,20 +101,32 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
-            stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
-            if (alreadyDelivered(exchange)) {
-                stepTracker.recordSkipped(exchange);
+            try {
+                stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
+                if (alreadyDelivered(exchange)) {
+                    stepTracker.restoreSkippedOutput(exchange);
+                    stepTracker.recordSkipped(exchange);
+                    callback.done(true);
+                    return true;
+                }
+            } catch (Exception failure) {
+                exchange.setException(failure);
                 callback.done(true);
                 return true;
             }
 
             return delegate.process(exchange, doneSync -> {
-                if (exchange.getException() == null) {
-                    stepTracker.recordDelivered(exchange);
-                } else {
-                    stepTracker.recordFailed(exchange);
+                try {
+                    if (exchange.getException() == null) {
+                        stepTracker.recordDelivered(exchange);
+                    } else {
+                        stepTracker.recordFailed(exchange);
+                    }
+                } catch (Exception failure) {
+                    exchange.setException(failure);
+                } finally {
+                    callback.done(doneSync);
                 }
-                callback.done(doneSync);
             });
         }
 
@@ -126,19 +138,26 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         @Override
         public java.util.concurrent.CompletableFuture<Exchange> processAsync(Exchange exchange) {
-            stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
-            if (alreadyDelivered(exchange)) {
-                stepTracker.recordSkipped(exchange);
-                return java.util.concurrent.CompletableFuture.completedFuture(exchange);
+            try {
+                stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
+                if (alreadyDelivered(exchange)) {
+                    stepTracker.restoreSkippedOutput(exchange);
+                    stepTracker.recordSkipped(exchange);
+                    return java.util.concurrent.CompletableFuture.completedFuture(exchange);
+                }
+            } catch (Exception failure) {
+                exchange.setException(failure);
+                return java.util.concurrent.CompletableFuture.failedFuture(failure);
             }
             return delegate.processAsync(exchange).whenComplete((result, failure) -> {
-                if (failure == null && result.getException() == null) {
-                    stepTracker.recordDelivered(result);
+                Exchange completedExchange = result != null ? result : exchange;
+                if (failure == null && completedExchange.getException() == null) {
+                    stepTracker.recordDelivered(completedExchange);
                 } else {
                     if (failure != null) {
-                        result.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
+                        completedExchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
                     }
-                    stepTracker.recordFailed(result);
+                    stepTracker.recordFailed(completedExchange);
                 }
             });
         }

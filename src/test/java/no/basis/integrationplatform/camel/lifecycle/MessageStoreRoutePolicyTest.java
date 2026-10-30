@@ -5,6 +5,9 @@ import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
+import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
+import no.basis.integrationplatform.camel.payload.PayloadReference;
+import no.basis.integrationplatform.camel.payload.PayloadStorageException;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import org.apache.camel.Exchange;
 import org.apache.camel.Route;
@@ -16,6 +19,9 @@ import org.junit.jupiter.api.Test;
 
 import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
+import java.io.InputStream;
+import java.time.Duration;
+import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -157,6 +163,27 @@ class MessageStoreRoutePolicyTest {
     }
 
     @Test
+    void recordsOutcomeWithoutCommittingWhenTestProfileDisablesCommit() {
+        RecordingSink sink = new RecordingSink();
+        CountingManualCommit commit = new CountingManualCommit();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                sink,
+                "adapter-test",
+                PayloadCapturePolicy.defaultPolicy(),
+                MessageBoundaryKind.KAFKA,
+                false);
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
+
+        policy.onExchangeBegin(route("order-pipeline"), exchange);
+        policy.onExchangeDone(route("order-pipeline"), exchange);
+
+        assertEquals(1, sink.recordCalls());
+        assertFalse(commit.committed);
+    }
+
+    @Test
     void doesNotCommitKafkaOffsetWhenSinkFails() {
         // Given a sink failure, for example Postgres or status-event publishing is unavailable.
         FailingSink sink = new FailingSink();
@@ -184,9 +211,8 @@ class MessageStoreRoutePolicyTest {
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
         exchange.setException(new IllegalArgumentException("bad payload"));
 
-        // An unparked failure is recorded, but remains failed for the consumer.
-        assertThrows(IllegalStateException.class,
-                () -> policy.onExchangeDone(route("order-pipeline"), exchange));
+        // When the policy builds the terminal attempt result.
+        policy.onExchangeDone(route("order-pipeline"), exchange);
 
         // Then the message-store sink receives a FAILED outcome with the error text.
         assertEquals(MessageStatus.FAILED, sink.result.status());
@@ -209,6 +235,78 @@ class MessageStoreRoutePolicyTest {
         assertEquals(1, sink.recordCalls());
         assertEquals(MessageStatus.COMPLETED, sink.result.status());
         assertEquals(null, sink.result.error());
+    }
+
+    @Test
+    void recordsHandledHttpExceptionAsFailed() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = httpAuditPolicy(sink);
+        Exchange exchange = exchange();
+        exchange.getMessage().setBody("request");
+        exchange.getMessage().setHeader(Exchange.HTTP_RESPONSE_CODE, 500);
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("downstream unavailable"));
+
+        policy.onExchangeBegin(route("receive-order"), exchange);
+        policy.onExchangeDone(route("receive-order"), exchange);
+
+        assertEquals(MessageStatus.FAILED, sink.result.status());
+        assertEquals("downstream unavailable", sink.result.error());
+        assertEquals("metadata_only", sink.result.payloadStorage());
+        assertFalse(sink.result.replayable());
+        assertEquals("replay disabled by policy", sink.result.replayDisabledReason());
+    }
+
+    @Test
+    void recordsHandledHttpErrorResponseAsFailedWithoutCaughtException() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = httpAuditPolicy(sink);
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(Exchange.HTTP_RESPONSE_CODE, 422);
+
+        policy.onExchangeBegin(route("receive-order"), exchange);
+        policy.onExchangeDone(route("receive-order"), exchange);
+
+        assertEquals(MessageStatus.FAILED, sink.result.status());
+        assertEquals("HTTP response status 422", sink.result.error());
+    }
+
+    @Test
+    void recordsSuccessfulHttpBoundaryWithoutKafkaCommit() {
+        RecordingSink sink = new RecordingSink();
+        CountingManualCommit commit = new CountingManualCommit();
+        MessageStoreRoutePolicy policy = httpAuditPolicy(sink);
+        Exchange exchange = exchange();
+        exchange.getMessage().setBody("request");
+        exchange.getMessage().setHeader(Exchange.HTTP_RESPONSE_CODE, 200);
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
+
+        policy.onExchangeBegin(route("receive-order"), exchange);
+        policy.onExchangeDone(route("receive-order"), exchange);
+
+        assertEquals(MessageStatus.COMPLETED, sink.result.status());
+        assertEquals(1, sink.recordCalls());
+        assertFalse(sink.result.replayable());
+        assertFalse(commit.committed);
+        assertNull(exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT));
+    }
+
+    @Test
+    void propagatesHttpSinkFailureWithoutCompletingSourceResponse() {
+        MessageStoreRoutePolicy policy = httpAuditPolicy(new FailingSink());
+        Exchange exchange = exchange();
+        exchange.getMessage().setBody("request");
+
+        policy.onExchangeBegin(route("receive-order"), exchange);
+
+        IllegalStateException thrown = assertThrows(
+                IllegalStateException.class,
+                () -> policy.onExchangeDone(route("receive-order"), exchange));
+
+        assertEquals("Failed to record message outcome; source response was not completed", thrown.getMessage());
+        assertNotNull(thrown.getCause());
+        assertEquals(thrown, exchange.getException());
+        assertEquals(500, exchange.getMessage().getHeader(Exchange.HTTP_RESPONSE_CODE));
+        assertEquals("Message outcome could not be recorded", exchange.getMessage().getBody(String.class));
     }
 
     @Test
@@ -243,6 +341,78 @@ class MessageStoreRoutePolicyTest {
         assertNotNull(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class));
     }
 
+    @Test
+    void suppressedExchangeIsAcknowledgedWithoutRecordingAnOutcome() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        CountingManualCommit commit = new CountingManualCommit();
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
+
+        policy.onExchangeBegin(route("poll-settlements"), exchange);
+        // YAML DSL constants may arrive as text; Camel converts this to Boolean.
+        exchange.setProperty(PlatformExchangeProperties.RECORD_MESSAGE, "false");
+        policy.onExchangeDone(route("poll-settlements"), exchange);
+
+        assertEquals(0, sink.recordCalls());
+        assertTrue(commit.committed);
+    }
+
+    @Test
+    void emptyPayloadIsRecordedUnlessExchangeIsExplicitlySuppressed() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setBody(null);
+
+        policy.onExchangeBegin(route("orders"), exchange);
+        policy.onExchangeDone(route("orders"), exchange);
+
+        assertEquals(1, sink.recordCalls());
+        assertEquals(0L, sink.result.payloadSizeBytes());
+    }
+
+    @Test
+    void objectStoreFailurePreventsKafkaCommitAndSuccessfulOutcome() {
+        RecordingSink sink = new RecordingSink();
+        CountingManualCommit commit = new CountingManualCommit();
+        PayloadObjectStore unavailable = new PayloadObjectStore() {
+            @Override
+            public PayloadReference store(String integration, String messageId, InputStream payload,
+                                          Long declaredSize, String contentType, Instant expiresAt, long maxBytes) {
+                throw new PayloadStorageException("object store unavailable");
+            }
+
+            @Override
+            public InputStream open(PayloadReference reference) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public void verify(PayloadReference reference) {
+                throw new UnsupportedOperationException();
+            }
+        };
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                sink,
+                "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1, 1024, Duration.ofDays(30), true),
+                MessageBoundaryKind.KAFKA,
+                true,
+                unavailable);
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
+        exchange.getMessage().setBody(new byte[]{1, 2});
+
+        PayloadStorageException failure = assertThrows(PayloadStorageException.class,
+                () -> policy.onExchangeBegin(route("orders"), exchange));
+
+        assertEquals("object store unavailable", failure.getMessage());
+        assertFalse(commit.committed);
+        assertEquals(0, sink.recordCalls());
+    }
+
     private Route route(String routeId) {
         InvocationHandler handler = (proxy, method, args) -> switch (method.getName()) {
             case "getRouteId", "getId" -> routeId;
@@ -254,6 +424,18 @@ class MessageStoreRoutePolicyTest {
 
     private Exchange exchange() {
         return new DefaultExchange(new DefaultCamelContext());
+    }
+
+    private MessageStoreRoutePolicy httpAuditPolicy(MessageStoreSink sink) {
+        return new MessageStoreRoutePolicy(
+                sink,
+                "adapter-test",
+                new PayloadCapturePolicy(
+                        PayloadMode.POSTGRES_INLINE,
+                        PayloadCapturePolicy.DEFAULT_MAX_BYTES,
+                        java.time.Duration.ofDays(30),
+                        false),
+                MessageBoundaryKind.HTTP);
     }
 
     private static class RecordingSink implements MessageStoreSink {
@@ -293,6 +475,15 @@ class MessageStoreRoutePolicyTest {
             if (!sink.recordedBeforeCommit) {
                 throw new AssertionError("Kafka offset was committed before MessageStoreSink.record");
             }
+            committed = true;
+        }
+    }
+
+    private static class CountingManualCommit implements KafkaManualCommit {
+        private boolean committed;
+
+        @Override
+        public void commit() {
             committed = true;
         }
     }

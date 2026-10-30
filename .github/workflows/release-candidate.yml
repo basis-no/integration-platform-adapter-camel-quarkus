@@ -1,0 +1,237 @@
+name: Inspect or resume a reviewed Central candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [inspect, upload, resume, publish]
+        default: inspect
+        description: Inspect never uploads; other actions require release approval
+      version:
+        required: true
+        description: Explicit approved candidate version, without v or SNAPSHOT
+      source_commit:
+        required: true
+        description: Exact approved 40-character source commit
+      signer:
+        required: true
+        description: Trusted uppercase 40-character signing fingerprint
+      candidate_run:
+        description: Existing successful inspection run for upload/resume/publish
+      state_run:
+        description: Latest deployment-state run for resume/publish
+      bundle_sha256:
+        description: Reviewed candidate bundle SHA-256 for upload/resume/publish
+      approval_reference:
+        description: Non-secret reference to actual human approval for the chosen portal action
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: central-candidate-${{ inputs.version }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  MODE: ${{ inputs.action }}
+  VERSION: ${{ inputs.version }}
+  SOURCE_COMMIT: ${{ inputs.source_commit }}
+  SIGNER: ${{ inputs.signer }}
+  CANDIDATE_RUN: ${{ inputs.candidate_run }}
+  STATE_RUN: ${{ inputs.state_run }}
+  BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
+  APPROVAL_REFERENCE: ${{ inputs.approval_reference }}
+
+jobs:
+  request:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Validate explicit action and exact inputs
+        run: >-
+          python3 .github/scripts/release-candidate.py selection
+          --mode "$MODE" --version "$VERSION" --commit "$SOURCE_COMMIT"
+          --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --state-run "$STATE_RUN"
+          --bundle-hash "$BUNDLE_SHA256" --attempt "$GITHUB_RUN_ATTEMPT"
+      - name: Require recorded action-specific human approval before credential jobs
+        if: inputs.action != 'inspect'
+        run: |
+          test "$GITHUB_EVENT_NAME" = workflow_dispatch
+          test -n "$APPROVAL_REFERENCE"
+      - name: Require a successful existing candidate inspection run
+        if: inputs.action != 'inspect'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CANDIDATE_RUN" > candidate-run.json
+          python3 - <<'PY'
+          import json
+          run = json.load(open('candidate-run.json'))
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          assert run['event'] == 'workflow_dispatch'
+          assert run['path'] == '.github/workflows/release-candidate.yml'
+          PY
+
+  inspect:
+    needs: request
+    if: inputs.action == 'inspect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      MAVEN_OPTS: -Xmx512m -XX:ActiveProcessorCount=2
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_commit }}
+          path: candidate
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Check clean snapshot source before rewriting candidate version
+        run: >-
+          python3 .github/scripts/release-candidate.py source
+          --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate
+      - name: Create isolated signing keyring
+        run: |
+          mkdir -m 700 "$RUNNER_TEMP/central-inspection-keyring"
+          echo "GNUPGHOME=$RUNNER_TEMP/central-inspection-keyring" >> "$GITHUB_ENV"
+      - name: Validate reviewed candidate notes before signing
+        run: python3 .github/scripts/release-notes.py --tag "v$VERSION" --pom candidate/pom.xml --changelog candidate/CHANGELOG.md --output candidate-notes.md
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: candidate/pom.xml
+          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
+          gpg-passphrase: GPG_PASSPHRASE
+      - name: Build signed candidate with the source wrapper; never deploy
+        working-directory: candidate
+        env:
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: |
+          ./mvnw --batch-mode --no-transfer-progress versions:set -DnewVersion="$VERSION" -DgenerateBackupPoms=false
+          ./mvnw --batch-mode --no-transfer-progress -Prelease clean verify -DforkCount=1 -DreuseForks=true -DargLine='-Xmx256m -XX:ActiveProcessorCount=2' | tee ../candidate-build.log
+          ./mvnw --batch-mode --no-transfer-progress -Prelease help:effective-pom -Doutput=../candidate-effective-pom.xml
+      - name: Inspect exact source, toolchain, declared plugins and signed outputs
+        run: |
+          mkdir evidence
+          python3 .github/scripts/release-candidate.py provenance --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate --workflow-head "$GITHUB_SHA" --effective-pom candidate-effective-pom.xml --output evidence/provenance.json
+          cp candidate-effective-pom.xml evidence/effective-pom.xml
+          cp candidate-notes.md evidence/release-notes.md
+          python3 .github/scripts/central-bundle.py evidence/candidate.zip --from-directory candidate/target --group "$(python3 -c "import json; print(json.load(open('evidence/provenance.json'))['group'])")" --artifact "$(python3 -c "import json; print(json.load(open('evidence/provenance.json'))['artifact'])")" --version "$VERSION" --signer "$SIGNER" --receipt evidence/candidate.json
+      - name: Retain inspected candidate bytes and identity even after validation failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-candidate-${{ inputs.version }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 90
+      - name: Retain build diagnostics on failure or success
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-inspection-log-${{ github.run_id }}
+          path: candidate-build.log
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Stop owned GPG agent and remove isolated keyring
+        if: always()
+        run: |
+          if [ -n "${GNUPGHOME:-}" ]; then
+            case "$GNUPGHOME" in "$RUNNER_TEMP"/central-*) gpgconf --kill gpg-agent || true; rm -rf -- "$GNUPGHOME" ;; *) exit 1 ;; esac
+          fi
+
+  deployment:
+    needs: request
+    if: inputs.action != 'inspect'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Require an existing immutable tag at the reviewed source
+        run: |
+          actual="$(git rev-parse "refs/tags/v$VERSION^{}")"
+          test "$actual" = "$SOURCE_COMMIT"
+      - uses: actions/download-artifact@v4
+        with:
+          name: central-candidate-${{ inputs.version }}
+          path: evidence
+          run-id: ${{ inputs.candidate_run }}
+          github-token: ${{ github.token }}
+      - name: Restore previous deployment identity before any portal access
+        if: inputs.action == 'resume' || inputs.action == 'publish'
+        uses: actions/download-artifact@v4
+        with:
+          name: central-state-${{ inputs.version }}
+          path: state
+          run-id: ${{ inputs.state_run }}
+          github-token: ${{ github.token }}
+      - name: Verify reused candidate and detached signatures with public keys only
+        env:
+          PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/central-validation-keyring"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          mkdir -m 700 "$GNUPGHOME"
+          test -n "$PUBLIC_KEY"
+          printf '%s\n' "$PUBLIC_KEY" | gpg --no-options --batch --import
+          python3 .github/scripts/release-candidate.py artifact --mode "$MODE" --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --state-run "$STATE_RUN" --bundle-hash "$BUNDLE_SHA256" --path evidence > identity.json
+          python3 .github/scripts/central-bundle.py evidence/candidate.zip --group "$(python3 -c "import json; print(json.load(open('identity.json'))['group'])")" --artifact "$(python3 -c "import json; print(json.load(open('identity.json'))['artifact'])")" --version "$VERSION" --signer "$SIGNER" --receipt revalidation.json
+      - name: Prepare upload intent without portal credentials
+        if: inputs.action == 'upload'
+        run: |
+          mkdir -p state
+          python3 .github/scripts/central-recovery.py --bundle evidence/candidate.zip --receipt evidence/candidate.json --state state/deployment.json --prepare-upload --approval-reference "$APPROVAL_REFERENCE"
+      - name: Persist upload intent before the first portal call
+        if: inputs.action == 'upload'
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-intent-${{ inputs.version }}
+          path: state/deployment.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Execute only the approved deployment stage
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          mkdir -p state
+          options=()
+          case "$MODE" in
+            upload) test -s state/deployment.json; options+=(--allow-upload) ;;
+            resume) test -s state/deployment.json ;;
+            publish) test -s state/deployment.json; options+=(--publish) ;;
+            *) exit 1 ;;
+          esac
+          python3 .github/scripts/central-recovery.py --bundle evidence/candidate.zip --receipt evidence/candidate.json --state state/deployment.json --approval-reference "$APPROVAL_REFERENCE" "${options[@]}"
+      - name: Retain deployment intent and identity even when a network call fails
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-state-${{ inputs.version }}
+          path: state/
+          if-no-files-found: warn
+          retention-days: 90
+      - name: Stop owned verifier agent and remove public-key keyring
+        if: always()
+        run: |
+          if [ -n "${GNUPGHOME:-}" ]; then
+            case "$GNUPGHOME" in "$RUNNER_TEMP"/central-*) gpgconf --kill gpg-agent || true; rm -rf -- "$GNUPGHOME" ;; *) exit 1 ;; esac
+          fi

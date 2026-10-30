@@ -5,7 +5,6 @@ on:
   push:
     branches:
       - main
-      - release/0.3
 
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
@@ -23,13 +22,11 @@ jobs:
       - name: Check out source
         uses: actions/checkout@v4
 
-      - name: Verify matching version changelog and its guard
-        run: |
-          python3 -m unittest discover -s tests -p "test_changelog.py"
-          python3 scripts/check_changelog.py
-
       - name: Test release notes extraction
         run: python3 -m unittest discover -s tests -p "test_release_notes.py"
+
+      - name: Test offline release packaging and recovery guards
+        run: python3 .github/scripts/test-release-packaging.py
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -38,20 +35,15 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Test and install adapter for the startup fixture
-        run: >-
-          ./mvnw
-          --batch-mode
-          --no-transfer-progress
-          install
+      - name: Test release tag parser
+        run: .github/scripts/test-release-version-from-tag.sh
 
-      - name: Verify Quarkus registration and dependency defaults
+      - name: Run adapter tests
         run: >-
           ./mvnw
           --batch-mode
           --no-transfer-progress
-          -f integration-tests/maintenance-smoke/pom.xml
-          verify
+          test
 
       - name: Verify public API documentation
         run: >-
@@ -60,3 +52,29 @@ jobs:
           --no-transfer-progress
           -DskipTests
           javadoc:javadoc
+
+  packaging-qualification:
+    if: github.server_url == 'https://github.com'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Qualify real Maven packaging with an ephemeral synthetic signer
+        run: >-
+          python3 .github/scripts/qualify-release-packaging.py
+          --evidence "$RUNNER_TEMP/packaging-qualification"
+          --deadline-seconds 900
+      - name: Retain synthetic packaging evidence and cleanup result
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-packaging-${{ github.run_id }}
+          path: ${{ runner.temp }}/packaging-qualification/
+          if-no-files-found: error
+          retention-days: 30

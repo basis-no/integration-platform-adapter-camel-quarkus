@@ -103,7 +103,31 @@ class PostgresMessageStoreSinkTest {
         assertEquals("COMPLETED", singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 2"));
     }
 
+    @Test
+    void laterAttemptPreservesOriginalPayloadExpiry() {
+        Instant originalExpiry = Instant.parse("2026-07-14T12:00:00Z");
+        Instant extendedExpiry = Instant.parse("2026-07-15T12:00:00Z");
+
+        sink.record(result(MessageStatus.FAILED, 1, "first failure", originalExpiry));
+        sink.record(result(MessageStatus.COMPLETED, 2, null, extendedExpiry));
+
+        String originalEpochSecond = Long.toString(originalExpiry.getEpochSecond());
+        assertEquals(originalEpochSecond, singleValue(
+                "select extract(epoch from payload_expires_at)::bigint"
+                        + " from bip_message_log where message_id = 'message-123'"));
+        assertEquals(originalEpochSecond, singleValue(
+                "select extract(epoch from payload_expires_at)::bigint"
+                        + " from bip_message_attempt where message_id = 'message-123' and attempt = 1"));
+        assertEquals(originalEpochSecond, singleValue(
+                "select extract(epoch from payload_expires_at)::bigint"
+                        + " from bip_message_attempt where message_id = 'message-123' and attempt = 2"));
+    }
+
     private MessageAttemptResult result(MessageStatus status, int attempt, String error) {
+        return result(status, attempt, error, Instant.parse("2026-07-14T12:00:00Z"));
+    }
+
+    private MessageAttemptResult result(MessageStatus status, int attempt, String error, Instant payloadExpiresAt) {
         return new MessageAttemptResult(
                 1,
                 "message-123",
@@ -114,7 +138,7 @@ class PostgresMessageStoreSinkTest {
                 "postgres_inline",
                 128L,
                 "payload-body".getBytes(StandardCharsets.UTF_8),
-                Instant.parse("2026-07-14T12:00:00Z"),
+                payloadExpiresAt,
                 null,
                 true,
                 null,

@@ -1,7 +1,6 @@
 package no.basis.integrationplatform.camel.store;
 
 import jakarta.annotation.PreDestroy;
-import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import org.apache.kafka.clients.producer.KafkaProducer;
@@ -15,14 +14,21 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import java.nio.charset.StandardCharsets;
 import java.util.Properties;
 
+/** Publishes terminal lifecycle events for a separate central persistence service. */
 public class KafkaMessageStoreSink implements MessageStoreSink {
+    /** Default topic for runtime-neutral lifecycle events. */
     public static final String DEFAULT_STATUS_TOPIC = "bip.message.status";
 
     private final Producer<String, String> producer;
     private final String statusTopic;
     private final MessageStatusEventJson serializer;
 
-    @Inject
+    /**
+     * Creates a Kafka lifecycle-event sink.
+     *
+     * @param bootstrapServers Kafka bootstrap servers
+     * @param statusTopic lifecycle-event topic
+     */
     public KafkaMessageStoreSink(
             @ConfigProperty(name = "kafka.bootstrap.servers") String bootstrapServers,
             @ConfigProperty(name = "basis.message-store.status-topic", defaultValue = DEFAULT_STATUS_TOPIC) String statusTopic) {

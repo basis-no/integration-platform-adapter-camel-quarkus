@@ -4,8 +4,8 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.PlatformHeaders;
-import org.apache.camel.CamelContext;
-import org.apache.camel.component.kafka.KafkaEndpoint;
+import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
+import no.basis.integrationplatform.camel.payload.PayloadReference;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.Producer;
 import org.apache.kafka.clients.producer.ProducerConfig;
@@ -23,11 +23,13 @@ import java.sql.ResultSet;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.function.Supplier;
 import java.util.stream.Collectors;
 
+/** Postgres-backed audited replay service that republishes payloads to Kafka. */
 @ApplicationScoped
 public class PostgresKafkaMessageReplayService implements MessageReplayService {
     private static final String LOAD_REPLAYABLE_MESSAGE_SQL = """
@@ -39,16 +41,16 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
                    integration,
                    schema_version,
                    last_attempt,
+                   payload_storage,
+                   payload_size_bytes,
                    payload_bytes,
+                   payload_ref,
+                   payload_sha256,
                    replayable,
                    replay_disabled_reason,
                    payload_expires_at,
-                   payload_deleted_at,
-                   (select a.route_id from bip_message_attempt a
-                    where a.message_id = l.message_id and a.attempt = l.last_attempt
-                      and a.integration = l.integration
-                      and a.payload_bytes is not distinct from l.payload_bytes) as route_id
-            from bip_message_log l
+                   payload_deleted_at
+            from bip_message_log
             where message_id = ?
             """;
 
@@ -85,40 +87,61 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
     private final Supplier<DataSource> dataSource;
     private final String bootstrapServers;
     private final String inputTopicPattern;
-    private final CamelContext camelContext;
-    private final String integrationName;
+    private final PayloadObjectStore objectStore;
 
+    /**
+     * Creates the CDI replay service.
+     *
+     * @param dataSource optional Quarkus datasource handle
+     * @param bootstrapServers optional Kafka bootstrap servers
+     * @param inputTopicPattern integration replay-target pattern
+     * @param objectStore object payload store
+     */
     @Inject
     public PostgresKafkaMessageReplayService(
             Instance<DataSource> dataSource,
-            @ConfigProperty(name = "kafka.bootstrap.servers", defaultValue = "") String bootstrapServers,
+            @ConfigProperty(name = "kafka.bootstrap.servers") Optional<String> bootstrapServers,
             @ConfigProperty(name = "basis.message-store.replay.input-topic-pattern",
                     defaultValue = "bip.%s.in") String inputTopicPattern,
-            CamelContext camelContext,
-            @ConfigProperty(name = "app.name", defaultValue = "unknown-integration") String integrationName) {
+            PayloadObjectStore objectStore) {
         this.dataSource = () -> dataSource.isResolvable() ? dataSource.get() : null;
-        this.bootstrapServers = bootstrapServers;
+        this.bootstrapServers = bootstrapServers.orElse("");
         this.inputTopicPattern = inputTopicPattern;
-        this.camelContext = camelContext;
-        this.integrationName = integrationName;
+        this.objectStore = objectStore;
     }
 
     PostgresKafkaMessageReplayService(
             DataSource dataSource,
             String bootstrapServers,
-            String inputTopicPattern, CamelContext camelContext, String integrationName) {
-        this(() -> dataSource, bootstrapServers, inputTopicPattern, camelContext, integrationName);
+            String inputTopicPattern) {
+        this(() -> dataSource, bootstrapServers, inputTopicPattern, PayloadObjectStore.disabled());
+    }
+
+    /**
+     * Creates a replay service from explicit dependencies.
+     *
+     * @param dataSource message-store datasource
+     * @param bootstrapServers Kafka bootstrap servers
+     * @param inputTopicPattern integration replay-target pattern
+     * @param objectStore object payload store
+     */
+    public PostgresKafkaMessageReplayService(
+            DataSource dataSource,
+            String bootstrapServers,
+            String inputTopicPattern,
+            PayloadObjectStore objectStore) {
+        this(() -> dataSource, bootstrapServers, inputTopicPattern, objectStore);
     }
 
     private PostgresKafkaMessageReplayService(
             Supplier<DataSource> dataSource,
             String bootstrapServers,
-            String inputTopicPattern, CamelContext camelContext, String integrationName) {
+            String inputTopicPattern,
+            PayloadObjectStore objectStore) {
         this.dataSource = dataSource;
         this.bootstrapServers = bootstrapServers;
         this.inputTopicPattern = inputTopicPattern;
-        this.camelContext = camelContext;
-        this.integrationName = integrationName;
+        this.objectStore = objectStore;
     }
 
     @Override
@@ -135,7 +158,6 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
         ReplayableMessage message = loadReplayableMessage(messageId);
         int nextAttempt = message.lastAttempt() + 1;
         String topic = inputTopic(message.integration());
-        validateReplayBoundary(message, topic);
         String replayId = UUID.randomUUID().toString();
 
         insertReplayAudit(replayId, request, message, topic, nextAttempt);
@@ -143,7 +165,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             ProducerRecord<String, byte[]> record = new ProducerRecord<>(
                     topic,
                     message.correlationId(),
-                    message.payloadBytes());
+                    replayValue(message));
             addHeader(record, PlatformHeaders.MESSAGE_ID, message.messageId());
             addHeader(record, PlatformHeaders.CORRELATION_ID, message.correlationId());
             addHeader(record, PlatformHeaders.SCHEMA_VERSION, Integer.toString(message.schemaVersion()));
@@ -153,6 +175,13 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             addHeader(record, PlatformHeaders.REPLAY, "true");
             addHeader(record, PlatformHeaders.ATTEMPT, Integer.toString(nextAttempt));
             addHeader(record, PlatformHeaders.REDO_STEPS, redoStepsHeader(request.redoSteps()));
+            if (PayloadReference.STORAGE.equals(message.payloadStorage())) {
+                addHeader(record, PlatformHeaders.PAYLOAD_STORAGE, message.payloadStorage());
+                addHeader(record, PlatformHeaders.PAYLOAD_REF, message.payloadRef());
+                addHeader(record, PlatformHeaders.PAYLOAD_SIZE, Long.toString(message.payloadSizeBytes()));
+                addHeader(record, PlatformHeaders.PAYLOAD_SHA256, message.payloadSha256());
+                addHeader(record, PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
+            }
             producer.send(record).get();
             markReplayPublished(replayId);
         } catch (Exception e) {
@@ -180,12 +209,15 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
                         resultSet.getString("integration"),
                         resultSet.getInt("schema_version"),
                         resultSet.getInt("last_attempt"),
+                        resultSet.getString("payload_storage"),
+                        nullableLong(resultSet, "payload_size_bytes"),
                         resultSet.getBytes("payload_bytes"),
+                        resultSet.getString("payload_ref"),
+                        resultSet.getString("payload_sha256"),
                         resultSet.getBoolean("replayable"),
                         resultSet.getString("replay_disabled_reason"),
                         instant(resultSet, "payload_expires_at"),
-                        instant(resultSet, "payload_deleted_at"),
-                        resultSet.getString("route_id"));
+                        instant(resultSet, "payload_deleted_at"));
                 validateReplayable(message);
                 return message;
             }
@@ -209,7 +241,9 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
         if (message.payloadExpiresAt() != null && message.payloadExpiresAt().isBefore(Instant.now())) {
             throw new MessageReplayException("Message " + message.messageId() + " is not replayable: payload has expired");
         }
-        if (message.payloadBytes() == null) {
+        if (PayloadReference.STORAGE.equals(message.payloadStorage())) {
+            objectStore.verify(message.payloadReference());
+        } else if (message.payloadBytes() == null) {
             throw new MessageReplayException("Message " + message.messageId() + " is not replayable: payload bytes are missing");
         }
         if (message.integration() == null || message.integration().isBlank()) {
@@ -217,17 +251,16 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
         }
     }
 
-    private void validateReplayBoundary(ReplayableMessage message, String topic) {
-        if (!integrationName.equals(message.integration())) {
-            throw new MessageReplayException("Message is not replayable by this integration");
+    private byte[] replayValue(ReplayableMessage message) {
+        if (!PayloadReference.STORAGE.equals(message.payloadStorage())) {
+            return message.payloadBytes();
         }
-        var route = message.routeId() == null ? null : camelContext.getRoute(message.routeId());
-        if (route == null || !(route.getEndpoint() instanceof KafkaEndpoint endpoint)
-                || endpoint.getConfiguration().isTopicIsPattern()
-                || !topic.equals(endpoint.getConfiguration().getTopic())) {
-            throw new MessageReplayException("Message is not replayable: stored input route does not match "
-                    + "this integration's Kafka replay input. Internal, missing or changed routes require review.");
-        }
+        return message.payloadReference().toJsonBytes();
+    }
+
+    private Long nullableLong(ResultSet resultSet, String column) throws Exception {
+        long value = resultSet.getLong(column);
+        return resultSet.wasNull() ? null : value;
     }
 
     private DataSource requiredDataSource() {
@@ -356,11 +389,27 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             String integration,
             int schemaVersion,
             int lastAttempt,
+            String payloadStorage,
+            Long payloadSizeBytes,
             byte[] payloadBytes,
+            String payloadRef,
+            String payloadSha256,
             boolean replayable,
             String replayDisabledReason,
             Instant payloadExpiresAt,
-            Instant payloadDeletedAt,
-            String routeId) {
+            Instant payloadDeletedAt) {
+        private PayloadReference payloadReference() {
+            if (payloadSizeBytes == null || payloadRef == null || payloadSha256 == null) {
+                throw new MessageReplayException(
+                        "Message " + messageId + " is not replayable: object payload metadata is incomplete");
+            }
+            if (payloadExpiresAt == null) {
+                throw new MessageReplayException(
+                        "Message " + messageId + " is not replayable: object payload expiry is missing");
+            }
+            return new PayloadReference(
+                    1, PayloadReference.STORAGE, payloadRef, payloadSizeBytes, payloadSha256,
+                    contentType, payloadExpiresAt.toString());
+        }
     }
 }

@@ -2,7 +2,11 @@ package no.basis.integrationplatform.camel.step;
 
 import no.basis.integrationplatform.camel.model.StepResult;
 
+/** Non-durable step store that never suppresses a repeated side effect. */
 public class NoopStepOutcomeStore implements StepOutcomeStore {
+    /** Creates the stateless no-op store. */
+    public NoopStepOutcomeStore() {
+    }
     @Override
     public boolean wasDelivered(String idempotencyKey) {
         return false;
