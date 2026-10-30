@@ -103,24 +103,55 @@ class PostgresMessageStoreSinkTest {
         assertEquals("COMPLETED", singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 2"));
     }
 
+    // Retention 30 days: a replay resets an inline expiry, at most to first receipt + 60 days.
+    private static final java.time.Duration RETENTION = java.time.Duration.ofDays(30);
+    private static final Instant T0 = Instant.parse("2026-06-14T12:00:00Z");
+
     @Test
-    void laterAttemptPreservesOriginalPayloadExpiry() {
-        Instant originalExpiry = Instant.parse("2026-07-14T12:00:00Z");
-        Instant extendedExpiry = Instant.parse("2026-07-15T12:00:00Z");
+    void replayResetsTheInlinePayloadExpiry() {
+        var capped = new PostgresMessageStoreSink(dataSource, RETENTION);
+        capped.record(received(1, "postgres_inline", java.time.Duration.ZERO));
+        capped.record(received(2, "postgres_inline", java.time.Duration.ofDays(20)));
+        assertEquals(epoch(java.time.Duration.ofDays(50)), expiry("bip_message_log", ""));
+        assertEquals(epoch(java.time.Duration.ofDays(50)), expiry("bip_message_attempt", " and attempt = 2"));
+        assertEquals(epoch(java.time.Duration.ofDays(30)), expiry("bip_message_attempt", " and attempt = 1"));
+    }
 
-        sink.record(result(MessageStatus.FAILED, 1, "first failure", originalExpiry));
-        sink.record(result(MessageStatus.COMPLETED, 2, null, extendedExpiry));
+    @Test
+    void replayInlineExpiryIsCappedAtFirstReceiptPlusTwiceTheRetention() {
+        var capped = new PostgresMessageStoreSink(dataSource, RETENTION);
+        capped.record(received(1, "postgres_inline", java.time.Duration.ZERO));
+        capped.record(received(2, "postgres_inline", java.time.Duration.ofDays(20)));
+        capped.record(received(3, "postgres_inline", java.time.Duration.ofDays(45)));
+        assertEquals(epoch(java.time.Duration.ofDays(60)), expiry("bip_message_log", ""));
+        assertEquals(epoch(java.time.Duration.ofDays(60)), expiry("bip_message_attempt", " and attempt = 3"));
+    }
 
-        String originalEpochSecond = Long.toString(originalExpiry.getEpochSecond());
-        assertEquals(originalEpochSecond, singleValue(
-                "select extract(epoch from payload_expires_at)::bigint"
-                        + " from bip_message_log where message_id = 'message-123'"));
-        assertEquals(originalEpochSecond, singleValue(
-                "select extract(epoch from payload_expires_at)::bigint"
-                        + " from bip_message_attempt where message_id = 'message-123' and attempt = 1"));
-        assertEquals(originalEpochSecond, singleValue(
-                "select extract(epoch from payload_expires_at)::bigint"
-                        + " from bip_message_attempt where message_id = 'message-123' and attempt = 2"));
+    @Test
+    void objectPayloadKeepsItsFirstExpiry() {
+        var capped = new PostgresMessageStoreSink(dataSource, RETENTION);
+        capped.record(received(1, "s3_object", java.time.Duration.ZERO));
+        capped.record(received(2, "s3_object", java.time.Duration.ofDays(20)));
+        assertEquals(epoch(java.time.Duration.ofDays(30)), expiry("bip_message_log", ""));
+        assertEquals(epoch(java.time.Duration.ofDays(30)), expiry("bip_message_attempt", " and attempt = 2"));
+    }
+
+    private MessageAttemptResult received(int attempt, String storage, java.time.Duration after) {
+        boolean inline = storage.equals("postgres_inline");
+        return new MessageAttemptResult(1, "message-123", "order-456", "application/json", "sap", "vendor", storage, 128L,
+                inline ? "payload-body".getBytes(StandardCharsets.UTF_8) : null,
+                inline ? null : "s3://bucket/orders/message-123", "0".repeat(64),
+                T0.plus(after).plus(RETENTION), null, true, null, "order-pipeline", "camel-route-id", attempt, false, null,
+                null, T0.plus(after), MessageStatus.COMPLETED, List.of(), null);
+    }
+
+    private String epoch(java.time.Duration after) {
+        return Long.toString(T0.plus(after).getEpochSecond());
+    }
+
+    private String expiry(String table, String attemptFilter) {
+        return singleValue("select extract(epoch from payload_expires_at)::bigint from " + table
+                + " where message_id = 'message-123'" + attemptFilter);
     }
 
     private MessageAttemptResult result(MessageStatus status, int attempt, String error) {

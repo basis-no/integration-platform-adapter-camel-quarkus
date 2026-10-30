@@ -17,6 +17,7 @@ class MessageStoreSinkProducerTest {
                 "postgres",
                 Optional.empty(),
                 KafkaMessageStoreSink.DEFAULT_STATUS_TOPIC,
+                30,
                 unavailableDataSource(),
                 new MessageStoreTestProfileConfig("no-persistence", true));
 
