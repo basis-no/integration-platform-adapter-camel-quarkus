@@ -129,6 +129,15 @@ with 0.4.
   compare-and-set can match. It has no leases or fencing.
 - DLQ records still carry other headers present at failure, such as a
   receiver's host names. Only credential-like values are masked.
+- `auto_redelivery_count` counts Camel's redeliveries. The HTTP client in
+  Camel's `http` component repeats a request answered with 503 or 429 once by
+  itself, so a receiver can see more requests than the count says. Setting
+  `camel.component.http.automatic-retries-disabled=true` leaves every retry to
+  the platform's policy.
+- The adapter does not check HTTP endpoint options. `socketTimeout` is not an
+  option of Camel 4's `http` component: it is sent to the receiver as a query
+  parameter, and the call waits up to the client's default of three minutes.
+  Use `responseTimeout` and `connectTimeout`.
 
 ### Upgrade notes
 
