@@ -182,10 +182,10 @@ booted runtime behavior or contract certification.
 ## Actual ACL recovery and readiness composition
 
 The standalone [Kafka recovery fixture](../integration-tests/kafka-recovery-smoke/README.md)
-passed the SmallRye-only baseline and optional upstream bridge profile on
-Quarkus 3.32.2/Camel Quarkus 3.32.0/Camel 4.18.0. It proves real scoped ACL recovery,
-source identity and offset, plus healthy-idle versus stopped-auth readiness.
-Its in-memory sink is not PostgreSQL durability evidence.
+has a SmallRye-only baseline profile and an optional upstream bridge profile. It
+checks real scoped ACL recovery, source identity and offset, plus healthy-idle
+versus stopped-auth readiness. Its in-memory sink does not cover PostgreSQL
+durability.
 
 The adapter library does not add or implement this bridge. An application using
 SmallRye health can add the upstream extension under its own Camel Quarkus BOM:
@@ -197,13 +197,13 @@ SmallRye health can add the upstream extension under its own Camel Quarkus BOM:
 </dependency>
 ```
 
-Qualify that application's actual BOM and route lifecycle. The baseline stayed
-HTTP Ready 200 after polling stopped; with the bridge the fixture returned idle HTTP 200
-and three consecutive route-attributed dead-poller HTTP 503 responses over a finite
-window of at least two seconds, while unrelated consumers remained healthy.
-Denial/reconnect responses fluctuated before the observed HTTP 503; this is not a
-continuous-DOWN guarantee during permission recovery. A different template BOM
-is not qualified by this fixture. No custom health framework, automatic adapter
+Qualify that application's actual BOM and route lifecycle. Without the bridge,
+readiness stays Ready after polling stops. With it, an idle consumer is Ready,
+and a stopped poller turns readiness NotReady (HTTP 503) for that route while
+unrelated consumers stay healthy. While permissions are denied and the consumer
+reconnects, readiness can alternate before it settles on NotReady; it is not
+continuously DOWN during permission recovery. A different template BOM is not
+covered by this fixture. No custom health framework, automatic adapter
 dependency/default, existing application rewrite or release is implied.
 
 RECONNECT does not provide general recovery from permanently invalid credentials

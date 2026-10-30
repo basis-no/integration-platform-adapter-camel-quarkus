@@ -129,6 +129,12 @@ with 0.4.
 - Key-Value Store versions belong to a physical row: after expiry cleanup or
   deletion and recreation, the version starts at 1 again and a stale numeric
   compare-and-set can match. It has no leases or fencing.
+- The replay expiry cap counts from the earliest outcome still recorded for the
+  message. Recording the same attempt again replaces that attempt's outcome
+  time, for example when the original record is consumed again after a replay.
+  If it was the earliest outcome, the adapter's cap for a later replay starts
+  from the next earliest one, so it can reach past first receipt plus twice
+  the retention by up to the time between those two outcomes.
 - DLQ records still carry other headers present at failure, such as a
   receiver's host names. Only credential-like values are masked.
 - `auto_redelivery_count` counts Camel's redeliveries. The HTTP client in
