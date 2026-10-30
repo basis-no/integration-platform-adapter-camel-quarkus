@@ -16,6 +16,10 @@
   as UTF-8 text before the route runs, not only the correlation id. HTTP
   receivers get the ids as text instead of byte-array text such as
   `[55, 101, …]`. Same rule as adapter 0.3.6.
+- An application with more than one `@Default` JDBC DataSource, for example a
+  second DataSource from a `@Named` producer, no longer starts with the Postgres
+  Message Store or step store, and the error names the ambiguity. Before, it
+  started, reported ready and failed every message. Same rule as adapter 0.3.6.
 - A replay resets an inline payload's expiry, capped at first receipt plus twice
   the retention, instead of keeping the first expiry. First receipt is the
   earliest outcome this integration recorded for the message. Object payloads
