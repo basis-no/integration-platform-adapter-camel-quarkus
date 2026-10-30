@@ -5,6 +5,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Disposes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
+import no.basis.integrationplatform.camel.MessageStoreDataSource;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import javax.sql.DataSource;
@@ -42,6 +43,9 @@ public class KeyValueStoreProducer {
         if (sweepIntervalSeconds < 1 || sweepIntervalSeconds > MAX_SWEEP_INTERVAL_SECONDS) {
             throw new IllegalStateException("basis.message-store.key-value.sweep-interval-seconds must be 1 to "
                     + MAX_SWEEP_INTERVAL_SECONDS + ", was " + sweepIntervalSeconds);
+        }
+        if (dataSource.isAmbiguous()) {
+            throw MessageStoreDataSource.ambiguous("Key-Value Store");
         }
         if (!dataSource.isResolvable()) {
             throw new IllegalStateException("Key-Value Store requires a JDBC DataSource for the Message Store");

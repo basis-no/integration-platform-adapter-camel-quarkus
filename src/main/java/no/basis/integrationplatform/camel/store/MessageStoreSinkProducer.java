@@ -7,6 +7,8 @@ import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import no.basis.integrationplatform.camel.MessageStoreDataSource;
+
 import javax.sql.DataSource;
 
 @ApplicationScoped
@@ -47,10 +49,7 @@ public class MessageStoreSinkProducer {
     }
 
     private DataSource requiredDataSource(Instance<DataSource> dataSource) {
-        if (dataSource.isResolvable()) {
-            return dataSource.get();
-        }
-        throw new IllegalStateException("basis.message-store.sink=postgres requires a JDBC DataSource");
+        return MessageStoreDataSource.require(dataSource, "basis.message-store.sink=postgres");
     }
 
     private String requiredKafkaBootstrapServers(String bootstrapServers) {

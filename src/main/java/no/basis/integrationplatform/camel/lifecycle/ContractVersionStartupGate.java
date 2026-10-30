@@ -5,6 +5,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.MessageStoreDataSource;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -53,7 +54,13 @@ public class ContractVersionStartupGate {
     public ContractVersionStartupGate(
             @ConfigProperty(name = "basis.message-store.sink", defaultValue = "log") String sinkMode,
             Instance<DataSource> dataSource) {
-        this(sinkMode, () -> dataSource.isResolvable() ? dataSource.get() : null);
+        this(sinkMode, () -> {
+            if (dataSource.isAmbiguous()) {
+                // Otherwise the app reports ready and every journal write fails.
+                throw MessageStoreDataSource.ambiguous("basis.message-store.sink=postgres");
+            }
+            return dataSource.isResolvable() ? dataSource.get() : null;
+        });
     }
 
     ContractVersionStartupGate(String sinkMode, Supplier<DataSource> dataSource) {

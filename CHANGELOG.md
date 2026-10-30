@@ -68,6 +68,12 @@ with 0.4.
   `basis.messageStore.stepAlreadyDelivered` in the step after a send.
 - A failure that is sent to the dead letter queue is logged at ERROR with its
   stack trace first.
+- An application with more than one `@Default` JDBC DataSource no longer starts
+  with the Postgres Message Store or step store. A second DataSource from a
+  `@Named` producer is also `@Default`. Before, the application started and
+  reported ready, and every message then failed with "requires a JDBC
+  DataSource". The error now says that the lookup is ambiguous. Give the
+  additional DataSource a qualifier, such as `@Identifier("<name>")`.
 
 ### New and opt-in
 
