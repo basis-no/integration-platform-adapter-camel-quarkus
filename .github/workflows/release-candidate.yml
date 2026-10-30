@@ -1,4 +1,4 @@
-name: Inspect unsigned Central candidate (production signing suspended)
+name: Inspect unsigned Central candidate (signing is offline only)
 
 on:
   workflow_dispatch:
@@ -7,7 +7,7 @@ on:
         type: choice
         options: [inspect]
         default: inspect
-        description: Unsigned inspection only; signing and portal actions are suspended
+        description: Unsigned inspection only; signing and portal actions happen offline
       version:
         required: true
         description: Explicit approved candidate version, without v or SNAPSHOT
@@ -16,7 +16,7 @@ on:
         description: Exact 40-character source commit for unsigned inspection
       signer:
         required: true
-        description: Expected future signer fingerprint; inspection does not sign
+        description: Expected offline signer fingerprint; inspection does not sign
       candidate_run:
         description: Existing successful inspection run for upload/resume/publish
       state_run:
@@ -63,7 +63,7 @@ jobs:
           --mode "$MODE" --version "$VERSION" --commit "$SOURCE_COMMIT"
           --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --state-run "$STATE_RUN"
           --bundle-hash "$BUNDLE_SHA256" --attempt "$GITHUB_RUN_ATTEMPT"
-      - name: Refuse production actions until an enforceable credential boundary exists
+      - name: Refuse portal actions; signing and upload happen only on the offline release workstation
         run: |
           test "$MODE" = inspect
           test "$GITHUB_REF" = refs/heads/main
@@ -107,7 +107,7 @@ jobs:
           python3 .github/scripts/release-candidate.py provenance --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate --workflow-head "$GITHUB_SHA" --effective-pom candidate-effective-pom.xml --output evidence/provenance.json
           cp candidate-effective-pom.xml evidence/effective-pom.xml
           cp candidate-notes.md evidence/release-notes.md
-          python3 .github/scripts/release-candidate.py unsigned --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate --output evidence
+          python3 .github/scripts/release-candidate.py unsigned --version "$VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --path candidate --output evidence --workflow-run "$GITHUB_RUN_ID"
       - name: Retain unsigned candidate bytes and identity even after validation failure
         if: always()
         uses: actions/upload-artifact@v4

@@ -28,10 +28,11 @@ and the schema it expects ships in `src/main/resources/db/message-store/`.
 
 See the [changelog](CHANGELOG.md) for candidate changes, upgrade actions and
 limitations. [Release tooling](docs/release-packaging.md) builds unsigned candidates
-without production credentials. Production signing and snapshot publication are
-suspended pending an enforceable isolated signer and credential review. A tag
-never rebuilds or uploads a release. Final notes need an approved date and exact
-artifact provenance; source preparation does not authorize publication.
+without production credentials. Final releases are signed and uploaded offline
+by the release manager from reviewed tooling; the production key never exists in
+GitHub. Snapshot publication is suspended. A tag never rebuilds or uploads a
+release. Final notes need an approved date and exact artifact provenance; source
+preparation does not authorize publication. See [Releasing](docs/releasing.md).
 
 ## 0.3.5 maintenance line
 
@@ -46,10 +47,10 @@ version from its release tag. The published stable package is `0.3.5`; the
 maintenance source POM remains `0.3.5-SNAPSHOT` for development. Select the stable
 package explicitly when upgrading an integration.
 
-For remote acceptance, use the manually triggered **Publish Maven SNAPSHOT**
-workflow after the candidate's CI passes. See [maintenance snapshot publication](docs/maintenance-qualification.md#snapshot-publication)
-for publication, consumption and provenance requirements. Snapshots are test
-artifacts; production integrations keep an explicitly selected stable version.
+For acceptance, use locally built `X.Y.Z-SNAPSHOT` artifacts; snapshot
+publication is suspended. See [Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts).
+Snapshots are test artifacts; production integrations keep an explicitly
+selected stable version.
 
 ## Configurable inspection in 0.3.5
 
