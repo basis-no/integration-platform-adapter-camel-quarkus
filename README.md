@@ -91,10 +91,9 @@ remote acceptance. Create a `vX.Y.Z` tag only after local and remote acceptance
 is complete; that tag publishes the immutable final artifact to Maven Central.
 See [Releasing](docs/releasing.md) for the full workflow and checklist.
 
-## License and Support
+## License
 
-Apache-2.0. Basis provides production support to its customers under their
-support agreements; other issues and pull requests are handled best-effort.
+Apache-2.0. Issues and pull requests are welcome and handled best-effort.
 
 ## Payload capture modes
 
