@@ -30,10 +30,12 @@ method is explicit. Other HTTP operations, multi-operation components such as
 S3, and unknown schemes remain ambiguous because their URI alone does not prove
 whether they read or write.
 
-Every endpoint send that is not an internal Camel endpoint must have an explicit
-id: the application fails to start otherwise. A generated id such as `to1`
-changes when a route is edited, repeats across integrations, and cannot be
-named in the classification lists. `basis.message-store.step-ids.emergency-allow-generated=true`
+Every `to` or `toD` send to an endpoint that is not an internal Camel endpoint
+must have an explicit id: the application fails to start otherwise. Sends
+through other EIPs, such as `wireTap`, `enrich` or `recipientList`, are not
+checked. A generated id such as `to1` changes when a route is edited and repeats
+across integrations, so a classification list that names it can stop matching,
+or match another send, after an edit. `basis.message-store.step-ids.emergency-allow-generated=true`
 is an emergency escape hatch that starts the application with a warning per send.
 
 To upgrade without changing keys, give each send the id Camel generates for it

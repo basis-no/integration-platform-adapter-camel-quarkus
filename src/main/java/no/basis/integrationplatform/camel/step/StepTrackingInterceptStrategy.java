@@ -168,7 +168,8 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
     /**
      * The step id is the node id. A generated one such as {@code to1} changes when the route
-     * is edited and repeats across integrations, and node-id classification cannot name it.
+     * is edited and repeats across integrations, and a classification list that names it can
+     * stop matching, or match another send, after an edit.
      * Route creation fails unless the emergency flag allows it with a warning.
      */
     private void checkStepId(NamedNode definition, EndpointSend endpointSend) {

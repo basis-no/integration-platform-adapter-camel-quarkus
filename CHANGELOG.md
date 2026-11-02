@@ -2,8 +2,8 @@
 
 ## Unreleased
 
-- Parity with adapter 0.3.6: an endpoint send without an explicit id fails
-  startup (emergency flag `basis.message-store.step-ids.emergency-allow-generated`),
+- Parity with adapter 0.3.6: a `to` or `toD` send to a non-internal endpoint
+  without an explicit id fails startup (emergency flag `basis.message-store.step-ids.emergency-allow-generated`),
   and keeping the generated id as the explicit id, such as `id: to1`, keeps the
   step key;
   Kafka poll failures reconnect; a UTF-8 Kafka correlation id stays text under
