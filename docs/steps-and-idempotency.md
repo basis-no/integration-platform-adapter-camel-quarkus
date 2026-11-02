@@ -129,6 +129,14 @@ when the request carries its own `x-bip-message-id`. Work that ends after the
 input completed, such as a `wireTap`, and a request whose failed reply the
 route ignores cannot hold the input back either.
 
+A failing split part or multicast or recipient list branch is parked from
+within the part, with the whole input, before or while the input's other parts
+run. If a later part's step outcome is then not recorded, the input is recorded
+`FAILED` and read again although a parked copy exists, and each attempt during
+a Message Store outage can park it again. Nothing is lost: a replay of a parked
+copy skips the delivered parts through the ledger. Parking once per input,
+after its parts, is planned for 0.4 together with per-part step keys.
+
 ## Splitting Before a Side-Effect Send
 
 A step key is `<x-bip-message-id>:<step-id>`. Split parts, loop iterations and

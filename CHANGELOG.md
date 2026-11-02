@@ -54,6 +54,14 @@
   `x-bip-message-id`. Work that ends after the input completed, such as a
   `wireTap`, and a request whose failed reply the route ignores cannot hold the
   input back either.
+- Known limitation: a failing split part or multicast or recipient list branch
+  is parked from within the part, with the whole input, before or while the
+  input's other parts run. If a later part's step outcome is then not recorded,
+  for example during a Message Store outage, the input is recorded `FAILED`, not
+  committed and read again although a parked copy exists, and each attempt
+  during the outage can park it again. Nothing is lost: a replay of a parked
+  copy skips the delivered parts through the ledger. Parking once per input,
+  after its parts, is planned for 0.4 together with per-part step keys.
 - The DLQ record carries the consumed input, also when the route changed it.
   Before, a route that changed a byte-array input in place also changed the
   inline payload stored for replay and the parked record. With
