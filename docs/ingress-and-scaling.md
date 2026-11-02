@@ -38,9 +38,10 @@ that chooses its component only when it sends. It follows that endpoint's
 header filter strategy and counts only text, byte array, `Long`, `Integer`,
 `Double` and `Boolean` values, which Camel's header serializer writes as they
 are. An endpoint whose header filter strategy or header serializer is an
-application class is not checked: the adapter does not call application code
-to find out what was published. At most 100 header names are reported per
-route; one more line then says that further names are not logged. A tracked
+application class, or whose filter holds an application collection, is not
+checked: the adapter does not call application code to find out what was
+published. Nor is a `toD` with `cacheSize=-1`, whose endpoint Camel does not
+keep. At most 100 header names are reported per route; one more line then says that further names are not logged. A tracked
 send through Camel's `http` component does not forward credential-like
 headers that still hold a consumed record's bytes, and logs a warning that names
 the header, never its value. A `toD` that chooses its component only when it

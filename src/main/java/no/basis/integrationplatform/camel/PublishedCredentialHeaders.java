@@ -13,6 +13,8 @@ import org.apache.camel.support.DefaultHeaderFilterStrategy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
@@ -26,16 +28,16 @@ import java.util.concurrent.ConcurrentHashMap;
  * headers publishes the caller's {@code Authorization} with the message. Names follow the DLQ
  * masking rule. Detection only: the record is published as before, and the value is never
  * logged. The check runs after a successful send, against the endpoint the send used, and
- * only when that endpoint uses Camel's own header filter strategy and header serializer: the
- * adapter never calls application code to find out what was published.
+ * only when that endpoint uses Camel's own header filter strategy, configured with JDK types
+ * only, and Camel's own header serializer: the adapter never calls application code to find
+ * out what was published.
  */
 public final class PublishedCredentialHeaders {
     private static final Logger LOG = LoggerFactory.getLogger(PublishedCredentialHeaders.class);
     // Header names come from messages, so the warnings per route are bounded.
     private static final int MAX_NAMES_PER_ROUTE = 100;
-    private static final String LIMIT_REACHED = "\u0000limit";
 
-    private final Map<String, Set<String>> warned = new ConcurrentHashMap<>();
+    private final Map<String, RouteNames> warned = new ConcurrentHashMap<>();
 
     /** Creates a check that warns once per route and header name. */
     public PublishedCredentialHeaders() {
@@ -103,19 +105,13 @@ public final class PublishedCredentialHeaders {
     }
 
     private void warnOnce(String routeId, String stepId, String name) {
-        Set<String> names = warned.computeIfAbsent(String.valueOf(routeId), route -> ConcurrentHashMap.newKeySet());
-        String key = name.toLowerCase(Locale.ROOT);
-        if (names.contains(key)) {
-            return;
+        RouteNames names = warned.computeIfAbsent(String.valueOf(routeId), route -> new RouteNames());
+        Admission admission = names.admit(name.toLowerCase(Locale.ROOT));
+        if (admission == Admission.LIMIT_REACHED) {
+            LOG.warn("Kafka sends in route {} published credential-like headers under {} different names; "
+                    + "further names in this route are not logged", routeId, MAX_NAMES_PER_ROUTE);
         }
-        if (names.size() >= MAX_NAMES_PER_ROUTE) {
-            if (names.add(LIMIT_REACHED)) {
-                LOG.warn("Kafka sends in route {} published credential-like headers under {} different names; "
-                        + "further names in this route are not logged", routeId, MAX_NAMES_PER_ROUTE);
-            }
-            return;
-        }
-        if (!names.add(key)) {
+        if (admission != Admission.NEW) {
             return;
         }
         String printable = printable(name);
@@ -134,11 +130,46 @@ public final class PublishedCredentialHeaders {
         return endpoint instanceof KafkaEndpoint kafka ? kafka : null;
     }
 
-    /** Camel's own classes decide from their configuration alone; application code may not. */
+    /**
+     * Camel's own classes decide from their configuration alone, and the configuration of a
+     * filter is checked for an application collection; application code could notice a call.
+     * Reading an unset filter set creates an empty one, which filters exactly as none.
+     */
     private static boolean camelsOwn(Object strategy) {
-        return strategy != null && (strategy.getClass() == KafkaHeaderFilterStrategy.class
-                || strategy.getClass() == DefaultHeaderFilterStrategy.class
-                || strategy.getClass() == DefaultKafkaHeaderSerializer.class);
+        if (strategy instanceof DefaultHeaderFilterStrategy filter
+                && (filter.getClass() == KafkaHeaderFilterStrategy.class
+                        || filter.getClass() == DefaultHeaderFilterStrategy.class)) {
+            return jdkSet(filter.getOutFilter());
+        }
+        return strategy != null && strategy.getClass() == DefaultKafkaHeaderSerializer.class;
+    }
+
+    private static boolean jdkSet(Set<String> set) {
+        return set.getClass() == HashSet.class || set.getClass() == LinkedHashSet.class
+                || set.getClass().getName().startsWith("java.util.ImmutableCollections$");
+    }
+
+    private enum Admission { NEW, KNOWN, LIMIT_REACHED, SUPPRESSED }
+
+    /** The names warned about in one route; admission is atomic, so the bound holds. */
+    private static final class RouteNames {
+        private final Set<String> names = new HashSet<>();
+        private boolean limitReached;
+
+        synchronized Admission admit(String name) {
+            if (names.contains(name)) {
+                return Admission.KNOWN;
+            }
+            if (names.size() < MAX_NAMES_PER_ROUTE) {
+                names.add(name);
+                return Admission.NEW;
+            }
+            if (limitReached) {
+                return Admission.SUPPRESSED;
+            }
+            limitReached = true;
+            return Admission.LIMIT_REACHED;
+        }
     }
 
     /** Value types Camel's default Kafka header serializer writes as they are. */

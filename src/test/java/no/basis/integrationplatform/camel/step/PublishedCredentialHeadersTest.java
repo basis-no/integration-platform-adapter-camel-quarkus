@@ -154,6 +154,112 @@ class PublishedCredentialHeadersTest {
                 "Published through an application serializer, which the check does not call");
     }
 
+    /**
+     * A filter built from Camel's class can still hold an application collection, which may
+     * answer differently on each call. The check must not call it: two sends publish the same
+     * with and without the check.
+     */
+    @Test
+    void anApplicationCollectionInTheFilterIsNeverCalled() throws Exception {
+        try (var logs = LogCapture.of(PublishedCredentialHeaders.class)) {
+            var unchecked = publishTwice(false);
+            var checked = publishTwice(true);
+            assertEquals(unchecked, checked, "Same records and the same calls on the collection");
+            assertTrue(logs.at(Level.WARNING).isEmpty(), "Not checked");
+        }
+    }
+
+    /** Whether each record carries Authorization, then how often the producer asked the collection. */
+    private static List<Object> publishTwice(boolean check) throws Exception {
+        var calls = new TogglingSet();
+        String topic = "toggling-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        try (var admin = AdminClient.create(Map.<String, Object>of("bootstrap.servers", brokers));
+             var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(topic, 1, (short) 1))).all().get(20, TimeUnit.SECONDS);
+            if (check) {
+                context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(new NoStepTracker()));
+            }
+            var toggling = new DefaultHeaderFilterStrategy();
+            toggling.setOutFilterStartsWith("Camel", "camel", "org.apache.camel.", "kafka.");
+            toggling.setOutFilter(calls);
+            context.getRegistry().bind("toggling", toggling);
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:publish").routeId("orders-toggling")
+                            .to("kafka:" + topic + "?brokers=" + brokers + "&headerFilterStrategy=#toggling").id("publish");
+                }
+            });
+            context.start();
+            try (var producer = context.createProducerTemplate()) {
+                for (int i = 0; i < 2; i++) {
+                    producer.sendBodyAndHeader("direct:publish", "{}", "Authorization", "Bearer synthetic-caller");
+                }
+            }
+        }
+        var result = new ArrayList<Object>();
+        consume(brokers, topic, 2).forEach(r -> result.add(r.headers().lastHeader("Authorization") != null));
+        result.add(calls.calls());
+        return result;
+    }
+
+    /** Holds Authorization on every second call, whether Camel asks with contains or iterates. */
+    private static final class TogglingSet extends java.util.HashSet<String> {
+        private int calls;
+
+        @Override
+        public synchronized boolean contains(Object name) {
+            return calls++ % 2 == 1 && "Authorization".equalsIgnoreCase(String.valueOf(name));
+        }
+
+        @Override
+        public synchronized java.util.Iterator<String> iterator() {
+            return (calls++ % 2 == 1 ? List.of("Authorization") : List.<String>of()).iterator();
+        }
+
+        synchronized int calls() {
+            return calls;
+        }
+    }
+
+    @Test
+    void theBoundPerRouteHoldsUnderConcurrentSends() throws Exception {
+        try (var logs = LogCapture.of(PublishedCredentialHeaders.class);
+             var context = new DefaultCamelContext()) {
+            context.start();
+            var endpoint = context.getEndpoint("kafka:bound?brokers=localhost:1");
+            var check = new PublishedCredentialHeaders();
+            for (int i = 0; i < 99; i++) {
+                check.check(exchange(context, "X-Token-" + i), endpoint, "orders-bound", "publish");
+            }
+            var pool = java.util.concurrent.Executors.newFixedThreadPool(16);
+            var start = new java.util.concurrent.CountDownLatch(1);
+            var sends = new ArrayList<java.util.concurrent.Future<?>>();
+            for (int i = 99; i < 163; i++) {
+                String name = "X-Token-" + i;
+                sends.add(pool.submit(() -> {
+                    start.await();
+                    check.check(exchange(context, name), endpoint, "orders-bound", "publish");
+                    return null;
+                }));
+            }
+            start.countDown();
+            for (var send : sends) {
+                send.get(10, TimeUnit.SECONDS);
+            }
+            pool.shutdown();
+            var warnings = logs.at(Level.WARNING).stream().map(LogCapture::text).toList();
+            assertEquals(100, warnings.stream().filter(w -> w.contains(" published header ")).count());
+            assertEquals(1, warnings.stream().filter(w -> w.contains("further names in this route are not logged")).count());
+        }
+    }
+
+    private static Exchange exchange(DefaultCamelContext context, String header) {
+        var exchange = new org.apache.camel.support.DefaultExchange(context);
+        exchange.getMessage().setHeader(header, "synthetic");
+        return exchange;
+    }
+
     /** Step, route and header name of one warning. */
     private static String summary(String warning) {
         String step = warning.substring("Kafka send ".length(), warning.indexOf(" in route "));
