@@ -765,11 +765,9 @@ Possible later work, not part of 0.3.x and not a rewrite of business routes:
 - Consider external payload storage for large/sensitive payloads instead of
   inline Postgres bytes.
 
-## License and support
+## License
 
-Apache-2.0. Basis develops the adapter and provides production support to its
-customers under their support agreements. Issues and pull requests from other
-users are welcome and handled best-effort.
+Apache-2.0. Issues and pull requests are welcome and handled best-effort.
 
 ## Authenticated Kafka broker
 
