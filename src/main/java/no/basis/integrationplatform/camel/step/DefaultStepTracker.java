@@ -131,7 +131,7 @@ public class DefaultStepTracker implements StepTracker {
         }
         boolean alreadyDelivered = stepOutcomeStore.wasDelivered(idempotencyKey);
 
-        // Contract §9 (DECISION D1): steps listed in x-bip-redo-steps MUST be
+        // Steps listed in x-bip-redo-steps MUST be
         // re-executed even when the durable ledger already has them DELIVERED.
         Set<String> redoSteps = redoSteps(exchange);
         boolean redoRequested = redoSteps.contains(stepId) || redoSteps.contains(idempotencyKey);
@@ -181,7 +181,7 @@ public class DefaultStepTracker implements StepTracker {
     }
 
     /**
-     * Contract §3 (DECISION D1): {@code x-bip-redo-steps} is a JSON array of step
+     * {@code x-bip-redo-steps} is a JSON array of step
      * ids. A malformed value is logged as a warning and treated as empty; it must
      * never fail message processing.
      */

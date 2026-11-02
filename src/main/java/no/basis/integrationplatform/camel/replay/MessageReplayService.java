@@ -5,7 +5,7 @@ public interface MessageReplayService {
     /**
      * Replays a message without optional operator context.
      *
-     * @param messageId stable platform message id
+     * @param messageId stable message id
      * @return successful replay publication
      * @throws MessageReplayException when replay is unavailable or publication fails
      */

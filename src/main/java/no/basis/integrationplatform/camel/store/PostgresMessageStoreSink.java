@@ -135,7 +135,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     /**
      * Creates a direct Postgres outcome sink.
      *
-     * @param dataSource platform message-store datasource
+     * @param dataSource message-store datasource
      */
     public PostgresMessageStoreSink(DataSource dataSource) {
         this(dataSource, new MessageStatusEventJson());

@@ -1,6 +1,6 @@
 package no.basis.integrationplatform.camel;
 
-/** Canonical BIP envelope and transport header names used by the Camel adapter. */
+/** Canonical {@code x-bip-*} envelope and transport header names used by the Camel adapter. */
 public final class PlatformHeaders {
     /** Stable message identity retained across replay attempts. */
     public static final String MESSAGE_ID = "x-bip-message-id";
@@ -10,7 +10,7 @@ public final class PlatformHeaders {
     public static final String SCHEMA_VERSION = "x-bip-schema-version";
     /** Original business payload content type. */
     public static final String CONTENT_TYPE = "x-bip-content-type";
-    /** Stable platform side-effect idempotency key. */
+    /** Stable side-effect idempotency key. */
     public static final String IDEMPOTENCY_KEY = "x-bip-idempotency-key";
     /** Optional source-system identity. */
     public static final String SOURCE_SYSTEM = "x-bip-source-system";
@@ -18,9 +18,9 @@ public final class PlatformHeaders {
     public static final String SOURCE_EVENT_ID = "x-bip-source-event-id";
     /** Optional target-system identity. */
     public static final String TARGET_SYSTEM = "x-bip-target-system";
-    /** Flag indicating a manual platform replay. */
+    /** Flag indicating a manual replay. */
     public static final String REPLAY = "x-bip-replay";
-    /** Platform attempt number. */
+    /** Message attempt number. */
     public static final String ATTEMPT = "x-bip-attempt";
     /** JSON array of delivered steps an operator requests to re-execute. */
     public static final String REDO_STEPS = "x-bip-redo-steps";

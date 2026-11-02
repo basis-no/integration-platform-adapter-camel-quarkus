@@ -13,7 +13,7 @@ GitHub and in any static documentation site.
 3. [Retry, DLQ, and replay](retry-dlq-replay.md)
 4. [Testing](testing.md)
 
-### Platform engineer
+### Operator
 
 1. [Message lifecycle](message-lifecycle.md)
 2. [Ingress and scaling](ingress-and-scaling.md)
@@ -24,23 +24,21 @@ GitHub and in any static documentation site.
 
 ## Sources of Truth
 
-The adapter implements contract `v1.0.0-rc2`. These pages describe the
-tables, topics, headers and behavior the adapter relies on; the schema it
-expects ships in `src/main/resources/db/message-store/`.
-
-These pages own Camel-specific behavior, configuration, examples, local tests,
-and limitations. The public platform handbook owns curated runtime-neutral
-guidance, the certified adapter-version matrix, and release snapshots.
+These pages describe the tables, topics, headers and behavior the adapter
+relies on; the schema it expects ships in
+`src/main/resources/db/message-store/`. They own the adapter's behavior,
+configuration, examples, local tests, and limitations. The .NET adapter uses
+the same message-store tables, topics and headers.
 
 ## Version Labels
 
-- **Certified** means the version matrix and cross-runtime certification suite
-  approve the behavior for platform use.
+- **Released** means the behavior ships in a published version and has passed
+  the release acceptance described in [Releasing](releasing.md).
 - **Implemented locally** means code and local tests exist on the development
-  branch, but the feature is not yet the platform baseline.
-- **Preview** means the behavior is intentionally narrower than the certified
-  contract and must be enabled explicitly.
-- **Proposed** means documentation describes a future contract or design only.
+  branch, but the feature is not released yet.
+- **Preview** means the behavior is intentionally narrower than the supported
+  Kafka lifecycle and must be enabled explicitly.
+- **Proposed** means documentation describes a future design only.
 
-Do not promote implemented or published behavior to certified status without
-the coordinated acceptance evidence.
+Do not label implemented behavior as released before it ships in a published
+version with that acceptance evidence.

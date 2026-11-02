@@ -23,18 +23,18 @@ idempotency.
 
 ## Status and Attempt Semantics
 
-The Camel adapter records one terminal outcome per platform attempt:
+The Camel adapter records one terminal outcome per message attempt:
 
 - `COMPLETED`: route processing and required outcome recording succeeded.
 - `DLQ`: retries were exhausted and the record was parked successfully.
 - `FAILED`: terminal failure was recorded without a Kafka DLQ, as used by the
   explicit non-Kafka audit-only preview.
-- `RECEIVED`: reserved for a future platform capture layer; the v1 Camel
-  terminal flow does not emit it.
+- `RECEIVED`: reserved for a future capture layer; the Camel terminal flow
+  does not emit it.
 
-Camel automatic redeliveries remain within the same platform attempt. They are
+Camel automatic redeliveries remain within the same message attempt. They are
 recorded through `auto_redelivered`, `auto_redelivery_count`, and
-`auto_redelivery_max`. Manual replay increments the platform attempt.
+`auto_redelivery_max`. Manual replay increments the message attempt.
 
 ## Envelope
 
@@ -48,7 +48,7 @@ across manual replay so durable step outcomes remain addressable.
 `basis.message-store.sink` selects terminal outcome handling:
 
 - `postgres` writes the canonical `bip_message_log` and
-  `bip_message_attempt` read model directly. This is the v1 production mode.
+  `bip_message_attempt` read model directly. This is the production mode.
 - `kafka` emits terminal lifecycle events to `bip.message.status`. A separate
   lifecycle consumer must persist those events; the adapter does not provide
   that central service.
@@ -58,15 +58,16 @@ across manual replay so durable step outcomes remain addressable.
 delivered-step checks in `bip_step_outcome`. The sink and step store solve
 different problems and production direct-Postgres mode uses both.
 
-## Dashboard Read Model
+## Read Model
 
 - `bip_message_log`: current searchable state for one message.
-- `bip_message_attempt`: terminal history for each platform attempt, including
+- `bip_message_attempt`: terminal history for each message attempt, including
   automatic redelivery diagnostics and `steps_json`.
 - `bip_step_outcome`: durable delivered-side-effect ledger and optional output
   checkpoint.
 - `bip_message_replay_audit`: operator replay request and publication audit.
-- `bip_contract`: schema contract major checked at adapter startup.
+- `bip_contract`: store schema version (`contract_major`) checked at adapter
+  startup.
 
 In production the database operator provisions the schema outside
 integration pods. SQL resources in the adapter JAR exist for local tests, not

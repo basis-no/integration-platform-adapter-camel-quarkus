@@ -100,7 +100,7 @@ class MessageStoreRoutePolicyTest {
 
     @Test
     void recordsRedeliveryDiagnosticsFromCapturedPropertiesWhenHeadersWereStripped() {
-        // Contract §5: on the DLQ path Camel's error handler removes the
+        // On the DLQ path Camel's error handler removes the
         // redelivery headers before dead-letter delivery; the diagnostics
         // captured into exchange properties during redelivery must win.
         RecordingSink sink = new RecordingSink();
@@ -322,14 +322,14 @@ class MessageStoreRoutePolicyTest {
         // When the policy records the terminal attempt result.
         policy.onExchangeDone(route("order-pipeline"), exchange);
 
-        // Then dashboard/status consumers see the parked state, not just a generic failure.
+        // Then read-model/status consumers see the parked state, not just a generic failure.
         assertEquals(MessageStatus.DLQ, sink.result.status());
         assertEquals("poison message", sink.result.error());
     }
 
     @Test
     void createsMessageIdWhenMissingAtExchangeBegin() {
-        // Given a route starts with no platform message id on the exchange.
+        // Given a route starts with no message id on the exchange.
         RecordingSink sink = new RecordingSink();
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
         Exchange exchange = exchange();
