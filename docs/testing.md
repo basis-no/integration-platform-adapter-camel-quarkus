@@ -21,7 +21,7 @@ Prefer these repeatable approaches:
 
 - a fresh Kafka consumer group for an isolated test run;
 - an explicit consumer-group offset reset when that is the behavior under test;
-- dashboard replay for production-like resend behavior;
+- replay through the admin endpoint for production-like resend behavior;
 - Testcontainers for local Kafka, Postgres, S3-compatible storage, and queue
   brokers.
 
@@ -43,8 +43,8 @@ basis.message-store.allow-test-profiles=true
 ```
 
 The adapter logs a prominent warning and exposes readiness data describing the
-active profile and effective persistence/commit behavior. Platform production
-configuration must reject test profiles.
+active profile and effective persistence/commit behavior. Production
+configuration must keep test profiles disabled.
 
 No-commit mode does not make one running Kafka consumer continuously reread the
 same record. Its in-memory position already advanced. Restart, seek, or reset
@@ -60,5 +60,5 @@ Local tests can prove code behavior, broker offset handling, database writes,
 claim checks, queue acknowledgement, partition assignment, and replacement
 consumer redelivery. They cannot prove customer-cluster RBAC, Kubernetes
 leader election, workload identity, network policy, deployed metrics, or
-dashboard wiring. Keep those scenarios in the batched remote acceptance
-campaign rather than treating every feature as remotely certified immediately.
+operator-tool wiring. Keep those scenarios in the batched remote acceptance
+campaign rather than treating every feature as remotely verified immediately.

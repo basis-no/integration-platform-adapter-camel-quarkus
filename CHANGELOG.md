@@ -17,10 +17,15 @@
   troubleshooting.
 - Add automated configuration coverage, Markdown link validation, and strict
   warning-free public Javadocs.
+- Describe the adapter in its own terms throughout the documentation, Javadoc,
+  and the startup messages about the store schema version, a missing replica
+  count and an ingress route without its route configuration. The
+  `MESSAGE-STORE CONTRACT VERSION UNVERIFIED` prefix, behavior, identifiers and
+  configuration are unchanged.
 
 ## 0.3.1
 
 First public release, on Maven Central. Functionally identical to the
-internally certified 0.3.0 (message-store contract v1.0.0-rc2); this release
+internally qualified 0.3.0 (message-store schema version 1); this release
 adds only licensing, publication metadata and packaging. Versions below 0.3.1
-were internal to the Basis platform.
+were internal to Basis.
