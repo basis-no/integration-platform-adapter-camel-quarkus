@@ -250,13 +250,14 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private record Send(TrafficSignals.PublishSnapshot trafficSnapshot, java.util.Map<String, Object> withheld) {
     }
 
-    /** Fails the exchange. An exchange that already failed keeps its exception, with this one suppressed. */
+    /** Fails the exchange. An exchange that already failed keeps its exception unchanged, since it may be shared. */
     private static void markFailed(Exchange exchange, Throwable failure) {
         Exception current = exchange.getException();
         if (current == null) {
             exchange.setException(failure);
         } else if (current != failure) {
-            current.addSuppressed(failure);
+            LOG.warn("Completing a send of exchange {} failed after the send itself had failed",
+                    exchange.getExchangeId(), failure);
         }
     }
 
@@ -298,7 +299,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
          * Calls {@code callback} exactly once. A step outcome that cannot be checked or
          * recorded, for example during a Message Store outage, fails the exchange and keeps
          * the input from being parked or committed (see {@link StepOutcomeFailure}). A failed
-         * send keeps its own exception, with the recording failure suppressed.
+         * send keeps its own exception unchanged.
          */
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {

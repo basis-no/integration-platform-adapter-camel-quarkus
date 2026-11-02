@@ -73,12 +73,10 @@ public final class MessageStoreAuditRoutePolicy extends MessageStoreRoutePolicy 
             }
             throw storeFailure;
         }
-        // A request whose step outcome was not recorded fails, also when its route caught the failure,
-        // so that the caller does not take it as delivered.
-        Throwable unrecorded = StepOutcomeFailure.of(exchange);
-        if (unrecorded != null && exchange.getException() == null) {
-            exchange.setException(unrecorded);
-        }
-        // Never commit an offset, park a payload or handle a receiver failure; an existing exception stays.
+        // A request whose step outcome was not recorded ends with a failure that carries it, also when
+        // its route caught the failure, so that the caller does not take it as delivered.
+        StepOutcomeFailure.surface(exchange);
+        // Never commit an offset, park a payload or handle a receiver failure. A receiver's exception is
+        // never changed; it is only the cause of a new one when a step outcome was not recorded as well.
     }
 }

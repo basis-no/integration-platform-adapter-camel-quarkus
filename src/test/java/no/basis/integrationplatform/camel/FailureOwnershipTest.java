@@ -170,8 +170,7 @@ class FailureOwnershipTest {
         var result = deliver(asyncReceiver, "send", false, true, rejection);
 
         assertTrue(result.exchange.isFailed());
-        assertEquals(1, rejection.getSuppressed().length);
-        assertInstanceOf(StepOutcomeStoreException.class, rejection.getSuppressed()[0]);
+        assertEquals(0, rejection.getSuppressed().length, "The receiver's exception may be shared, so it is not changed");
         assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
         assertEquals("synthetic receiver rejection", result.rows.getFirst().error());
         assertEquals(0, result.commits.get());

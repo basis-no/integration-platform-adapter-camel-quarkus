@@ -48,9 +48,8 @@ class StepTrackingEntryPointsTest {
             }
 
             assertSame(rejection, exchange.getException());
-            assertEquals(1, rejection.getSuppressed().length);
-            assertInstanceOf(StepOutcomeStoreException.class, rejection.getSuppressed()[0]);
-            assertSame(rejection.getSuppressed()[0], StepOutcomeFailure.of(exchange));
+            assertEquals(0, rejection.getSuppressed().length, "The receiver's exception may be shared, so it is not changed");
+            assertInstanceOf(StepOutcomeStoreException.class, StepOutcomeFailure.of(exchange));
             ServiceHelper.stopService(target);
         }
     }

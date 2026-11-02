@@ -22,11 +22,12 @@ import java.util.concurrent.atomic.AtomicReference;
  * exchange, so the input route starts one holder that the copies share.
  *
  * <p>A separate exchange, such as a request sent with a {@code ProducerTemplate}, has its own
- * holder. Such an exchange ends failed when one of its step outcomes was not recorded, also
- * when its route caught the failure. An exchange whose failure carries that failure counts as
- * having it too: the failure itself, or the failed send's own exception, as the exception, a
- * cause or a suppressed exception at any depth. Work that ends after its input completed, such
- * as a {@code wireTap}, cannot hold that input back.</p>
+ * holder. Such an exchange ends with a failure that carries it when one of its step outcomes
+ * was not recorded, also when its route caught the failure (see {@link #surface(Exchange)}).
+ * An exchange whose failure carries a recorded failure, as the exception, a cause or a
+ * suppressed exception at any depth, counts as having it too. Only the step outcome failures
+ * themselves are recorded, held weakly; no other exception is changed or recorded. Work that
+ * ends after its input completed, such as a {@code wireTap}, cannot hold that input back.</p>
  */
 public final class StepOutcomeFailure {
     /** Recorded failures, so that one passed on to another exchange is recognised there. */
@@ -61,13 +62,37 @@ public final class StepOutcomeFailure {
         return failure;
     }
 
-    static void record(Exchange exchange, Throwable failure) {
-        RECORDED.add(failure);
-        // A failed send keeps its own exception. It may not accept the failure as suppressed,
-        // so it is recognised as carrying the failure itself.
-        if (exchange.getException() != null) {
-            RECORDED.add(exchange.getException());
+    /**
+     * Makes a separate exchange, such as a request, end with a failure that carries this one, so
+     * that whoever sent it sees it. Without an exception it gets the failure itself. An exception
+     * that does not carry it stays unchanged, since it may be shared, and becomes the cause of a
+     * new exception that does.
+     * @param exchange the separate exchange, when it ends
+     */
+    public static void surface(Exchange exchange) {
+        AtomicReference<Throwable> holder = holder(exchange);
+        surface(exchange, holder == null ? null : holder.get());
+    }
+
+    private static void surface(Exchange exchange, Throwable failure) {
+        if (failure == null) {
+            return;
         }
+        Exception current = exchange.getException();
+        if (current == null) {
+            exchange.setException(failure);
+        } else if (carried(current) == null) {
+            String message = current.getMessage() == null ? current.getClass().getName() : current.getMessage();
+            var carrier = new StepOutcomeStoreException("A step outcome was not checked or recorded, and the request "
+                    + "failed: " + message, current);
+            carrier.addSuppressed(failure);
+            exchange.setException(carrier);
+        }
+    }
+
+    static void record(Exchange exchange, Throwable failure) {
+        // Only the step outcome failure itself: an exception the exchange already had may be shared.
+        RECORDED.add(failure);
         AtomicReference<Throwable> holder = holder(exchange);
         if (holder == null) {
             // No input route started this exchange: end it failed, so that whoever sent it sees the failure.
@@ -168,11 +193,8 @@ public final class StepOutcomeFailure {
         }
 
         @Override
-        public void onComplete(Exchange exchange) {
-            Throwable failure = holder.get();
-            if (failure != null && exchange.getException() == null) {
-                exchange.setException(failure);
-            }
+        public void onDone(Exchange exchange) {
+            surface(exchange, holder.get());
         }
     }
 }

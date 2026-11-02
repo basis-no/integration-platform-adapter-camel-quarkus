@@ -5,6 +5,8 @@ import org.apache.camel.impl.DefaultCamelContext;
 import org.apache.camel.support.DefaultExchange;
 import org.junit.jupiter.api.Test;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 
@@ -40,14 +42,46 @@ class StepOutcomeFailureTest {
     }
 
     @Test
-    void aFailedSendsExceptionCarriesTheFailureAlsoWhenItRefusesSuppressedExceptions() {
-        var rejection = new RuntimeException("synthetic receiver rejection", null, false, false) { };
-        Exchange send = failedWith(rejection);
-        var recorded = new IllegalStateException("synthetic step outcome outage");
-        StepOutcomeFailure.record(send, recorded);
-        rejection.addSuppressed(recorded);
+    void aSharedExceptionIsNeitherChangedNorTakenForTheFailure() {
+        // Some libraries throw one exception instance for every failure of a kind.
+        var shared = new RuntimeException("connection closed");
+        var sharedWithoutSuppression = new RuntimeException("connection reset", null, false, false) { };
+        for (var receiverFailure : java.util.List.of(shared, sharedWithoutSuppression)) {
+            Exchange send = failedWith(receiverFailure);
+            StepOutcomeFailure.record(send, new IllegalStateException("synthetic step outcome outage"));
 
-        assertSame(rejection, StepOutcomeFailure.of(failedWith(new RuntimeException("caller", rejection))));
+            assertEquals(0, receiverFailure.getSuppressed().length);
+            assertSame(receiverFailure, send.getException());
+            assertNull(StepOutcomeFailure.of(failedWith(receiverFailure)),
+                    "Another exchange that fails with the same instance has no step outcome failure");
+        }
+    }
+
+    @Test
+    void aSeparateExchangeThatFailedEndsWithANewExceptionThatCarriesTheFailure() {
+        var rejection = new RuntimeException("synthetic receiver rejection", null, false, false) { };
+        Exchange request = failedWith(rejection);
+        var recorded = new IllegalStateException("synthetic step outcome outage");
+        StepOutcomeFailure.record(request, recorded);
+
+        StepOutcomeFailure.surface(request);
+
+        var carrier = assertInstanceOf(StepOutcomeStoreException.class, request.getException());
+        assertSame(rejection, carrier.getCause());
+        assertEquals("A step outcome was not checked or recorded, and the request failed: synthetic receiver rejection",
+                carrier.getMessage());
+        assertSame(recorded, StepOutcomeFailure.of(failedWith(new RuntimeException("caller", carrier))));
+    }
+
+    @Test
+    void aSeparateExchangeWithoutAnExceptionEndsWithTheFailure() {
+        Exchange request = exchange();
+        var recorded = new IllegalStateException("synthetic step outcome outage");
+        StepOutcomeFailure.record(request, recorded);
+
+        StepOutcomeFailure.surface(request);
+
+        assertSame(recorded, request.getException());
     }
 
     @Test

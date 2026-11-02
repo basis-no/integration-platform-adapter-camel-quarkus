@@ -120,12 +120,12 @@ with 0.4.
   route with no error handler or inside `doTry`, and in a split part it could
   let the input complete and commit. Camel's retries still run before the
   input fails, so a receiver can get the same send again; receivers deduplicate
-  on the stable `Idempotency-Key`. A failed send keeps its own exception, with
-  the recording failure attached as suppressed. A separate request, such as one
-  sent with a `ProducerTemplate` or recorded by delivery audit, likewise fails
-  when one of its step outcomes is not recorded, also when its own route caught
-  the failure. An input that passes that failure on is neither parked nor
-  committed either. During a Message Store outage the partition therefore
+  on the stable `Idempotency-Key`. A failed send keeps its own exception
+  unchanged. A separate request, such as one sent with a `ProducerTemplate` or
+  recorded by delivery audit, likewise fails when one of its step outcomes is
+  not recorded, also when its own route caught the failure; a request that had
+  already failed ends with a new exception whose cause is its own failure. An
+  input that passes that failure on is neither parked nor committed either. During a Message Store outage the partition therefore
   waits at that input, as it already does when parking fails.
 - The DLQ record carries the consumed input, also when the route changed it.
   Before, a route that changed a byte-array input in place changed both the
