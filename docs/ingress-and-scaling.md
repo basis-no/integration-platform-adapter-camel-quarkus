@@ -23,6 +23,35 @@ profile and must not be used to represent several independent receivers under
 one message id; that needs a separate delivery identity, which the adapter does
 not provide.
 
+An HTTP intake that publishes to Kafka must remove the caller's headers first,
+for example with `removeHeaders("*")` and then setting only the headers the
+message needs. Camel copies every request header onto the exchange, and the
+Kafka producer publishes them with the message, including `Authorization`, API
+keys and cookies, unmasked. Anyone who can read the topic can read them. A
+Kafka send that published a header with a credential-like name
+(`Authorization`, cookies, authentication challenges, and names containing
+secret, token, password, credential, session, signature or auth, or ending in
+`-key` or `_key`; not `x-bip-*` or `Idempotency-Key`) logs a warning once per
+route and header name. The warning names the header, never its value, and says
+how to remove it. What is published does not change. The check runs after a
+successful `to` or `toD`, against the endpoint the send used, including a `toD`
+that chooses its component only when it sends. It follows that endpoint's
+header filter strategy and counts only text, byte array, `Long`, `Integer`,
+`Double` and `Boolean` values, which Camel's header serializer writes as they
+are. An endpoint whose header filter strategy or header serializer is an
+application class, or whose filter holds an application collection, is not
+checked: the adapter does not call application code to find out what was
+published. Nor is a send through a `toD` with `cacheSize=-1` to an endpoint
+that is not yet registered: Camel creates such an endpoint for the one send
+without registering it, so the adapter cannot find it afterwards. An endpoint
+that is already registered is reused and checked. At most 100 header names are
+reported per route; one more line then says that further names are not logged. A tracked
+send through Camel's `http` component does not forward credential-like
+headers that still hold a consumed record's bytes, and logs a warning that names
+the header, never its value. A `toD` that chooses its component only when it
+sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver, as
+byte-array text unless they are `x-bip-*` headers.
+
 ## Non-Kafka Normalization
 
 Asynchronous non-Kafka sources should hand off to the canonical input topic:

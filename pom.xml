@@ -109,6 +109,11 @@
       <groupId>org.apache.camel</groupId>
       <artifactId>camel-kafka</artifactId>
     </dependency>
+    <!-- The dead-letter route consumes from direct:, in every application. -->
+    <dependency>
+      <groupId>org.apache.camel.quarkus</groupId>
+      <artifactId>camel-quarkus-direct</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
@@ -137,11 +142,6 @@
     </dependency>
     <dependency>
       <groupId>org.apache.camel</groupId>
-      <artifactId>camel-direct</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.camel</groupId>
       <artifactId>camel-core-languages</artifactId>
       <scope>test</scope>
     </dependency>
@@ -165,6 +165,9 @@
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-http</artifactId><scope>test</scope>
     </dependency>
   </dependencies>
 

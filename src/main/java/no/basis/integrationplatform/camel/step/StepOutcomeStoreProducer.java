@@ -4,6 +4,7 @@ import io.quarkus.arc.DefaultBean;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.enterprise.inject.Produces;
+import no.basis.integrationplatform.camel.MessageStoreDataSource;
 import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
@@ -35,9 +36,6 @@ public class StepOutcomeStoreProducer {
     }
 
     private DataSource requiredDataSource(Instance<DataSource> dataSource) {
-        if (dataSource.isResolvable()) {
-            return dataSource.get();
-        }
-        throw new IllegalStateException("basis.message-store.step-outcome-store=postgres requires a JDBC DataSource");
+        return MessageStoreDataSource.require(dataSource, "basis.message-store.step-outcome-store=postgres");
     }
 }

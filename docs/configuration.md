@@ -13,7 +13,7 @@ into integration repositories.
 | `basis.message-store.step-outcome-store` | `BASIS_MESSAGE_STORE_STEP_OUTCOME_STORE` | `noop`, `postgres`; default `noop` | Deployment profile. Production replay protection requires `postgres`. |
 | `basis.message-store.test-profile` | `BASIS_MESSAGE_STORE_TEST_PROFILE` | `disabled`, `no-persistence`, `no-commit`, `no-persistence-no-commit`; default `disabled` | Test-only; non-default values are unsafe in production. |
 | `basis.message-store.allow-test-profiles` | `BASIS_MESSAGE_STORE_ALLOW_TEST_PROFILES` | boolean; default `false` | Explicit test guard. Production deployments should keep `false`. |
-| `basis.message-store.dlq-uri` | `BASIS_MESSAGE_STORE_DLQ_URI` | Camel URI; default `kafka:bip.message.dlq` | Deployment-owned terminal parking endpoint. |
+| `basis.message-store.dlq-uri` | `BASIS_MESSAGE_STORE_DLQ_URI` | A fixed, non-transactional `kafka:` URI (not `acks=0`) or the application's own `direct:` route; default `kafka:bip.message.dlq` | Deployment-owned terminal parking endpoint. The adapter records `DLQ` and commits only after this endpoint accepted the record. |
 | `basis.message-store.payload.mode` | `BASIS_MESSAGE_STORE_PAYLOAD_MODE` | `tiered`, `postgres-inline`, `metadata-only`; default `postgres-inline` | Deployment profile. Production should use `tiered`. |
 | `basis.message-store.payload.inline-threshold-bytes` | `BASIS_MESSAGE_STORE_PAYLOAD_INLINE_THRESHOLD_BYTES` | `0..16777216`; default `1048576` | Deployment-owned threshold; do not tune per integration. |
 | `basis.message-store.payload.max-bytes` | `BASIS_MESSAGE_STORE_PAYLOAD_MAX_BYTES` | bytes; unset | Deprecated alias for the inline threshold. The new property wins. |
@@ -28,6 +28,7 @@ into integration repositories.
 | `basis.message-store.ingress.normalization-routes` | `BASIS_MESSAGE_STORE_INGRESS_NORMALIZATION_ROUTES` | exact route ids; default empty | App-owned opt-in for source-to-Kafka routes; requires Postgres step store. |
 | `basis.message-store.deployment-replicas` | `BASIS_MESSAGE_STORE_DEPLOYMENT_REPLICAS` | integer `>= 1`; no library default | Deployment-owned; set from the actual Kubernetes Deployment replica count. Never set or guess it in the app. |
 | `basis.message-store.failure-mode` | `BASIS_MESSAGE_STORE_FAILURE_MODE` | `dlq`, `record-failed`; default `dlq` | Kafka requires `dlq`; audit-only non-Kafka preview requires `record-failed`. |
+| `basis.message-store.step-ids.emergency-allow-generated` | `BASIS_MESSAGE_STORE_STEP_IDS_EMERGENCY_ALLOW_GENERATED` | `true`, `false`; default `false` | Emergency escape hatch only. By default a `to` or `toD` send to a non-internal endpoint without an explicit id fails startup; `true` starts with a warning per send. |
 | `basis.message-store.step.internal-ids` | `BASIS_MESSAGE_STORE_STEP_INTERNAL_IDS` | exact node ids; default empty | App-owned replay classification. |
 | `basis.message-store.step.repeatable-ids` | `BASIS_MESSAGE_STORE_STEP_REPEATABLE_IDS` | exact node ids; default empty | App-owned replay classification for safe reads/authentication. |
 | `basis.message-store.step.side-effect-ids` | `BASIS_MESSAGE_STORE_STEP_SIDE_EFFECT_IDS` | exact node ids; default empty | App-owned durable write classification. Requires stable ids. |
@@ -50,6 +51,7 @@ These are integration/runtime dependencies rather than adapter-owned options:
 | `kafka.bootstrap.servers` / `KAFKA_BOOTSTRAP_SERVERS` | Required for Kafka boundaries, replay, DLQ, and Kafka sink. |
 | `camel.component.kafka.auto-commit-enable=false` | Adapter default; must remain false. |
 | `camel.component.kafka.allow-manual-commit=true` | Adapter default; must remain true. |
+| `camel.component.kafka.break-on-first-error=true` | Adapter default; must remain true. A record that was not committed is read again before the partition's later records, whose commit would otherwise move past it. |
 | `quarkus.datasource.jdbc.url` / `QUARKUS_DATASOURCE_JDBC_URL` | Required by Postgres sink/store/replay. |
 | `quarkus.datasource.username` / `QUARKUS_DATASOURCE_USERNAME` | Message-store database identity. |
 | `quarkus.datasource.password` / `QUARKUS_DATASOURCE_PASSWORD` | Secret binding when password auth is used. |

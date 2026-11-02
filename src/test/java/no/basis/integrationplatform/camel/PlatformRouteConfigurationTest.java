@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel;
 
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import org.apache.camel.Exchange;
 import org.apache.camel.impl.DefaultCamelContext;
 import org.apache.camel.support.DefaultExchange;
@@ -10,6 +11,8 @@ import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -28,12 +31,15 @@ class PlatformRouteConfigurationTest {
         Instant before = Instant.now();
 
         // When the dead letter channel prepares the exchange for parking.
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
-        // Then the DLQ record carries the original consumed payload plus diagnostics.
-        assertTrue(Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class)));
+        // Then the DLQ record carries the original consumed payload plus diagnostics. It is not
+        // parked until the dead-letter route has published it.
+        assertEquals(Boolean.FALSE, exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
         assertEquals("{\"original\":true}",
                 new String(exchange.getMessage().getBody(byte[].class), StandardCharsets.UTF_8));
+        assertNotSame(originalPayload, exchange.getMessage().getBody(),
+                "The parking endpoint gets its own array; the capture stays the input for replay storage");
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
 
         String dlqAt = exchange.getMessage().getHeader(PlatformHeaders.DLQ_AT, String.class);
@@ -44,13 +50,58 @@ class PlatformRouteConfigurationTest {
     }
 
     @Test
+    void dlqParkingDoesNotPublishAReplaysRedoList() {
+        // A handler that restored the original message gave the header back.
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"post-receiver\"]".getBytes(StandardCharsets.UTF_8));
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
+
+        configuration.prepareDlq(exchange);
+
+        assertNull(exchange.getMessage().getHeader(PlatformHeaders.REDO_STEPS));
+    }
+
+    @Test
+    void dlqParkingRestoresTheParkingCopyWhenReplayStorageDidNotKeepThePayload() {
+        Exchange exchange = exchange();
+        exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, "<Input/>");
+        exchange.getMessage().setBody("<Transformed/>");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
+
+        configuration.prepareDlq(exchange);
+
+        assertEquals("<Input/>", exchange.getMessage().getBody());
+    }
+
+    @Test
+    void aMessageWhoseStepOutcomeWasNotRecordedIsLoggedAsNotParked() {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        var failure = new IllegalStateException("step outcome store unavailable");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
+        StepOutcomeFailure.begin(exchange);
+        exchange.getProperty(PlatformExchangeProperties.STEP_OUTCOME_FAILURE,
+                java.util.concurrent.atomic.AtomicReference.class).set(failure);
+
+        try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
+            configuration.prepareDlq(exchange);
+
+            var errors = logs.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            assertSame(failure, errors.getFirst().getThrown());
+            assertEquals("Message message-123 exhausted retries and is not parked: a step outcome "
+                    + "was not checked or recorded", LogCapture.text(errors.getFirst()));
+        }
+    }
+
+    @Test
     void dlqParkingLeavesBodyAsIsWhenPayloadWasNotCaptured() {
-        // Given a metadata_only / uncapturable message: no PAYLOAD_BYTES property was recorded.
+        // Given an uncapturable body: neither the replay nor the parking copy was recorded.
         Exchange exchange = exchange();
         exchange.getMessage().setBody("stream-derived body");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         assertEquals("stream-derived body", exchange.getMessage().getBody());
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
@@ -65,12 +116,64 @@ class PlatformRouteConfigurationTest {
         exchange.getMessage().setBody("transformed body");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("target unavailable"));
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         assertEquals("{\"storage\":\"s3_object\"}",
                 new String(exchange.getMessage().getBody(byte[].class), StandardCharsets.UTF_8));
+        assertNotSame(claimCheck, exchange.getMessage().getBody(), "The parking endpoint gets its own array");
         assertEquals(no.basis.integrationplatform.camel.payload.PayloadReference.CONTENT_TYPE,
                 exchange.getMessage().getHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE));
+    }
+
+    @Test
+    void dlqParkingMasksCredentialHeaderValuesButKeepsTheirNames() {
+        Exchange exchange = exchange();
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("after receiver success"));
+        var message = exchange.getMessage();
+        for (String name : java.util.List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
+                "x-functions-key", "X-Access-Key", "x_client_key", "Set-Cookie", "WWW-Authenticate", "X-Request-Token-Echo")) {
+            message.setHeader(name, "credential-value");
+        }
+        message.setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        message.setHeader(PlatformHeaders.IDEMPOTENCY_KEY, "message-123:deliver");
+        message.setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, "message-123:deliver");
+        message.setHeader("CamelKafkaKey", "order-1");
+        message.setHeader("kafka.KEY", "order-1");
+        message.setHeader("Content-Type", "application/xml");
+
+        configuration.prepareDlq(exchange);
+
+        for (String name : java.util.List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
+                "x-functions-key", "X-Access-Key", "x_client_key", "Set-Cookie", "WWW-Authenticate", "X-Request-Token-Echo")) {
+            assertEquals("xxxxxx", message.getHeader(name), name);
+        }
+        assertEquals("message-123", message.getHeader(PlatformHeaders.MESSAGE_ID));
+        assertEquals("message-123:deliver", message.getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+        assertEquals("message-123:deliver", message.getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
+        assertEquals("order-1", message.getHeader("CamelKafkaKey"));
+        assertEquals("order-1", message.getHeader("kafka.KEY"));
+        assertEquals("application/xml", message.getHeader("Content-Type"));
+        assertEquals("after receiver success", message.getHeader(PlatformHeaders.ERROR));
+    }
+
+    @Test
+    void dlqParkingRestoresTheInputMessageIdAfterAFailedSendUnderAnotherId() {
+        Exchange exchange = exchange();
+        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, "input-message");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "derived-downstream-id");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("broker unavailable"));
+
+        configuration.prepareDlq(exchange);
+
+        assertEquals("input-message", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+    }
+
+    @Test
+    void dlqParkingWithoutACapturedInputKeepsTheMessageId() {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        configuration.prepareDlq(exchange);
+        assertEquals("message-123", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
     }
 
     @Test
@@ -78,7 +181,7 @@ class PlatformRouteConfigurationTest {
         Exchange exchange = exchange();
         exchange.setException(new IllegalStateException((String) null));
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         assertEquals(IllegalStateException.class.getName(), exchange.getMessage().getHeader(PlatformHeaders.ERROR));
     }

@@ -74,7 +74,12 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 occurred_at = excluded.occurred_at,
                 error = excluded.error,
                 updated_at = current_timestamp
+            where excluded.last_attempt >= bip_message_log.last_attempt
             returning payload_expires_at
+            """;
+
+    private static final String MESSAGE_LOG_EXPIRY_SQL = """
+            select payload_expires_at from bip_message_log where message_id = ?
             """;
 
     private static final String UPSERT_MESSAGE_ATTEMPT_SQL = """
@@ -279,8 +284,22 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             statement.setTimestamp(22, Timestamp.from(result.occurredAt()));
             statement.setString(23, result.error());
             try (ResultSet resultSet = statement.executeQuery()) {
-                resultSet.next();
-                Timestamp payloadExpiresAt = resultSet.getTimestamp(1);
+                if (resultSet.next()) {
+                    Timestamp payloadExpiresAt = resultSet.getTimestamp(1);
+                    return payloadExpiresAt == null ? null : payloadExpiresAt.toInstant();
+                }
+            }
+        }
+        // A late outcome from an older attempt leaves the newer summary unchanged. Its history
+        // row keeps its own capped inline expiry; an object payload keeps the summary's expiry.
+        if (!"s3_object".equals(result.payloadStorage())) {
+            return requestedExpiry;
+        }
+        try (PreparedStatement statement = connection.prepareStatement(MESSAGE_LOG_EXPIRY_SQL)) {
+            statement.setString(1, result.messageId());
+            try (ResultSet current = statement.executeQuery()) {
+                current.next();
+                Timestamp payloadExpiresAt = current.getTimestamp(1);
                 return payloadExpiresAt == null ? null : payloadExpiresAt.toInstant();
             }
         }

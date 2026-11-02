@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.ingress.IngressNormalizationConfig;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
@@ -7,7 +8,6 @@ import org.apache.camel.model.RouteDefinition;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,7 +30,8 @@ class MessageStoreRoutePolicyFactoryTest {
 
         assertInstanceOf(MessageStoreRoutePolicy.class,
                 factory.createRoutePolicy(null, "orders", route("kafka:bip.orders.in")));
-        assertNull(factory.createRoutePolicy(null, "transform", route("direct:transform")));
+        // Not recorded: such a route only reads a replay's redo list, so it cannot forward it.
+        assertInstanceOf(RedoStepsRoutePolicy.class, factory.createRoutePolicy(null, "transform", route("direct:transform")));
     }
 
     @Test
@@ -95,7 +96,7 @@ class MessageStoreRoutePolicyFactoryTest {
         RouteDefinition route = route("file:/input");
         route.routeConfigurationId(PlatformRouteConfiguration.INGRESS_NORMALIZATION);
 
-        assertNull(factory.createRoutePolicy(null, "file-to-kafka", route));
+        assertInstanceOf(RedoStepsRoutePolicy.class, factory.createRoutePolicy(null, "file-to-kafka", route));
         factory.validateConfiguredNormalizationRoutes(null);
     }
 
@@ -129,6 +130,17 @@ class MessageStoreRoutePolicyFactoryTest {
                 () -> factory.validateConfiguredNormalizationRoutes(null));
 
         assertTrue(thrown.getMessage().contains("missing-route"));
+    }
+
+    @Test
+    void theDeadLetterRouteIsNotABoundaryEvenWithAllRoutesSelected() throws Exception {
+        try (var context = new org.apache.camel.impl.DefaultCamelContext()) {
+            context.addRoutePolicyFactory(factory("all", true, "dlq"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.start();
+            assertTrue(context.getRoute(PlatformDeadLetterRoute.ROUTE_ID).getRoutePolicyList().isEmpty());
+        }
     }
 
     private MessageStoreRoutePolicyFactory factory(String boundaryRoutes, boolean replayEnabled, String failureMode) {
