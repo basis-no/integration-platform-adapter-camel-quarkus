@@ -26,17 +26,22 @@ An HTTP intake that publishes to Kafka must remove the caller's headers first,
 for example with `removeHeaders("*")` and then setting only the headers the
 message needs. Camel copies every request header onto the exchange, and the
 Kafka producer publishes them with the message, including `Authorization`, API
-keys and cookies, unmasked. Anyone who can read the topic can read them. A `to`
-or `toD` to `kafka:` that would publish a header with a credential-like name
+keys and cookies, unmasked. Anyone who can read the topic can read them. A
+Kafka send that published a header with a credential-like name
 (`Authorization`, cookies, authentication challenges, and names containing
 secret, token, password, credential, session, signature or auth, or ending in
 `-key` or `_key`; not `x-bip-*` or `Idempotency-Key`) logs a warning once per
-route and header name. The warning
-names the header, never its value, and says how to remove it. What is published
-does not change. Headers that the endpoint's header filter strategy drops are
-not reported, nor are values that Camel's Kafka producer does not write as they
-are: only text, byte arrays, `Long`, `Integer`, `Double` and `Boolean` count. A
-tracked send through Camel's `http` component does not forward credential-like
+route and header name. The warning names the header, never its value, and says
+how to remove it. What is published does not change. The check runs after a
+successful `to` or `toD`, against the endpoint the send used, including a `toD`
+that chooses its component only when it sends. It follows that endpoint's
+header filter strategy and counts only text, byte array, `Long`, `Integer`,
+`Double` and `Boolean` values, which Camel's header serializer writes as they
+are. An endpoint whose header filter strategy or header serializer is an
+application class is not checked: the adapter does not call application code
+to find out what was published. At most 100 header names are reported per
+route; one more line then says that further names are not logged. A tracked
+send through Camel's `http` component does not forward credential-like
 headers that still hold a consumed record's bytes, and logs a warning that names
 the header, never its value. A `toD` that chooses its component only when it
 sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver, as

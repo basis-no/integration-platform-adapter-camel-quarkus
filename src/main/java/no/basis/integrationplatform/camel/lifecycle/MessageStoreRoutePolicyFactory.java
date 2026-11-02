@@ -152,7 +152,8 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             seenNormalizationRoutes.add(routeId);
         }
         if (!boundarySelector.includes(routeId, route)) {
-            return null;
+            // Not recorded, but it still reads a replay's redo list, so none of its sends carries it.
+            return new RedoStepsRoutePolicy();
         }
         MessageBoundaryKind boundaryKind = boundarySelector.kind(route);
         validateBoundary(routeId, boundaryKind);

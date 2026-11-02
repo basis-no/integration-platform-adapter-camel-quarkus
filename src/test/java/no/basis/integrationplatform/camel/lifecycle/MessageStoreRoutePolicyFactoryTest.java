@@ -7,7 +7,6 @@ import org.apache.camel.model.RouteDefinition;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,7 +29,8 @@ class MessageStoreRoutePolicyFactoryTest {
 
         assertInstanceOf(MessageStoreRoutePolicy.class,
                 factory.createRoutePolicy(null, "orders", route("kafka:bip.orders.in")));
-        assertNull(factory.createRoutePolicy(null, "transform", route("direct:transform")));
+        // Not recorded: such a route only reads a replay's redo list, so it cannot forward it.
+        assertInstanceOf(RedoStepsRoutePolicy.class, factory.createRoutePolicy(null, "transform", route("direct:transform")));
     }
 
     @Test
@@ -95,7 +95,7 @@ class MessageStoreRoutePolicyFactoryTest {
         RouteDefinition route = route("file:/input");
         route.routeConfigurationId(PlatformRouteConfiguration.INGRESS_NORMALIZATION);
 
-        assertNull(factory.createRoutePolicy(null, "file-to-kafka", route));
+        assertInstanceOf(RedoStepsRoutePolicy.class, factory.createRoutePolicy(null, "file-to-kafka", route));
         factory.validateConfiguredNormalizationRoutes(null);
     }
 

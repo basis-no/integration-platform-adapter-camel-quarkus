@@ -199,13 +199,17 @@ class HttpTimeoutOptionsTest {
                     from("direct:odd").routeId("odd")
                             .toD("http:?").id("empty-query")
                             .toD("http://host/${header.a}?=&&socketTimeout&responseTimeout=${header.t}").id("odd-query")
-                            .toD("{{missing.base:http://host}}/x?socketTimeout=1").id("default-placeholder");
+                            .toD("{{missing.base:http://host}}/x?socketTimeout=1").id("default-placeholder")
+                            .toD("http://host/x?token=RAW(a&socketTimeout=200)&soTimeout=1").id("raw-value");
                 }
             });
             context.start();
             List<String> steps = logs.at(Level.WARNING).stream()
                     .map(w -> between(LogCapture.text(w), " on ", " in route ")).toList();
-            assertEquals(List.of("toD odd-query", "toD odd-query", "toD default-placeholder"), steps);
+            // socketTimeout inside the RAW(...) value is part of the token, not an option.
+            assertEquals(List.of("toD odd-query", "toD odd-query", "toD default-placeholder", "toD raw-value"), steps);
+            assertTrue(logs.at(Level.WARNING).stream().map(LogCapture::text)
+                    .filter(w -> w.contains("raw-value")).allMatch(w -> w.startsWith("HTTP option soTimeout ")));
             assertFalse(logs.at(Level.WARNING).stream().anyMatch(w -> LogCapture.text(w).contains("header.t")));
         }
     }

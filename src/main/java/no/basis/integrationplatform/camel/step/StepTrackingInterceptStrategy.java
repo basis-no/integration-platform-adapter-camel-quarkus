@@ -19,13 +19,13 @@ import no.basis.integrationplatform.camel.PublishedCredentialHeaders;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.AsyncProcessor;
 import org.apache.camel.CamelContext;
+import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
 import org.apache.camel.ExchangePropertyKey;
 import org.apache.camel.NamedNode;
 import org.apache.camel.Processor;
 import org.apache.camel.processor.SendDynamicProcessor;
 import org.apache.camel.processor.SendProcessor;
-import org.apache.camel.spi.HeaderFilterStrategy;
 import org.apache.camel.spi.InterceptStrategy;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
 import org.apache.camel.support.processor.DelegateAsyncProcessor;
@@ -86,9 +86,12 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         checkStepId(definition, endpointSend);
 
         AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
-        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, dynamicScheme(target, endpointSend),
-                PublishedCredentialHeaders.kafkaFilter(target, endpointSend.endpointUri()), routeId(definition),
-                publishedCredentials);
+        boolean dynamicScheme = dynamicScheme(target, endpointSend);
+        Endpoint endpoint = target instanceof SendProcessor send ? send.getEndpoint() : null;
+        boolean mayPublishToKafka = PublishedCredentialHeaders.mayPublishToKafka(
+                endpoint, endpointSend.endpointUri(), dynamicScheme);
+        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, dynamicScheme,
+                mayPublishToKafka ? endpoint : null, mayPublishToKafka, routeId(definition), publishedCredentials);
     }
 
     /**
@@ -225,7 +228,8 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         private final StepTracker stepTracker;
         private final boolean httpSend;
         private final boolean dynamicScheme;
-        private final HeaderFilterStrategy kafkaFilter;
+        private final Endpoint endpoint;
+        private final boolean mayPublishToKafka;
         private final String routeId;
         private final PublishedCredentialHeaders publishedCredentials;
 
@@ -235,18 +239,19 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker,
                 boolean dynamicScheme) {
-            this(delegate, endpointSend, stepTracker, dynamicScheme, null, null, null);
+            this(delegate, endpointSend, stepTracker, dynamicScheme, null, false, null, null);
         }
 
         StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker,
-                boolean dynamicScheme, HeaderFilterStrategy kafkaFilter, String routeId,
+                boolean dynamicScheme, Endpoint endpoint, boolean mayPublishToKafka, String routeId,
                 PublishedCredentialHeaders publishedCredentials) {
             this.delegate = delegate;
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
             this.httpSend = ForwardedCredentialHeaders.isHttp(endpointSend.endpointUri());
             this.dynamicScheme = dynamicScheme;
-            this.kafkaFilter = kafkaFilter;
+            this.endpoint = endpoint;
+            this.mayPublishToKafka = mayPublishToKafka;
             this.routeId = routeId;
             this.publishedCredentials = publishedCredentials;
         }
@@ -259,11 +264,14 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 stepTracker.recordSkipped(exchange);
                 return;
             }
-            warnAboutPublishedCredentials(exchange);
             var withheld = withholdCredentials(exchange);
             try {
-                try { delegate.process(exchange); }
-                finally { ForwardedCredentialHeaders.restore(exchange, withheld); }
+                try {
+                    delegate.process(exchange);
+                    warnAboutPublishedCredentials(exchange);
+                } finally {
+                    ForwardedCredentialHeaders.restore(exchange, withheld);
+                }
                 if (exchange.getException() == null) {
                     stepTracker.recordDelivered(exchange);
                 } else {
@@ -292,10 +300,10 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 return true;
             }
 
-            warnAboutPublishedCredentials(exchange);
             var withheld = withholdCredentials(exchange);
             return delegate.process(exchange, doneSync -> {
                 try {
+                    warnAboutPublishedCredentials(exchange);
                     ForwardedCredentialHeaders.restore(exchange, withheld);
                     if (exchange.getException() == null) {
                         stepTracker.recordDelivered(exchange);
@@ -329,10 +337,12 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 exchange.setException(failure);
                 return java.util.concurrent.CompletableFuture.failedFuture(failure);
             }
-            warnAboutPublishedCredentials(exchange);
             var withheld = withholdCredentials(exchange);
             return delegate.processAsync(exchange).whenComplete((result, failure) -> {
                 Exchange completedExchange = result != null ? result : exchange;
+                if (failure == null) {
+                    warnAboutPublishedCredentials(completedExchange);
+                }
                 ForwardedCredentialHeaders.restore(completedExchange, withheld);
                 if (failure == null && completedExchange.getException() == null) {
                     stepTracker.recordDelivered(completedExchange);
@@ -345,9 +355,10 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             });
         }
 
+        /** After the send and before withheld headers return, so the exchange shows what was published. */
         private void warnAboutPublishedCredentials(Exchange exchange) {
-            if (kafkaFilter != null && publishedCredentials != null) {
-                publishedCredentials.check(exchange, kafkaFilter, routeId, endpointSend.nodeId());
+            if (mayPublishToKafka && publishedCredentials != null && exchange.getException() == null) {
+                publishedCredentials.check(exchange, endpoint, routeId, endpointSend.nodeId());
             }
         }
 

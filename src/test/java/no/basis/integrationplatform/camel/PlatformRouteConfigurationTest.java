@@ -44,6 +44,18 @@ class PlatformRouteConfigurationTest {
     }
 
     @Test
+    void dlqParkingDoesNotPublishAReplaysRedoList() {
+        // A handler that restored the original message gave the header back.
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"post-receiver\"]".getBytes(StandardCharsets.UTF_8));
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
+
+        configuration.markDlqParked(exchange);
+
+        assertNull(exchange.getMessage().getHeader(PlatformHeaders.REDO_STEPS));
+    }
+
+    @Test
     void dlqParkingLeavesBodyAsIsWhenPayloadWasNotCaptured() {
         // Given a metadata_only / uncapturable message: no PAYLOAD_BYTES property was recorded.
         Exchange exchange = exchange();

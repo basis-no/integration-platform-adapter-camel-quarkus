@@ -19,6 +19,7 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.testcontainers.junit.jupiter.Container;
@@ -127,6 +128,48 @@ class RedoHeaderBoundaryTest {
             assertEquals(List.of(StepStatus.DELIVERED, StepStatus.DELIVERED),
                     rows.getFirst().steps().stream().map(StepResult::status).toList());
         }
+    }
+
+    @Test
+    void noSendOfAnUnrecordedRouteCarriesTheList() throws Exception {
+        List<String> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", x -> {
+            requests.add(x.getRequestURI().getPath() + " " + x.getRequestHeaders().getFirst(PlatformHeaders.REDO_STEPS));
+            x.getRequestBody().readAllBytes();
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        server.start();
+        try (var context = new DefaultCamelContext()) {
+            // As the adapter installs it: every route that is not recorded gets the redo-list policy.
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(
+                    r -> { }, "orders", "postgres-inline", 1000, 30, true, "dlq", "auto"));
+            String receiver = "http://127.0.0.1:" + server.getAddress().getPort();
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:intake").routeId("orders-intake")
+                            .enrich(receiver + "/enrich").id("enrich-order")
+                            .wireTap(receiver + "/tap").id("tap-order")
+                            .recipientList(constant(receiver + "/recipients")).id("recipients")
+                            .routingSlip(constant(receiver + "/slip")).id("slip");
+                }
+            });
+            context.start();
+            context.createProducerTemplate().send("direct:intake", e -> {
+                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-1");
+                e.getMessage().setHeader(PlatformHeaders.REDO_STEPS, REDO);
+                e.getMessage().setBody("<Order/>");
+            });
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (requests.size() < 4 && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+        } finally {
+            server.stop(0);
+        }
+        assertEquals(List.of("/enrich null", "/recipients null", "/slip null", "/tap null"),
+                requests.stream().sorted().toList());
     }
 
     private static Object value(boolean bytes, String value) {

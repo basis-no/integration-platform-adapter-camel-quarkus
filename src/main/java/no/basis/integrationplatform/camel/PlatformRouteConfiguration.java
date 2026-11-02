@@ -181,6 +181,8 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
 
         maskCredentialHeaders(exchange);
+        // A handler that restored the original message also restored a replay's redo list.
+        exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS);
         exchange.getMessage().setHeader(PlatformHeaders.ERROR, failureMessage(exchange));
         exchange.getMessage().setHeader(PlatformHeaders.DLQ_AT, Instant.now().toString());
     }

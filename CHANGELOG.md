@@ -39,21 +39,25 @@
   once per route, step and option and names no URI or value. A URI in a
   `recipientList` or `routingSlip`, or one whose scheme is only known at send
   time, is not checked. Same rule as adapter 0.3.6.
-- A `to` or `toD` to `kafka:` that would publish a header with a credential-like
-  name, by the DLQ masking rule, logs a warning once per route and header name.
-  The warning names the header, never its value, and says how to remove it. The
-  record is published as before. Headers the endpoint's filter drops are not
-  reported, nor are values the producer does not write as they are; only text,
-  byte arrays, `Long`, `Integer`, `Double` and `Boolean` count. A send whose
-  scheme is only known at send time is not checked. Same rule as adapter 0.3.6.
-- A replay's `x-bip-redo-steps` stays inside the integration. A recorded input
-  reads the list before the route runs and keeps it for the attempt's step
-  tracking; on other inputs the route's first `to` or `toD` reads it. The header
-  is then removed, so HTTP sends, Kafka publishes and DLQ records no longer
-  carry it, and a route can no longer read it. Before, a receiver got the list,
-  and a downstream integration that consumed a published record with the same
-  message id sent its own steps with the same ids again. `x-bip-replay` and
-  `x-bip-attempt` are still forwarded. Same rule as adapter 0.3.6.
+- A Kafka send that published a header with a credential-like name, by the DLQ
+  masking rule, logs a warning once per route and header name. The warning names
+  the header, never its value, and says how to remove it. The record is
+  published as before. The check runs after a successful `to` or `toD`, against
+  the endpoint the send used, follows its header filter strategy and counts only
+  text, byte array, `Long`, `Integer`, `Double` and `Boolean` values. An endpoint
+  whose header filter strategy or header serializer is an application class is
+  not checked, and at most 100 header names are reported per route. Same rule as
+  adapter 0.3.6.
+- A replay's `x-bip-redo-steps` stays inside the integration. When an exchange
+  enters a route, the adapter reads the list, keeps it for the attempt's step
+  tracking and removes the header, so no send from the route carries it: `to`,
+  `toD`, `enrich`, `wireTap`, `recipientList` and `routingSlip`, nor a DLQ
+  record. A route can no longer read the header; a handler that restores the
+  original message gets it back until the next `to` or `toD` or DLQ parking.
+  Before, a receiver got the list, and a downstream integration that consumed a
+  published record with the same message id sent its own steps with the same
+  ids again. `x-bip-replay` and `x-bip-attempt` are still forwarded. The warning
+  for a malformed list no longer logs its value. Same rule as adapter 0.3.6.
 - Document the HTTP client's own 503/429 retry inside one Camel attempt, the
   Camel 4 HTTP timeout options (`socketTimeout` is not one), and what a replay
   does after a timed-out call whose effect happened.

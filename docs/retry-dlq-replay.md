@@ -108,15 +108,19 @@ skip.
 Redo deliberately repeats an external effect. It is safe only when the
 receiver honors the stable idempotency key or repetition is acceptable.
 
-The list stays inside the integration. An input that the Message Store records
-reads `x-bip-redo-steps` before the route runs, keeps the list for the attempt's
-step tracking and removes the header. On other inputs the route's first `to` or
-`toD` does the same. HTTP sends, Kafka publishes and DLQ records therefore do
-not carry it; otherwise a receiver would get the list, and a downstream
-integration that consumed a published record with the same message id would
-send its own steps with the same ids again. `x-bip-replay` and `x-bip-attempt`
-are still forwarded; nothing in the adapter acts on `x-bip-replay` at a Kafka
-input.
+The list stays inside the integration. When an exchange enters a route, the
+adapter reads `x-bip-redo-steps`, keeps the list for the attempt's step tracking
+and removes the header: an input that the Message Store records before the
+route runs, and every other route through a route policy the adapter adds. The
+route's sends therefore do not carry it, whether through `to`, `toD`, `enrich`,
+`wireTap`, `recipientList` or `routingSlip`; otherwise a receiver would get the
+list, and a downstream integration that consumed a published record with the
+same message id would send its own steps with the same ids again. A handler
+that restores the original message, for example with `useOriginalMessage()`,
+gets the header back; the next `to` or `toD` and DLQ parking remove it again.
+`x-bip-replay` and `x-bip-attempt` are still forwarded; nothing in the adapter
+acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
+the header only, not its value.
 
 ## Contract Startup Gate
 
