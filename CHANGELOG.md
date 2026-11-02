@@ -125,7 +125,8 @@ with 0.4.
   sent with a `ProducerTemplate` or recorded by delivery audit, likewise fails
   when one of its step outcomes is not recorded, also when its own route caught
   the failure. An input that passes that failure on is neither parked nor
-  committed either.
+  committed either. During a Message Store outage the partition therefore
+  waits at that input, as it already does when parking fails.
 - The DLQ record carries the consumed input, also when the route changed it.
   Before, a route that changed a byte-array input in place changed both the
   parked record and the payload stored for replay. When the payload was not
@@ -330,6 +331,11 @@ and iteration its own step key. See the
 - Tools that read DLQ records see `xxxxxx` instead of credential header values.
 - A byte-array Kafka input now holds one extra copy of its size until its
   exchange completes, in every payload mode. A String input does not.
+- **During a Message Store outage the partition waits.** A send whose step
+  outcome cannot be checked or recorded leaves its input `FAILED`, neither
+  parked nor committed, so it is consumed again after Camel's retries, as when
+  parking fails. Before, such an input could hang, or be parked or committed
+  although its step was not recorded. Alert on inputs that stay `FAILED`.
 - The journal writer works with and without the optional message recovery
   SQL. With it installed, the recovery history protection, payload expiry clamp
   and replay refusals apply as before. No grant changes are needed.
