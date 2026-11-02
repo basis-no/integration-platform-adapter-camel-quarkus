@@ -97,7 +97,9 @@ Not detected, so these skips are logged at INFO only:
 - A part sent through a new exchange that copies the input's
   `x-bip-message-id`: the new exchange does not see the other parts' sends.
 - A send made while Camel prepares a part (`onPrepare`), before Camel numbers
-  it: its position is unknown.
+  it: its position is unknown. In a split inside another split's part, such a
+  send takes the outer part's number, so the inner parts' later sends are not
+  told apart either.
 - Every skip after the attempt has used more than 10,000 step keys, and a key
   sent from more than 16 positions in one attempt. The record keeps at most
   10,000 keys and 16 positions per key, so it stays bounded in memory.
