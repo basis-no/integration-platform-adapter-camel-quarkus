@@ -2,7 +2,8 @@
 
 Status: known limitation in every 0.3.x release. Behaviour was checked against
 the 0.3.1, 0.3.3, 0.3.4 and 0.3.5 tags and the 0.3.6 candidate, with the same
-result on each. 0.3.6 logs each lost part at ERROR and changes nothing else (see
+result on each. 0.3.6 logs lost parts at ERROR where it can tell them apart and
+changes nothing else (see
 [From 0.3.6: an ERROR for each skipped part](#from-036-an-error-for-each-skipped-part)).
 `SplitStepIdentityMatrixTest` and `RepeatedStepDetectionTest` pin the cases
 below.
@@ -44,14 +45,13 @@ way. Version 0.3.5 and earlier log nothing for a skipped send.
 
 ## From 0.3.6: an ERROR for each skipped part
 
-A send that is skipped because another part, iteration or branch of the same
-attempt already sent or skipped its key is logged at ERROR, once per skipped
-send:
+A send in a part that is skipped because a part at another position sent the
+same key in this attempt is logged at ERROR, once per skipped send:
 
 ```text
 Step <step-id> was skipped in a <split part|loop iteration|multicast branch|recipient list branch>
 of input route <route-id>, so this part was not delivered: another part of the same attempt
-already sent or skipped this step key. In 0.3.x split parts, loop iterations and multicast and
+already sent this step key. In 0.3.x split parts, loop iterations and multicast and
 recipient list branches keep the input's x-bip-message-id, so they share one step key. Give
 each part its own x-bip-message-id, send each part through a new exchange with its own id, or
 publish each part with its own id. See docs/split-step-identity.md
@@ -64,37 +64,42 @@ part, and contains no message content or header values.
   parking, offset commits and the recorded step outcomes are the same as in
   0.3.5. A Kafka input still commits; a polling route still marks its batch
   processed.
-- The adapter tells parts apart by their position in the enclosing splits,
-  loops, multicasts and recipient lists, and by the `direct:`, `seda:` or `vm:`
-  call that started each of these. The same splitting sub-route called twice
-  therefore keeps the two calls' parts apart. A part that meets its own step
-  again is a normal skip at INFO (`Step <id> SKIPPED for message <id>`): Camel
-  repeating a sub-route or a whole split within one attempt, and a redelivered
-  or replayed input whose earlier attempt sent the step. In a redelivered input
-  the first part to reach the step is logged at INFO and each later one at
-  ERROR.
-- With `parallelProcessing`, each part is either sent or logged at ERROR. When
-  several parts sent the same key in parallel and Camel repeats the split, each
-  of them skips its own send at INFO.
+- A part's position is its index in each enclosing split, loop, multicast and
+  recipient list. The line is written only when a part at another position sent
+  the key in this attempt, and neither this part nor one of its own parts did.
+  Every other skip is logged at INFO (`Step <id> SKIPPED for message <id>`).
+- A part that meets its own delivered send again stays at INFO, for example
+  when Camel repeats a sub-route or a whole split within one attempt.
+- A redelivered or replayed input whose earlier attempt sent the key logs every
+  part at INFO: the adapter cannot tell which part's data that attempt sent.
+  The attempt that sent the first part already logged the others at ERROR.
+- With `parallelProcessing`, each part is either sent or logged at ERROR. Parts
+  that sent the same key in parallel each skip their own send at INFO when
+  Camel repeats the split.
+- A branch or part whose data equals the sent part's, such as two multicast
+  branches that carry the same message to one send, is still logged at ERROR:
+  its own send did not happen.
 - The `noop` step store never skips, so it logs nothing.
 
 Not detected, so these skips are logged at INFO only:
 
-- One part that reaches the same send twice on its own, for example by calling
-  one `direct:` sub-route twice.
-- A loop inside a loop. After the inner loop, Camel leaves the inner loop's
-  `CamelLoopIndex` on the exchange, so a send that follows it in the outer loop
-  can look like the same iteration.
+- The input itself outside any part, and one part that reaches the same send
+  twice on its own, for example by calling one `direct:` sub-route twice or
+  after one of its own branches sent it.
+- A split, loop, multicast or recipient list that runs again in the same
+  attempt, for example a sub-route called a second time (also through `toD`),
+  a `doCatch` that repeats the call, or a Camel retry. A part of the later run
+  at a position that sent the key in the earlier run is taken to be that part;
+  later positions are logged at ERROR.
+- A send in an outer loop after a nested scope changed `CamelLoopIndex`, such
+  as an inner loop: the outer iteration is no longer known for the rest of that
+  loop. A key sent from such an iteration is not checked either.
 - A part sent through a new exchange that copies the input's
   `x-bip-message-id`: the new exchange does not see the other parts' sends.
-- A split, loop, multicast or recipient list that runs again from the same
-  call without a Camel retry, for example through a routing slip or a dynamic
-  router. A part of the later run is compared with the part at the same
-  position in the first run.
-- A step key that the attempt last used more than 10,000 step keys earlier.
-  The adapter keeps the 10,000 most recently used keys per attempt, so that a
-  large split stays bounded in memory. A key that every part reaches stays
-  known.
+- A key the attempt has not used for more than 10,000 other step keys, and a
+  key sent from more than 16 positions in one attempt. The record keeps at most
+  10,000 keys and 16 positions per key, so it stays bounded in memory; a key
+  that every part reaches stays known.
 
 ## Not affected
 

@@ -96,12 +96,13 @@ delivered and their data does not reach the receiver, while the input completes:
 a Kafka offset is committed, or a polling route goes on to mark its batch
 processed. Version 0.3.5 and earlier log nothing for these skips.
 
-From 0.3.6 each such skip is logged at ERROR, once per skipped send:
+From 0.3.6, in the attempt that sends the first part, each such skip is logged
+at ERROR, once per skipped send:
 
 ```text
 Step <step-id> was skipped in a <split part|loop iteration|multicast branch|recipient list branch>
 of input route <route-id>, so this part was not delivered: another part of the same attempt
-already sent or skipped this step key. In 0.3.x split parts, loop iterations and multicast and
+already sent this step key. In 0.3.x split parts, loop iterations and multicast and
 recipient list branches keep the input's x-bip-message-id, so they share one step key. Give
 each part its own x-bip-message-id, send each part through a new exchange with its own id, or
 publish each part with its own id. See docs/split-step-identity.md
@@ -110,16 +111,16 @@ publish each part with its own id. See docs/split-step-identity.md
 - The message is one line and contains no message content or header values.
 - Only the log changes. The skip itself, the input's outcome, retries, DLQ
   parking, offset commits and the recorded step outcomes are as in 0.3.5.
-- A skip of a step that an earlier attempt sent, after a redelivery or a
-  replay, stays at INFO. So does a part that meets its own delivered send again
-  when Camel repeats a sub-route or a whole split within one attempt.
+- The line is written only when a part at another position sent the key in
+  this attempt and this part did not. Every other skip stays at INFO. That
+  includes every part of a redelivered or replayed input whose earlier attempt
+  sent the key, and a part that meets its own delivered send again when Camel
+  repeats a sub-route or a whole split.
 - The `noop` step store never skips, so every part is sent and nothing is
   logged.
-- Not detected, and still logged at INFO only: one part that reaches the same
-  send twice on its own, a send after an inner loop in an outer loop, a part
-  sent through a new exchange that copies the input's `x-bip-message-id`, a
-  scope that a routing slip or dynamic router runs again, and a key last used
-  more than 10,000 step keys earlier in the attempt. See the advisory below.
+- Not detected, and still logged at INFO only: see the advisory below for the
+  exact list, such as a split that runs again in the same attempt and a send
+  after an inner loop in an outer loop.
 
 The safe forms, which send every part:
 
@@ -151,8 +152,8 @@ and iteration its own step key. See the
 
 - Split parts and loop iterations that send through the same node share one
   step identity. With the Postgres step store, only the first is delivered and
-  the rest are skipped, also in the first attempt. From 0.3.6 each such skip is
-  logged at ERROR (see
+  the rest are skipped, also in the first attempt. From 0.3.6 such a skip is
+  logged at ERROR in the attempt that sends the first part (see
   [Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x));
   nothing else changes. Without `stopOnException()`,
   each failed part is parked separately while the input records `COMPLETED`. See

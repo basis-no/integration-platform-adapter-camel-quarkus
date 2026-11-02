@@ -9,6 +9,7 @@ import org.apache.camel.AsyncCallback;
 import org.apache.camel.AsyncProcessor;
 import org.apache.camel.CamelContext;
 import org.apache.camel.Exchange;
+import org.apache.camel.ExchangePropertyKey;
 import org.apache.camel.NamedNode;
 import org.apache.camel.Processor;
 import org.apache.camel.model.LoopDefinition;
@@ -27,6 +28,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
 @ApplicationScoped
@@ -95,16 +97,8 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             else if (target instanceof SendDynamicProcessor send) trafficSignals.observeDynamicEndpoint(send.getUri());
         }
         AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
-        StepTrackingProcessor tracking = new StepTrackingProcessor(delegate, endpointSend, stepTracker, trafficSignals,
+        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, trafficSignals,
                 dynamicScheme(target, endpointSend));
-        return subRouteCall(endpointSend.endpointUri())
-                ? new PartsScope(tracking, StepVisits.marker(StepVisits.CALL, scopes.incrementAndGet())) : tracking;
-    }
-
-    /** Whether a send runs another route of this application, so that a scope it starts is told apart by caller. */
-    private static boolean subRouteCall(String endpointUri) {
-        String uri = endpointUri == null ? "" : endpointUri.trim();
-        return uri.startsWith("direct:") || uri.startsWith("seda:") || uri.startsWith("vm:");
     }
 
     /**
@@ -135,11 +129,10 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     /**
      * Shares one record of the attempt's step visits with the parts of a split, loop,
      * multicast or recipient list, and marks the exchange so that each part gets its own
-     * path. A sub-route call is noted too, so that a scope it starts is told apart from the
-     * same scope started by another call; Camel repeating the same call keeps its path.
-     * Camel may copy a part's properties back afterwards, so the caller's own record and
-     * path are restored. Only these adapter properties change: the parts, the outcome and
-     * the error handling are Camel's.
+     * position. Camel may copy a part's properties back afterwards, so the
+     * caller's own record and path are restored. When the scope changed Camel's loop index
+     * inside an enclosing loop, that loop's iteration is no longer known. Only these adapter
+     * properties change: the parts, the outcome and the error handling are Camel's.
      */
     private static final class PartsScope extends DelegateAsyncProcessor {
         private final String marker;
@@ -152,25 +145,21 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
             StepVisits visits = StepVisits.of(exchange);
-            String calls = exchange.getProperty(StepVisits.CALLS, String.class);
-            if (marker.startsWith("/" + StepVisits.CALL + ".")) {
-                exchange.setProperty(StepVisits.CALLS, (calls == null ? "" : calls) + marker);
-                return super.process(exchange, doneSync -> {
-                    restore(exchange, StepVisits.CALLS, calls);
-                    callback.done(doneSync);
-                });
-            }
-            String parent = StepVisits.path(exchange) + (calls == null ? "" : calls);
+            String parent = StepVisits.path(exchange);
             String path = exchange.getProperty(StepVisits.PATH, String.class);
-            String scope = exchange.getProperty(StepVisits.SCOPE, String.class);
+            String enclosing = exchange.getProperty(StepVisits.SCOPE, String.class);
+            String unknown = exchange.getProperty(StepVisits.LOOP_UNKNOWN, String.class);
+            Object loopIndex = exchange.getProperty(ExchangePropertyKey.LOOP_INDEX);
             exchange.setProperty(StepVisits.PATH, parent);
             exchange.setProperty(StepVisits.SCOPE, marker);
-            exchange.removeProperty(StepVisits.CALLS);
             return super.process(exchange, doneSync -> {
                 exchange.setProperty(StepVisits.PROPERTY, visits);
                 restore(exchange, StepVisits.PATH, path);
-                restore(exchange, StepVisits.SCOPE, scope);
-                restore(exchange, StepVisits.CALLS, calls);
+                restore(exchange, StepVisits.SCOPE, enclosing);
+                restore(exchange, StepVisits.LOOP_UNKNOWN, unknown);
+                if (StepVisits.isLoop(enclosing) && !Objects.equals(loopIndex, exchange.getProperty(ExchangePropertyKey.LOOP_INDEX))) {
+                    exchange.setProperty(StepVisits.LOOP_UNKNOWN, enclosing);
+                }
                 callback.done(doneSync);
             });
         }

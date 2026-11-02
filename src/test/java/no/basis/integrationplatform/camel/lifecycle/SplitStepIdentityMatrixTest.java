@@ -40,7 +40,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * How many of three parts reach an external receiver, per route shape and step store.
  * Pins the conditions documented in docs/split-step-identity.md: with a durable step
  * store, parts that share a message id and a send node are skipped after the first.
- * Each such skip is logged at ERROR, and the input still completes.
+ * In this first attempt each such skip is logged at ERROR, and the input still completes.
  */
 @Testcontainers
 class SplitStepIdentityMatrixTest {
@@ -194,7 +194,7 @@ class SplitStepIdentityMatrixTest {
             var errors = log.at(Level.SEVERE);
             assertEquals(1, errors.size());
             assertEquals("Step send-part was skipped in a split part of input route orders-in, so this part was not "
-                    + "delivered: another part of the same attempt already sent or skipped this step key. In 0.3.x split "
+                    + "delivered: another part of the same attempt already sent this step key. In 0.3.x split "
                     + "parts, loop iterations and multicast and recipient list branches keep the input's x-bip-message-id, "
                     + "so they share one step key. Give each part its own x-bip-message-id, send each part through a new "
                     + "exchange with its own id, or publish each part with its own id. See docs/split-step-identity.md",

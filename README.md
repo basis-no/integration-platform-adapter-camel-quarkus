@@ -214,7 +214,8 @@ Known split limitations in 0.3.x: split parts keep the input's message id, and
 a send node has one step id, so all parts share one idempotency key. With
 `basis.message-store.step-outcome-store=postgres`, only the first part sent
 through a node is delivered; later parts are `SKIPPED`, also in the first
-attempt. From 0.3.6 each such skip is logged at ERROR; see
+attempt. From 0.3.6 such a skip is logged at ERROR in the attempt that sends
+the first part; see
 [Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
 Without `stopOnException()`, each failed part is parked separately and
 the input still records `COMPLETED`; with it, the first failure parks the input
@@ -559,12 +560,13 @@ does not reach the receiver. The input still completes: a Kafka offset is
 committed, and a polling route goes on to mark its batch processed. This is the
 same in every 0.3.x release.
 
-From 0.3.6 each such skip is logged at ERROR, once per skipped send:
+From 0.3.6, in the attempt that sends the first part, each such skip is logged
+at ERROR, once per skipped send:
 
 ```text
 Step <step-id> was skipped in a <split part|loop iteration|multicast branch|recipient list branch>
 of input route <route-id>, so this part was not delivered: another part of the same attempt
-already sent or skipped this step key. In 0.3.x split parts, loop iterations and multicast and
+already sent this step key. In 0.3.x split parts, loop iterations and multicast and
 recipient list branches keep the input's x-bip-message-id, so they share one step key. Give
 each part its own x-bip-message-id, send each part through a new exchange with its own id, or
 publish each part with its own id. See docs/split-step-identity.md
@@ -572,12 +574,16 @@ publish each part with its own id. See docs/split-step-identity.md
 
 The log message is one line. It names the step, the input route and the kind of
 part, and contains no message content or header values. Only the log changes:
-the skip, the input's outcome, retries, parking and commits are as before. A
-skip of a step that an earlier attempt sent, after a redelivery or a replay,
-stays at INFO (`Step <step-id> SKIPPED for message <id>`). So does a part that
-meets its own delivered send again when Camel repeats a sub-route or a whole
-split within one attempt. The `noop` step store never skips, so every part is
-sent and nothing is logged.
+the skip, the input's outcome, retries, parking and commits are as before. The
+line is written only when it is certain: a part at another position in the
+enclosing splits, loops, multicasts and recipient lists sent the key in this
+attempt, and this part did not. Every other skip stays at INFO
+(`Step <step-id> SKIPPED for message <id>`). That includes every part of a
+redelivered or replayed input whose earlier attempt sent the key, because the
+adapter cannot tell which part's data that attempt sent. It also includes a part
+that meets its own delivered send again when Camel repeats a sub-route or a
+whole split. The `noop` step store never skips, so every part is sent and
+nothing is logged.
 
 Safe forms, which send every part:
 
