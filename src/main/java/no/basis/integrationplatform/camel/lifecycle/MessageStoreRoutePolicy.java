@@ -9,6 +9,7 @@ import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
 import no.basis.integrationplatform.camel.payload.PayloadStorageException;
+import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import org.apache.camel.Exchange;
 import org.apache.camel.Route;
@@ -103,6 +104,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
         normalizeKafkaEnvelopeHeaders(exchange);
+        // A replay's redo list is for this attempt only; the route must not forward it.
+        DefaultStepTracker.captureRedoSteps(exchange);
         exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
         exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
         captureInputEnvelope(exchange);

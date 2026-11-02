@@ -46,7 +46,7 @@ so even such a receiver applies it again.
 boundaries. After retries are exhausted, the adapter sends the original
 captured payload to `basis.message-store.dlq-uri`, preserves the envelope, adds
 `x-bip-error` and `x-bip-dlq-at`, records `DLQ`, and only then commits the input
-offset.
+offset. A replay's `x-bip-redo-steps` is not carried; see [Redo Steps](#redo-steps).
 
 The historical Kafka DLQ record remains after recovery. Postgres is
 authoritative for current lifecycle state, so a later successful replay changes
@@ -88,6 +88,16 @@ skip.
 
 Redo deliberately repeats an external effect. It is safe only when the
 receiver honors the stable idempotency key or repetition is acceptable.
+
+The list stays inside the integration. An input that the Message Store records
+reads `x-bip-redo-steps` before the route runs, keeps the list for the attempt's
+step tracking and removes the header. On other inputs the route's first `to` or
+`toD` does the same. HTTP sends, Kafka publishes and DLQ records therefore do
+not carry it; otherwise a receiver would get the list, and a downstream
+integration that consumed a published record with the same message id would
+send its own steps with the same ids again. `x-bip-replay` and `x-bip-attempt`
+are still forwarded; nothing in the adapter acts on `x-bip-replay` at a Kafka
+input.
 
 ## Contract Startup Gate
 

@@ -26,6 +26,14 @@
   name, without the value. A `toD` that chooses its component only when it
   sends, such as `${header.receiverUrl}` or `language:header:receiverUrl`, is
   treated as an HTTP send. Same rule as adapter 0.3.6.
+- A replay's `x-bip-redo-steps` stays inside the integration. A recorded input
+  reads the list before the route runs and keeps it for the attempt's step
+  tracking; on other inputs the route's first `to` or `toD` reads it. The header
+  is then removed, so HTTP sends, Kafka publishes and DLQ records no longer
+  carry it, and a route can no longer read it. Before, a receiver got the list,
+  and a downstream integration that consumed a published record with the same
+  message id sent its own steps with the same ids again. `x-bip-replay` and
+  `x-bip-attempt` are still forwarded. Same rule as adapter 0.3.6.
 - Document the HTTP client's own 503/429 retry inside one Camel attempt, the
   Camel 4 HTTP timeout options (`socketTimeout` is not one), and what a replay
   does after a timed-out call whose effect happened.
