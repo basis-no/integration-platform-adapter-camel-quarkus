@@ -101,6 +101,34 @@ effect and before Postgres records `DELIVERED`. The receiver or business design
 must still make the key safe, for example with a unique database constraint,
 deterministic filename, stable event id, or API idempotency support.
 
+## When a Step Outcome Cannot Be Recorded
+
+The adapter checks the ledger before a side-effect send and records the outcome
+after it. When either fails, for example during a Message Store outage, the
+send fails its exchange. A send that failed by itself keeps its own exception
+unchanged: a receiver may throw one exception instance for every failure of a
+kind.
+
+A Kafka input whose attempt could not check or record a step outcome is neither
+parked nor committed. It is recorded `FAILED`, and its exchange stays failed, so
+the consumer reads the record again once Camel's retries are done. This also
+holds when the route catches the failure, and when it happens in a split part,
+loop iteration or branch, which run on copies of the input's exchange. Camel's
+retries still run first, so a receiver can get the same send again; receivers
+deduplicate on the stable `Idempotency-Key`. During a Message Store outage the
+partition therefore waits at that input, as it does when parking fails. Alert
+on inputs that stay `FAILED`.
+
+A separate request, such as one sent with a `ProducerTemplate`, fails on its
+own when one of its step outcomes is not recorded, also when its own route
+caught the failure. It does not hold back the input that sent it. An input that
+passes the request's failure on treats it like any other failure: it is
+retried, then parked and committed. A replay of the parked input repeats the
+request's send, which the receiver deduplicates on the `Idempotency-Key` only
+when the request carries its own `x-bip-message-id`. Work that ends after the
+input completed, such as a `wireTap`, and a request whose failed reply the
+route ignores cannot hold the input back either.
+
 ## Splitting Before a Side-Effect Send
 
 A step key is `<x-bip-message-id>:<step-id>`. Split parts, loop iterations and
@@ -118,8 +146,8 @@ Step <step-id> was skipped in a <split part|loop iteration|multicast branch|reci
 of input route <route-id>, so this part was not delivered: another part of the same attempt
 already sent this step key. Split parts, loop iterations and multicast and recipient list
 branches keep the input's x-bip-message-id, so they share one step key. Give each part its own
-x-bip-message-id, send each part through a new exchange with its own id, or publish each part
-with its own id. See docs/steps-and-idempotency.md#splitting-before-a-side-effect-send
+x-bip-message-id before the send, or publish each part with its own id. See
+docs/steps-and-idempotency.md#splitting-before-a-side-effect-send
 ```
 
 The message is one line. It names the step, the input route and the kind of
@@ -152,6 +180,7 @@ Not detected, so these skips are logged at INFO only:
   loop. A key sent from such an iteration is not checked either.
 - A part sent through a new exchange that copies the input's
   `x-bip-message-id`: the new exchange does not see the other parts' sends.
+  Such a send may not be tracked at all; see below.
 - A send made while Camel prepares a part (`onPrepare`), before Camel numbers
   it: its position is unknown. In a split inside another split's part, such a
   send takes the outer part's number, so the inner parts' later sends are not
@@ -164,10 +193,17 @@ Safe forms, which send every part:
 
 1. Give each part its own `x-bip-message-id` before the send, derived from its
    record so that a replay keeps the same key.
-2. Send each part through a new exchange, for example with a `ProducerTemplate`,
-   with its own `x-bip-message-id`.
-3. Publish each part with its own id, for example as a Kafka record to the
+2. Publish each part with its own id, for example as a Kafka record to the
    integration's own input, and send it from there.
+
+A part sent through a new exchange, for example with a `ProducerTemplate`, is
+not a safe form on its own. Sent straight to the receiver's endpoint, the send
+is not tracked: it has no step key, the receiver gets no `Idempotency-Key`, and
+a replay sends it again. Sent to a route that contains the tracked send, such
+as a `direct:` route, it is tracked under the new exchange's
+`x-bip-message-id`. Without its own id, each send then gets a new random id, so
+a replay sends it again too. In neither case is the part journaled, and the
+input's journal row does not list its send.
 
 After a route moves to per-part ids, its keys change: a replay of a message
 recorded before the change sends its first part once more. Per-part step keys

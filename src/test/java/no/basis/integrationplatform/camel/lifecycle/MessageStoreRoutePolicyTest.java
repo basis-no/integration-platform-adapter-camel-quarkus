@@ -24,9 +24,11 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -376,6 +378,111 @@ class MessageStoreRoutePolicyTest {
         assertEquals("Message outcome was recorded but Kafka offset commit failed", thrown.getMessage());
         assertEquals(1, sink.recordCalls());
         assertSame(thrown, exchange.getException());
+    }
+
+    @Test
+    void keepsOneCopyOfAByteArrayInputForReplayAndParking() throws Exception {
+        Exchange exchange = kafkaInput("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        new MessageStoreRoutePolicy(new RecordingSink(), "adapter-test").onExchangeBegin(route("order-pipeline"), exchange);
+
+        byte[] captured = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
+        assertNotSame(exchange.getMessage().getBody(), captured);
+        assertArrayEquals(exchange.getMessage().getBody(byte[].class), captured);
+        assertEquals(sha256(captured), exchange.getProperty(PlatformExchangeProperties.PAYLOAD_SHA256));
+        assertNull(exchange.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD), "Parking uses the replay copy");
+    }
+
+    @Test
+    void aSmallStreamGivesTheRouteItsOwnArray() {
+        Exchange exchange = kafkaInput(new java.io.ByteArrayInputStream("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8)));
+        var policy = new MessageStoreRoutePolicy(new RecordingSink(), "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1000, Duration.ofDays(30), true));
+
+        policy.onExchangeBegin(route("order-pipeline"), exchange);
+
+        byte[] captured = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
+        assertNotSame(exchange.getMessage().getBody(), captured);
+        assertArrayEquals(exchange.getMessage().getBody(byte[].class), captured);
+    }
+
+    @Test
+    void keepsAParkingCopyOnlyWhenReplayStorageDoesNotKeepTheInputAndTheInputCanBeParked() {
+        var policy = new MessageStoreRoutePolicy(new RecordingSink(), "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.METADATA_ONLY, 1000, Duration.ofDays(30), true));
+        Exchange bytes = kafkaInput("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Exchange text = kafkaInput("ORIGINAL");
+        Exchange empty = kafkaInput(null);
+        Exchange internal = exchange();
+        internal.getMessage().setBody("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        for (Exchange exchange : List.of(bytes, text, empty, internal)) {
+            policy.onExchangeBegin(route("order-pipeline"), exchange);
+            assertNull(exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES));
+        }
+
+        byte[] parked = bytes.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD, byte[].class);
+        assertNotSame(bytes.getMessage().getBody(), parked);
+        assertArrayEquals(bytes.getMessage().getBody(byte[].class), parked);
+        assertSame(text.getMessage().getBody(), text.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD),
+                "A String cannot change, so it is not copied");
+        assertArrayEquals(new byte[0], empty.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD, byte[].class));
+        assertNull(internal.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD),
+                "An input without a Kafka commit is never parked");
+    }
+
+    @Test
+    void anInputWhoseStepOutcomeWasNotRecordedIsRecordedFailedAndNotCommittedAlsoWhenHandled() {
+        RecordingSink sink = new RecordingSink();
+        RecordingManualCommit commit = new RecordingManualCommit(sink);
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
+        policy.onExchangeBegin(route("order-pipeline"), exchange);
+        var outage = new IllegalStateException("step outcome store unavailable");
+        exchange.getProperty(PlatformExchangeProperties.STEP_OUTCOME_FAILURE,
+                java.util.concurrent.atomic.AtomicReference.class).set(outage);
+
+        // The route caught the failure, so the exchange completed without an exception.
+        policy.onExchangeDone(route("order-pipeline"), exchange);
+
+        assertEquals(MessageStatus.FAILED, sink.result.status());
+        assertEquals("step outcome store unavailable", sink.result.error());
+        assertFalse(commit.committed);
+        assertSame(outage, exchange.getException().getCause(), "The Kafka consumer reads only a failed exchange again");
+    }
+
+    @Test
+    void anInputWhoseStepOutcomeWasNotRecordedKeepsItsOwnException() {
+        RecordingSink sink = new RecordingSink();
+        RecordingManualCommit commit = new RecordingManualCommit(sink);
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
+        policy.onExchangeBegin(route("order-pipeline"), exchange);
+        exchange.getProperty(PlatformExchangeProperties.STEP_OUTCOME_FAILURE,
+                java.util.concurrent.atomic.AtomicReference.class).set(new IllegalStateException("outage"));
+        var receiverFailure = new IllegalArgumentException("receiver rejected");
+        exchange.setException(receiverFailure);
+
+        policy.onExchangeDone(route("order-pipeline"), exchange);
+
+        assertSame(receiverFailure, exchange.getException());
+        assertEquals(0, receiverFailure.getSuppressed().length);
+        assertEquals(MessageStatus.FAILED, sink.result.status());
+        assertFalse(commit.committed);
+    }
+
+    private Exchange kafkaInput(Object body) {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> { });
+        exchange.getMessage().setBody(body);
+        return exchange;
+    }
+
+    private static String sha256(byte[] bytes) throws Exception {
+        return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
     }
 
     @Test

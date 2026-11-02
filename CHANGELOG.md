@@ -29,6 +29,52 @@
   Upgrade: keep `break-on-first-error=true`. A test that adds
   `PlatformRouteConfiguration` to a hand-built `CamelContext` must also add
   `PlatformDeadLetterRoute`; Quarkus applications get both.
+- A send whose step outcome cannot be checked or recorded, for example during a
+  Message Store outage, fails its exchange. The input is then neither parked
+  nor committed and is recorded `FAILED`, so it is consumed again. This also
+  holds when the route catches the failure and when it happens in a split part,
+  loop iteration or branch. Before, a failure to record the outcome replaced
+  the receiver's exception, `processAsync` completed without the failure on the
+  exchange, and the input could be parked or committed although its step was
+  not recorded. A failed send now keeps its own exception unchanged, and the
+  synchronous and `processAsync` entry points complete like the asynchronous
+  one, with any failure on the exchange. Camel's retries still run before the
+  input fails, so a receiver can get the same send again; receivers deduplicate
+  on the stable `Idempotency-Key`. **During a Message Store outage the
+  partition waits** at that input, as it does when parking fails; alert on
+  inputs that stay `FAILED`. Same rule as adapter 0.3.6.
+- Known limitation: a step outcome that is not recorded holds back only the
+  input whose attempt made the send, with its split parts, loop iterations and
+  branches. A separate request the input sends, for example with a
+  `ProducerTemplate`, fails on its own and is not parked, also when its own
+  route caught the failure. An input that passes that failure on treats it like
+  any other: it is retried, then parked and committed. A replay of the parked
+  input repeats the request's send; receivers deduplicate on the
+  `Idempotency-Key`, which stays the same only when the request carries its own
+  `x-bip-message-id`. Work that ends after the input completed, such as a
+  `wireTap`, and a request whose failed reply the route ignores cannot hold the
+  input back either.
+- The DLQ record carries the consumed input, also when the route changed it.
+  Before, a route that changed a byte-array input in place also changed the
+  inline payload stored for replay and the parked record. With
+  `metadata-only`, replay disabled, or a payload above the inline threshold
+  outside `tiered` mode, a route that transformed the body and then failed
+  parked the transformed body. The adapter now keeps one copy of a byte-array
+  input at route start: the inline replay copy, whose SHA-256 is computed on
+  that copy, or a copy for parking when replay storage does not keep the
+  payload, only for a Kafka input. A small streamed input in `tiered` mode gives
+  the route its own array. An object payload is still parked as its claim
+  check. A String input is not copied, a body of another type is still parked as
+  the route left it, and a missing body is parked as an empty payload. A
+  byte-array input holds one extra copy of its size until its exchange
+  completes, unless it is stored as an object. Same rule as adapter 0.3.6.
+- The split ERROR line and the documented safe forms no longer recommend
+  sending each part through a new exchange. Such a send is tracked only when
+  the new exchange goes to a route that contains the tracked send, under the
+  new exchange's `x-bip-message-id` (a new random id when it has none), and it
+  is never journaled; see
+  [Steps and idempotency](docs/steps-and-idempotency.md#splitting-before-a-side-effect-send).
+  Same as adapter 0.3.6.
 - Parity with adapter 0.3.6: a `to` or `toD` send to a non-internal endpoint
   without an explicit id fails startup (emergency flag `basis.message-store.step-ids.emergency-allow-generated`),
   and keeping the generated id as the explicit id, such as `id: to1`, keeps the

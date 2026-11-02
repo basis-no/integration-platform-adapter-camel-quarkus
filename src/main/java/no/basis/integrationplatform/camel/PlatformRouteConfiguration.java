@@ -2,6 +2,7 @@ package no.basis.integrationplatform.camel;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteConfigurationBuilder;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -172,21 +173,31 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (failure == null) {
             failure = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
         }
-        if (failure != null) {
+        if (failure != null && StepOutcomeFailure.of(exchange) != null) {
+            LOG.error("Message {} exhausted retries and is not parked: a step outcome was not checked or recorded",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+        } else if (failure != null) {
             LOG.error("Message {} exhausted retries and is being parked in the DLQ",
                     exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
         }
 
-        // The DLQ record must carry the ORIGINAL consumed payload,
-        // not a mid-transformation body. Restore it from the capture made at
-        // route start when the payload was capturable; metadata_only /
-        // uncapturable bodies are parked as-is.
+        // The DLQ record must carry the ORIGINAL consumed payload, not a body the route
+        // transformed or changed in place. Restore it from the capture made at route start:
+        // the claim check of an object payload, the replay copy, or the parking copy when
+        // replay storage does not keep the payload. A body type that cannot be captured is
+        // parked as the route left it. The parking endpoint gets its own array, so the
+        // capture stays the input for replay storage.
         byte[] claimCheck = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK, byte[].class);
-        byte[] originalPayload = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
+        Object originalPayload = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
+        if (originalPayload == null) {
+            originalPayload = exchange.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD);
+        }
         if (claimCheck != null) {
-            exchange.getMessage().setBody(claimCheck);
+            exchange.getMessage().setBody(claimCheck.clone());
             exchange.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE,
                     no.basis.integrationplatform.camel.payload.PayloadReference.CONTENT_TYPE);
+        } else if (originalPayload instanceof byte[] bytes) {
+            exchange.getMessage().setBody(bytes.clone());
         } else if (originalPayload != null) {
             exchange.getMessage().setBody(originalPayload);
         }

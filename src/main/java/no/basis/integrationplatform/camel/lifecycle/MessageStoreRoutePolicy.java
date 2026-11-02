@@ -11,6 +11,7 @@ import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
 import no.basis.integrationplatform.camel.payload.PayloadStorageException;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import org.apache.camel.Exchange;
 import org.apache.camel.ExchangePropertyKey;
@@ -115,6 +116,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             captureKafkaManualCommit(exchange);
         }
+        if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null) {
+            // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
+            StepOutcomeFailure.begin(exchange);
+        }
         capturePayloadMetadata(exchange);
     }
 
@@ -167,7 +172,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private MessageAttemptResult result(Route route, Exchange exchange) {
         boolean dlqParked = dlqParked(exchange);
         Throwable failure = failure(exchange, dlqParked);
-        MessageStatus status = status(dlqParked, failure);
+        // The input is consumed again, also when a route handled the failure.
+        Throwable unrecorded = StepOutcomeFailure.of(exchange);
+        MessageStatus status = unrecorded != null ? MessageStatus.FAILED : status(dlqParked, failure);
+        if (failure == null) {
+            failure = unrecorded;
+        }
 
         return new MessageAttemptResult(
                 schemaVersion(exchange),
@@ -212,10 +222,22 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     /**
      * Commits a Kafka input that completed or whose DLQ parking was confirmed. An input that
-     * is still failed was neither: its offset is not committed, and its exchange stays failed,
-     * so the Kafka consumer reads the record again.
+     * is still failed was neither, and an input whose attempt could not check or record a step
+     * outcome must be consumed again: its offset is not committed, and its exchange stays
+     * failed, so the Kafka consumer reads the record again.
      */
     private void acknowledge(Exchange exchange) {
+        Throwable unrecorded = StepOutcomeFailure.of(exchange);
+        if (boundaryKind == MessageBoundaryKind.KAFKA && unrecorded != null) {
+            LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed again",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), unrecorded);
+            if (exchange.getException() == null) {
+                // The route handled the failure; the Kafka consumer reads the record again only from a failed exchange.
+                exchange.setException(new IllegalStateException(
+                        "A step outcome was not checked or recorded; Kafka offset was not committed", unrecorded));
+            }
+            return;
+        }
         if (boundaryKind == MessageBoundaryKind.KAFKA && exchange.getException() != null && !dlqParked(exchange)) {
             LOG.error("Message {} failed without confirmed DLQ parking; its Kafka offset was not committed",
                     exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
@@ -264,10 +286,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
         if (!payloadPolicy.replayEnabled()) {
             metadataOnly(exchange, "replay disabled by policy");
+            keepForParking(exchange, body);
             return;
         }
         if (payloadPolicy.mode() == PayloadMode.METADATA_ONLY) {
             metadataOnly(exchange, "payload storage mode is metadata-only");
+            keepForParking(exchange, body);
             return;
         }
         if (bytes == null && body instanceof InputStream input && payloadPolicy.mode() == PayloadMode.TIERED) {
@@ -284,15 +308,36 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         if (bytes.length > payloadPolicy.inlineThresholdBytes()) {
             metadataOnly(exchange, "payload exceeds max inline size");
+            keepForParking(exchange, body);
             return;
         }
 
+        // A route may change a byte array body in place; replay and parking keep the consumed input.
+        byte[] captured = body instanceof byte[] ? bytes.clone() : bytes;
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_STORAGE, PayloadMode.POSTGRES_INLINE.storageValue());
-        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, bytes);
-        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SHA256, sha256(bytes));
+        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, captured);
+        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SHA256, sha256(captured));
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_EXPIRES_AT,
                 Instant.now().plus(payloadPolicy.retention()));
         exchange.setProperty(PlatformExchangeProperties.REPLAYABLE, true);
+    }
+
+    /**
+     * DLQ parking sends the consumed input also when replay storage does not keep it. Only a
+     * managed Kafka input is parked, so other inputs keep no copy. A String cannot change and
+     * is kept as it is; another body type is parked as the route left it.
+     */
+    private void keepForParking(Exchange exchange, Object body) {
+        if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) == null) {
+            return;
+        }
+        if (body == null) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, new byte[0]);
+        } else if (body instanceof byte[] bytes) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, bytes.clone());
+        } else if (body instanceof String) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, body);
+        }
     }
 
     private void metadataOnly(Exchange exchange, String reason) {
@@ -310,7 +355,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             int probeSize = Math.toIntExact(payloadPolicy.inlineThresholdBytes() + 1);
             byte[] probe = input.readNBytes(probeSize);
             if (probe.length <= payloadPolicy.inlineThresholdBytes()) {
-                exchange.getMessage().setBody(probe);
+                // The route gets its own array, so the capture stays the consumed input.
+                exchange.getMessage().setBody(probe.clone());
                 exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, (long) probe.length);
                 exchange.setProperty(PlatformExchangeProperties.PAYLOAD_STORAGE, PayloadMode.POSTGRES_INLINE.storageValue());
                 exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, probe);

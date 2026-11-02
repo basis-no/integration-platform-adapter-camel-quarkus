@@ -13,7 +13,8 @@
 
 - Check sink, DLQ, and step-store errors before looking at the business route.
 - A message recorded `FAILED` at a Kafka boundary was not parked, for example
-  because the DLQ publish failed. Its offset is not committed and the consumer
+  because the DLQ publish failed or a step outcome could not be recorded during
+  a Message Store outage. Its offset is not committed and the consumer
   reads it again until the DLQ accepts it; the ERROR log names the message.
 - Confirm `allow-manual-commit=true`, `auto-commit-enable=false` and
   `break-on-first-error=true`.

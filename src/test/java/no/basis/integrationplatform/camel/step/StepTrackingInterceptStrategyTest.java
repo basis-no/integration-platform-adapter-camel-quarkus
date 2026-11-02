@@ -23,12 +23,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StepTrackingInterceptStrategyTest {
@@ -118,7 +118,7 @@ class StepTrackingInterceptStrategyTest {
     }
 
     @Test
-    void recordsSideEffectFailureAndRethrowsIt() {
+    void recordsSideEffectFailureAndLeavesItOnTheExchange() throws Exception {
         RecordingStore store = new RecordingStore();
         AtomicInteger endpointCalls = new AtomicInteger();
         IllegalStateException failure = new IllegalStateException("write failed");
@@ -133,9 +133,9 @@ class StepTrackingInterceptStrategyTest {
                 });
         Exchange exchange = exchange("POST");
 
-        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> processor.process(exchange));
+        processor.process(exchange);
 
-        assertEquals(failure, thrown);
+        assertSame(failure, exchange.getException());
         assertEquals(1, endpointCalls.get());
         assertEquals(1, store.failed.size());
         assertEquals(StepStatus.FAILED, steps(exchange).getFirst().status());
@@ -262,11 +262,8 @@ class StepTrackingInterceptStrategyTest {
                 exchange -> exchange.getMessage().setBody("must-not-run"));
         Exchange exchange = exchange("POST");
 
-        CompletionException failure = assertThrows(
-                CompletionException.class,
-                () -> processor.processAsync(exchange).join());
+        assertSame(exchange, processor.processAsync(exchange).join());
 
-        assertTrue(failure.getCause() instanceof StepOutputCheckpointException);
         assertEquals(0, endpointCalls.get());
         assertTrue(exchange.getException() instanceof StepOutputCheckpointException);
     }
@@ -283,12 +280,9 @@ class StepTrackingInterceptStrategyTest {
                 "publish-order",
                 failedFutureDelegate(failure));
 
-        CompletionException thrown = assertThrows(
-                CompletionException.class,
-                () -> processor.processAsync(exchange).join());
+        assertSame(exchange, processor.processAsync(exchange).join());
 
-        assertEquals(failure, thrown.getCause());
-        assertEquals(failure, exchange.getProperty(Exchange.EXCEPTION_CAUGHT));
+        assertSame(failure, exchange.getException());
         assertEquals(1, store.failed.size());
         assertEquals(StepStatus.FAILED, steps(exchange).getFirst().status());
     }
@@ -321,7 +315,7 @@ class StepTrackingInterceptStrategyTest {
     }
 
     @Test
-    void replayStopsBeforeEndpointWhenDeliveredOutputHasNoCheckpoint() {
+    void replayStopsBeforeEndpointWhenDeliveredOutputHasNoCheckpoint() throws Exception {
         RecordingStore store = new RecordingStore();
         store.alreadyDelivered.add("message-123:create-order");
         AtomicInteger endpointCalls = new AtomicInteger();
@@ -331,10 +325,10 @@ class StepTrackingInterceptStrategyTest {
                 endpointCalls,
                 exchange -> exchange.getMessage().setBody("must-not-run"));
 
-        StepOutputCheckpointException failure = assertThrows(
-                StepOutputCheckpointException.class,
-                () -> processor.process(exchange("POST")));
+        Exchange exchange = exchange("POST");
+        processor.process(exchange);
 
+        StepOutputCheckpointException failure = assertInstanceOf(StepOutputCheckpointException.class, exchange.getException());
         assertEquals(0, endpointCalls.get());
         assertTrue(failure.getMessage().contains("no output checkpoint"));
         assertTrue(failure.getMessage().contains("explicit redo"));
@@ -500,7 +494,12 @@ class StepTrackingInterceptStrategyTest {
 
         @Override
         public boolean process(Exchange exchange, org.apache.camel.AsyncCallback callback) {
-            processAsync(exchange).whenComplete((result, failure) -> callback.done(false));
+            processAsync(exchange).whenComplete((result, failure) -> {
+                if (failure != null) {
+                    exchange.setException(failure);
+                }
+                callback.done(false);
+            });
             return false;
         }
 

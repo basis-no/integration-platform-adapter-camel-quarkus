@@ -114,6 +114,11 @@ dead-letter route for an exchange that its route stopped
 `FAILED` and does not commit the offset, and the consumer reads the record
 again, so it keeps its partition waiting like a record the DLQ cannot accept.
 
+A message whose attempt could not check or record a step outcome is not parked
+either: a parked copy would repeat an input that is consumed again. It is
+recorded `FAILED` and not committed; see
+[Steps and Idempotency](steps-and-idempotency.md#when-a-step-outcome-cannot-be-recorded).
+
 The historical Kafka DLQ record remains after recovery. Postgres is
 authoritative for current lifecycle state, so a later successful replay changes
 the message to `COMPLETED` while retaining both attempts and replay audit.

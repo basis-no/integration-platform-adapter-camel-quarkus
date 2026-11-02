@@ -1,12 +1,14 @@
 package no.basis.integrationplatform.camel;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.CamelContext;
 import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.direct.DirectEndpoint;
+import org.apache.camel.component.kafka.KafkaConstants;
 import org.apache.camel.component.kafka.KafkaEndpoint;
 import org.apache.camel.processor.SendProcessor;
 import org.apache.camel.support.AsyncProcessorSupport;
@@ -113,6 +115,20 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
 
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
+            Throwable unrecorded = StepOutcomeFailure.of(exchange);
+            if (unrecorded != null) {
+                if (managedKafkaInput(exchange)) {
+                    // The input is consumed again once step outcomes can be recorded; a parked copy would repeat it.
+                    exchange.setException(new IllegalStateException("Not parked: a step outcome was not checked or "
+                            + "recorded, so the Kafka offset is not committed and the input is consumed again", unrecorded));
+                } else {
+                    // A separate request is not parked either: it fails to its caller with its own failure.
+                    Throwable original = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
+                    exchange.setException(original != null ? original : unrecorded);
+                }
+                callback.done(true);
+                return true;
+            }
             SendProcessor processor;
             try {
                 processor = send();
@@ -127,6 +143,11 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                 }
                 callback.done(doneSync);
             });
+        }
+
+        private static boolean managedKafkaInput(Exchange exchange) {
+            return exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null
+                    || exchange.getMessage().getHeader(KafkaConstants.MANUAL_COMMIT) != null;
         }
 
         // The producer starts when parking is first needed, so an application with no

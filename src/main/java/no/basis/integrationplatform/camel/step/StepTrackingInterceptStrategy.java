@@ -28,7 +28,9 @@ import org.apache.camel.Processor;
 import org.apache.camel.processor.SendDynamicProcessor;
 import org.apache.camel.processor.SendProcessor;
 import org.apache.camel.spi.InterceptStrategy;
+import org.apache.camel.support.AsyncCallbackToCompletableFutureAdapter;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
+import org.apache.camel.support.PluginHelper;
 import org.apache.camel.support.processor.DelegateAsyncProcessor;
 
 import java.util.Objects;
@@ -151,14 +153,19 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             exchange.setProperty(StepVisits.PATH, parent);
             exchange.setProperty(StepVisits.SCOPE, marker);
             return super.process(exchange, doneSync -> {
-                exchange.setProperty(StepVisits.PROPERTY, visits);
-                restore(exchange, StepVisits.PATH, path);
-                restore(exchange, StepVisits.SCOPE, enclosing);
-                restore(exchange, StepVisits.LOOP_UNKNOWN, unknown);
-                if (StepVisits.isLoop(enclosing) && !Objects.equals(loopIndex, exchange.getProperty(ExchangePropertyKey.LOOP_INDEX))) {
-                    exchange.setProperty(StepVisits.LOOP_UNKNOWN, enclosing);
+                try {
+                    exchange.setProperty(StepVisits.PROPERTY, visits);
+                    restore(exchange, StepVisits.PATH, path);
+                    restore(exchange, StepVisits.SCOPE, enclosing);
+                    restore(exchange, StepVisits.LOOP_UNKNOWN, unknown);
+                    if (StepVisits.isLoop(enclosing) && !Objects.equals(loopIndex, exchange.getProperty(ExchangePropertyKey.LOOP_INDEX))) {
+                        exchange.setProperty(StepVisits.LOOP_UNKNOWN, enclosing);
+                    }
+                } catch (Throwable failure) {
+                    markFailed(exchange, failure);
+                } finally {
+                    callback.done(doneSync);
                 }
-                callback.done(doneSync);
             });
         }
 
@@ -232,6 +239,20 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     record EndpointSend(String endpointUri, String nodeId) {
     }
 
+    private record Send(java.util.Map<String, Object> withheld) {
+    }
+
+    /** Fails the exchange. An exchange that already failed keeps its exception unchanged, since it may be shared. */
+    private static void markFailed(Exchange exchange, Throwable failure) {
+        Exception current = exchange.getException();
+        if (current == null) {
+            exchange.setException(failure);
+        } else if (current != failure) {
+            LOG.warn("Completing a send of exchange {} failed after the send itself had failed",
+                    exchange.getExchangeId(), failure);
+        }
+    }
+
     static class StepTrackingProcessor implements AsyncProcessor {
         private final AsyncProcessor delegate;
         private final EndpointSend endpointSend;
@@ -266,66 +287,80 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             this.publishedCredentials = publishedCredentials;
         }
 
+        /** Completes through {@link #process(Exchange, AsyncCallback)} and waits, with any failure on the exchange. */
         @Override
         public void process(Exchange exchange) throws Exception {
-            stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
-            if (alreadyDelivered(exchange)) {
-                stepTracker.restoreSkippedOutput(exchange);
-                stepTracker.recordSkipped(exchange);
-                return;
-            }
-            var withheld = withholdCredentials(exchange);
-            try {
-                try {
-                    delegate.process(exchange);
-                    warnAboutPublishedCredentials(exchange);
-                } finally {
-                    ForwardedCredentialHeaders.restore(exchange, withheld);
-                }
-                if (exchange.getException() == null) {
-                    stepTracker.recordDelivered(exchange);
-                } else {
-                    stepTracker.recordFailed(exchange);
-                }
-            } catch (Exception e) {
-                exchange.setProperty(Exchange.EXCEPTION_CAUGHT, e);
-                stepTracker.recordFailed(exchange);
-                throw e;
-            }
+            PluginHelper.getAsyncProcessorAwaitManager(exchange.getContext()).process(this, exchange);
         }
 
+        /**
+         * Calls {@code callback} exactly once. A step outcome that cannot be checked or
+         * recorded, for example during a Message Store outage, fails the exchange and keeps
+         * the input from being parked or committed (see {@link StepOutcomeFailure}). A failed
+         * send keeps its own exception unchanged.
+         */
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
+            Send send;
             try {
-                stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
-                if (alreadyDelivered(exchange)) {
-                    stepTracker.restoreSkippedOutput(exchange);
-                    stepTracker.recordSkipped(exchange);
-                    callback.done(true);
-                    return true;
-                }
-            } catch (Exception failure) {
-                exchange.setException(failure);
+                send = prepare(exchange);
+            } catch (Throwable failure) {
+                markFailed(exchange, failure);
+                callback.done(true);
+                return true;
+            }
+            if (send == null) {
                 callback.done(true);
                 return true;
             }
 
-            var withheld = withholdCredentials(exchange);
             return delegate.process(exchange, doneSync -> {
                 try {
-                    warnAboutPublishedCredentials(exchange);
-                    ForwardedCredentialHeaders.restore(exchange, withheld);
-                    if (exchange.getException() == null) {
-                        stepTracker.recordDelivered(exchange);
-                    } else {
-                        stepTracker.recordFailed(exchange);
-                    }
-                } catch (Exception failure) {
-                    exchange.setException(failure);
+                    completed(exchange, send);
                 } finally {
                     callback.done(doneSync);
                 }
             });
+        }
+
+        /** Prepares the send, or returns {@code null} when an earlier attempt delivered this step. */
+        private Send prepare(Exchange exchange) {
+            stepOutcome(exchange, () -> stepTracker.beforeSend(exchangeWithInterceptProperties(exchange)));
+            if (alreadyDelivered(exchange)) {
+                stepTracker.restoreSkippedOutput(exchange);
+                stepTracker.recordSkipped(exchange);
+                return null;
+            }
+            return new Send(withholdCredentials(exchange));
+        }
+
+        /** Records the send's outcome. Never throws: a failure fails the exchange. */
+        private void completed(Exchange exchange, Send send) {
+            try {
+                warnAboutPublishedCredentials(exchange);
+                ForwardedCredentialHeaders.restore(exchange, send.withheld());
+            } catch (Throwable failure) {
+                markFailed(exchange, failure);
+            }
+            try {
+                if (exchange.getException() == null) {
+                    stepOutcome(exchange, () -> stepTracker.recordDelivered(exchange));
+                } else {
+                    stepOutcome(exchange, () -> stepTracker.recordFailed(exchange));
+                }
+            } catch (Throwable failure) {
+                markFailed(exchange, failure);
+            }
+        }
+
+        /** Checks or records a step outcome; a failure also keeps the input from being parked or committed. */
+        private static void stepOutcome(Exchange exchange, Runnable work) {
+            try {
+                work.run();
+            } catch (RuntimeException | Error failure) {
+                StepOutcomeFailure.record(exchange, failure);
+                throw failure;
+            }
         }
 
         private Exchange exchangeWithInterceptProperties(Exchange exchange) {
@@ -334,35 +369,12 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return exchange;
         }
 
+        /** Completes through {@link #process(Exchange, AsyncCallback)}, with any failure on the exchange. */
         @Override
         public java.util.concurrent.CompletableFuture<Exchange> processAsync(Exchange exchange) {
-            try {
-                stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
-                if (alreadyDelivered(exchange)) {
-                    stepTracker.restoreSkippedOutput(exchange);
-                    stepTracker.recordSkipped(exchange);
-                    return java.util.concurrent.CompletableFuture.completedFuture(exchange);
-                }
-            } catch (Exception failure) {
-                exchange.setException(failure);
-                return java.util.concurrent.CompletableFuture.failedFuture(failure);
-            }
-            var withheld = withholdCredentials(exchange);
-            return delegate.processAsync(exchange).whenComplete((result, failure) -> {
-                Exchange completedExchange = result != null ? result : exchange;
-                if (failure == null) {
-                    warnAboutPublishedCredentials(completedExchange);
-                }
-                ForwardedCredentialHeaders.restore(completedExchange, withheld);
-                if (failure == null && completedExchange.getException() == null) {
-                    stepTracker.recordDelivered(completedExchange);
-                } else {
-                    if (failure != null) {
-                        completedExchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
-                    }
-                    stepTracker.recordFailed(completedExchange);
-                }
-            });
+            var callback = new AsyncCallbackToCompletableFutureAdapter<>(exchange);
+            process(exchange, callback);
+            return callback.getFuture();
         }
 
         /** After the send and before withheld headers return, so the exchange shows what was published. */
