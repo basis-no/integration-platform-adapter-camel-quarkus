@@ -8,9 +8,11 @@ import org.apache.camel.support.PropertyBindingSupport;
 import org.apache.camel.util.StringHelper;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
 import org.testcontainers.junit.jupiter.Container;
@@ -114,6 +116,57 @@ class KafkaFailureProgressTest {
                 if (offset != 2) Thread.sleep(50);
             }
             assertEquals(2, offset);
+        }
+    }
+
+    @Test
+    void aCollectionBodyIsParkedAsOneRecord() throws Exception {
+        // Without a captured payload the body is parked as it is; here an empty list, which a
+        // Kafka producer with useIterator=true would send as no record at all.
+        String input = "input-" + UUID.randomUUID();
+        String dlq = "dlq-" + UUID.randomUUID();
+        String group = "group-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        var client = Map.<String, Object>of("bootstrap.servers", brokers);
+        try (var admin = AdminClient.create(client); var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(input, 1, (short) 1), new NewTopic(dlq, 1, (short) 1)))
+                    .all().get(20, TimeUnit.SECONDS);
+            var outcomes = new CopyOnWriteArrayList<String>();
+            var recorded = new CountDownLatch(1);
+            bindShippedKafkaDefaults(context);
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "kafka:" + dlq + "?brokers=" + brokers);
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(row -> {
+                outcomes.add(row.status().name());
+                recorded.countDown();
+            }, "order-pipeline", "metadata-only", 100_000, 30, false, "dlq", "auto"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=" + group
+                            + "&autoOffsetReset=earliest&pollTimeoutMs=100")
+                            .routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .process(e -> {
+                                e.getMessage().setBody(List.of());
+                                throw new IllegalArgumentException("synthetic receiver rejection");
+                            });
+                }
+            });
+            var producerProperties = new HashMap<String, Object>(client);
+            producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            try (var producer = new KafkaProducer<String, String>(producerProperties)) {
+                producer.send(new ProducerRecord<>(input, "key", "bad")).get(10, TimeUnit.SECONDS);
+            }
+            context.start();
+            assertTrue(recorded.await(30, TimeUnit.SECONDS), "No outcome recorded");
+            assertEquals(List.of("DLQ"), outcomes);
+            var dlqPartition = new TopicPartition(dlq, 0);
+            long dlqEnd = admin.listOffsets(Map.of(dlqPartition, OffsetSpec.latest())).partitionResult(dlqPartition)
+                    .get(10, TimeUnit.SECONDS).offset();
+            assertEquals(1, dlqEnd, "The parked message is one DLQ record");
         }
     }
 

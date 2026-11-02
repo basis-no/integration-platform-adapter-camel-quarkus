@@ -93,7 +93,9 @@ class FailureOwnershipTest {
 
     @ParameterizedTest
     @ValueSource(strings = {"${header.missingDlqUri}", "direct:no-consumer?failIfNoConsumers=false",
-            "file:target/dead-letters", "kafka:dlq?requestRequiredAcks=0", "kafka:dlq?additionalProperties.acks=0"})
+            "file:target/dead-letters", "kafka:dlq?requestRequiredAcks=0", "kafka:dlq?additionalProperties.acks=0",
+            "kafka:dlq?transacted=true", "kafka:dlq?transactionalId=parking",
+            "kafka:dlq?additionalProperties.transactional.id=parking"})
     void dlqUriWhoseSuccessDoesNotConfirmParkingFailsStartup(String dlqUri) throws Exception {
         try (var context = new DefaultCamelContext()) {
             var properties = new Properties();

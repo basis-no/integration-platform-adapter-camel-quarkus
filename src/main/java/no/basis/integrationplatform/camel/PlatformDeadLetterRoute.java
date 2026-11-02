@@ -15,10 +15,10 @@ import org.apache.camel.support.service.ServiceHelper;
 /**
  * Publishes an exhausted exchange to {@code basis.message-store.dlq-uri} and marks it parked
  * only after the endpoint accepted it. The endpoint must report a failed publish as an error:
- * a Kafka producer that waits for the broker, which Camel's default
+ * a non-transactional Kafka producer that waits for the broker, which Camel's default
  * {@code requestRequiredAcks=all} does, or the application's own {@code direct:} route. A
- * failed publish leaves the exchange failed and the message not parked, so its Kafka offset
- * is not committed.
+ * Kafka DLQ always receives one record per message. A failed publish leaves the exchange
+ * failed and the message not parked, so its Kafka offset is not committed.
  */
 @ApplicationScoped
 public class PlatformDeadLetterRoute extends RouteBuilder {
@@ -37,7 +37,9 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
 
     /**
      * Resolves the configured endpoint and refuses one whose success does not mean the
-     * record was accepted.
+     * record was accepted. A Kafka DLQ gets its own endpoint that sends the body as one
+     * record: with Camel's default {@code useIterator=true}, a collection body would be sent
+     * as one record per element, and an empty one as none.
      */
     static Endpoint confirmingEndpoint(CamelContext context, String uri) {
         // An expression such as ${header.name} can evaluate to no endpoint at all.
@@ -54,7 +56,17 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                 throw new IllegalArgumentException("basis.message-store.dlq-uri must wait for the broker;"
                         + " with acks=0 a publish is never confirmed");
             }
-            return endpoint;
+            // A transactional producer commits after the exchange completes, which is after
+            // the adapter has recorded the outcome and committed the input.
+            if (configuration.isTransacted()
+                    || (configuration.getTransactionalId() != null && !configuration.getTransactionalId().isBlank())
+                    || configuration.getAdditionalProperties().containsKey("transactional.id")) {
+                throw new IllegalArgumentException("basis.message-store.dlq-uri must not be transactional;"
+                        + " its transaction commits only after the input offset");
+            }
+            KafkaEndpoint single = (KafkaEndpoint) context.getCamelContextExtension().getPrototypeEndpoint(uri);
+            single.getConfiguration().setUseIterator(false);
+            return single;
         }
         if (endpoint instanceof DirectEndpoint direct) {
             if (!direct.isFailIfNoConsumers()) {
@@ -91,6 +103,10 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
         protected void doStop() {
             ServiceHelper.stopService(send);
             send = null;
+            if (endpoint instanceof KafkaEndpoint) {
+                // Its own endpoint, not registered in the context.
+                ServiceHelper.stopService(endpoint);
+            }
         }
 
         @Override
