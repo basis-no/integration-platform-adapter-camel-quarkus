@@ -121,12 +121,11 @@ with 0.4.
   let the input complete and commit. Camel's retries still run before the
   input fails, so a receiver can get the same send again; receivers deduplicate
   on the stable `Idempotency-Key`. A failed send keeps its own exception
-  unchanged. A separate request, such as one sent with a `ProducerTemplate` or
-  recorded by delivery audit, likewise fails when one of its step outcomes is
-  not recorded, also when its own route caught the failure; a request that had
-  already failed ends with a new exception whose cause is its own failure. An
-  input that passes that failure on is neither parked nor committed either. During a Message Store outage the partition therefore
-  waits at that input, as it already does when parking fails.
+  unchanged. A separate request, such as one sent with a `ProducerTemplate`,
+  fails when one of its step outcomes is not recorded, also when its own route
+  caught the failure; it does not hold back the input that sent it (see Known
+  limitations). During a Message Store outage the partition therefore waits at
+  that input, as it already does when parking fails.
 - A journal failure for a delivery audit or an input inspection that had
   already failed no longer attaches itself to the receiver's or source's
   exception. That exception may be one instance shared by many requests, which
@@ -224,10 +223,26 @@ and iteration its own step key. See the
 
 ### Known limitations
 
-- A step outcome that is not recorded holds back the input only while the input
-  waits for it. Work that ends after the input completed, such as a `wireTap`,
-  fails only its own exchange, and a route that ignores a separate request's
-  failure lets its input complete. Such work needs its own recovery.
+- A step outcome that is not recorded holds back only the input whose attempt
+  made the send, with its split parts, loop iterations and branches. A separate
+  request the input sends, for example with a `ProducerTemplate`, fails on its
+  own, but an input that passes that failure on treats it like any other: it is
+  retried, then parked and committed, as in earlier releases. A replay of the
+  parked input repeats the request's send; receivers deduplicate on the
+  `Idempotency-Key`, which stays the same only when the request carries its own
+  `x-bip-message-id`. Work that ends after the input completed, such as a
+  `wireTap`, and a request whose failed reply the route ignores cannot hold the
+  input back either.
+- Parking counts as confirmed once the send to `basis.message-store.dlq-uri`
+  returns without an error. The default, a fixed `kafka:` URI, is not affected
+  by the following. A `dlq-uri` expression that resolves to no endpoint, an
+  endpoint that accepts a record without storing it (such as `direct:` with
+  `failIfNoConsumers=false`), a custom parking route that stops, filters or
+  drops the record, a transactional producer, whose transaction commits after
+  the input's offset, and a body that the Kafka producer sends as a collection
+  of zero records can each count a message as parked although no record was
+  stored. Use a fixed URI of a durable, non-transactional endpoint that fails
+  when it cannot store the record.
 - Split parts and loop iterations that send through the same node share one
   step identity. With the Postgres step store, only the first is delivered and
   the rest are skipped, also in the first attempt. From 0.3.6 such a skip is

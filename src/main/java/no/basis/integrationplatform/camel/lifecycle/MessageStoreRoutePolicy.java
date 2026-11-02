@@ -57,11 +57,14 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         normalizeKafkaEnvelopeHeaders(exchange);
         // A replay's redo list is for this attempt only; the route must not forward it.
         DefaultStepTracker.captureRedoSteps(exchange);
-        StepOutcomeFailure.begin(exchange);
         exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
         exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
         captureInputEnvelope(exchange);
         captureKafkaManualCommit(exchange);
+        if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null) {
+            // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
+            StepOutcomeFailure.begin(exchange);
+        }
         capturePayloadMetadata(exchange);
         if (trafficSignals != null) trafficSignals.recordAdmitted(exchange);
     }

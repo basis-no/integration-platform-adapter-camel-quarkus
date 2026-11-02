@@ -220,12 +220,13 @@ class FailureOwnershipTest {
     @CsvSource({"plain, false", "plain, true", "caught, false", "caught, true",
             "audit, false", "audit, true", "audit-caught, false", "audit-caught, true",
             "rejected, false", "rejected, true", "audit-rejected, false", "audit-rejected, true"})
-    void aRequestWhoseStepOutcomeWasNotRecordedKeepsTheInputThatPassesItOnFromCommitting(
+    void aRequestWhoseStepOutcomeWasNotRecordedFailsButDoesNotHoldBackItsInput(
             String child, boolean asyncReceiver) throws Exception {
-        // The input sends a separate request with a ProducerTemplate and passes its failure on.
-        // The request fails also when its own route caught the failure, and a rejected request
-        // carries the failure also when the receiver's exception refuses suppressed exceptions.
+        // Known limitation: the input sends a separate request with a ProducerTemplate and passes
+        // its failure on. The request fails, also when its own route caught the failure, but the
+        // input treats that failure like any other: it parks the input and commits.
         var result = new Delivery();
+        var replies = new ArrayList<Exception>();
         var requests = new ArrayList<MessageAttemptResult>();
         ExecutorService receiverThread = Executors.newSingleThreadExecutor();
         try (var context = new DefaultCamelContext()) {
@@ -257,6 +258,7 @@ class FailureOwnershipTest {
                                 try (var producer = getContext().createProducerTemplate()) {
                                     Exchange reply = producer.request("direct:request",
                                             request -> request.getMessage().setBody("<Request/>"));
+                                    replies.add(reply.getException());
                                     if (reply.getException() != null) {
                                         e.setException(reply.getException());
                                     }
@@ -291,13 +293,19 @@ class FailureOwnershipTest {
         }
 
         assertEquals(List.of("<Request/>"), result.received);
-        assertTrue(result.exchange.isFailed());
-        assertTrue(result.parked.isEmpty());
-        assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
-        assertEquals(0, result.commits.get());
+        assertEquals(1, replies.size());
+        assertNotNull(replies.getFirst(), "The request must not complete as if its outcome were recorded");
+        if (child.endsWith("rejected")) {
+            assertEquals(0, replies.getFirst().getSuppressed().length, "The receiver's exception is not changed");
+        } else {
+            assertInstanceOf(StepOutcomeStoreException.class, replies.getFirst());
+        }
         if (child.startsWith("audit")) {
             assertEquals(MessageStatus.FAILED, requests.getFirst().status());
         }
+        assertEquals(List.of("<Input/>"), result.parked);
+        assertEquals(MessageStatus.DLQ, result.rows.getFirst().status());
+        assertEquals(1, result.commits.get());
     }
 
     @Test

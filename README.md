@@ -181,9 +181,10 @@ step outcome that cannot be checked or recorded fails the send's exchange after
 Camel's retries; the input is then recorded as `FAILED` and neither parked nor
 committed, also when the route catches the failure or it happens in a split
 part. A separate request, such as one sent with a `ProducerTemplate`, fails in
-the same case, and an input that passes its failure on is neither parked nor
-committed. Work that ends after the input completed, such as a `wireTap`, and a
-request whose failure the route ignores cannot hold the input back.
+the same case but does not hold back the input that sent it: an input that
+passes the request's failure on is retried, parked and committed like any
+failed input, and a replay repeats the request's send. Work that ends after the
+input completed, such as a `wireTap`, cannot hold the input back either.
 `break-on-first-error` prevents a later record in the batch from advancing past
 that unresolved input. Applications must not override these safety defaults.
 This can intentionally block processing during a durability outage; it is not a
@@ -215,7 +216,9 @@ named variant:
 All variants use `basis.message-store.dlq-uri`, defaulting to
 `kafka:bip.message.dlq`. When the dead letter channel parks a message, the
 adapter marks the exchange only **after the DLQ send succeeds**, so the terminal
-status becomes `DLQ`. The internal parking route bypasses business-step tracking;
+status becomes `DLQ`. A send that returns without an error counts as success, so
+`dlq-uri` must be a fixed URI of a durable endpoint (see the configuration
+reference below). The internal parking route bypasses business-step tracking;
 parking must never be skipped because of a previously delivered business step.
 An internal request without a managed Kafka input propagates its failure back
 to its caller rather than parking transformed receiver bytes independently.
@@ -776,7 +779,7 @@ Configuration reference:
 | `basis.message-store.step-ids.emergency-allow-generated` | `true`, `false` | `false` | Emergency escape hatch: start even though a tracked send has no explicit id, with a warning for each. See [step tracking](#step-tracking). |
 | `basis.message-store.payload.mode` | `postgres-inline`, `metadata-only` | `postgres-inline` | Selects whether safely capturable payloads are stored inline for replay. |
 | `basis.message-store.status-topic` | Kafka topic name | `bip.message.status` | Used only when `basis.message-store.sink=kafka`. |
-| `basis.message-store.dlq-uri` | Camel endpoint URI | `kafka:bip.message.dlq` | Target used by the shared dead letter channel. |
+| `basis.message-store.dlq-uri` | Camel endpoint URI | `kafka:bip.message.dlq` | Target used by the shared dead letter channel. Use a fixed URI of a durable, non-transactional endpoint that fails when it cannot store the record: a send that returns without an error counts as parked. A custom parking route must not stop, filter or drop the record. |
 | `basis.message-store.payload.max-bytes` | integer bytes, `>= 0` | `1048576` | Payloads above this cap become `metadata_only`. |
 | `basis.message-store.payload.retention-days` | integer days, `>= 0` | `30` | Used to set `payload_expires_at`. Cleanup is a separate future job. |
 | `basis.message-store.replay.enabled` | `true`, `false` | `true` | If false, payloads are metadata-only and replay is disabled by policy. |
