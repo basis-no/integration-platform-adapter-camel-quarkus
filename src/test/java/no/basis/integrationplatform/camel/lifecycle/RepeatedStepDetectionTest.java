@@ -210,6 +210,28 @@ class RepeatedStepDetectionTest {
     }
 
     @Test
+    void aSendWhileCamelPreparesAPartIsNotChecked() throws Exception {
+        // onPrepare runs before Camel numbers the part, so its position is unknown.
+        start(store, route -> route.split(body().tokenize(",")).onPrepare(e -> {
+            try (var producer = e.getContext().createProducerTemplate()) {
+                producer.send("direct:send", e);
+            }
+        }).log("part").end());
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:send").to("vendor:lines").id("send-line");
+            }
+        });
+
+        sendKafka("a,b");
+
+        assertEquals(List.of("lines:a"), received);
+        assertEquals(List.of(), errorScopes());
+        assertEquals(1, infoSkips());
+        assertEquals(MessageStatus.COMPLETED, rows.getFirst().status());
+    }
+
+    @Test
     void aSendAfterAnInnerLoopInTheSameIterationIsNotARepeat() throws Exception {
         // The inner loop leaves its own index on the exchange, so the outer iteration is no
         // longer known: the second visit is the same part reaching the send again.

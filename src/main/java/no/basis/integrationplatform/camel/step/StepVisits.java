@@ -38,14 +38,17 @@ final class StepVisits {
     static final String MULTICAST = "multicast";
     static final String RECIPIENT_LIST = "recipientList";
     private static final String UNKNOWN = "?";
-    /** Keys kept per attempt; a forgotten key is not checked. A key every part reaches stays. */
+    /** Keys kept per attempt. Once one is forgotten, no later skip of the attempt is checked. */
     static final int MAX_KEYS = 10_000;
     /** Positions kept per key; a key that more parts sent is not checked further. */
     static final int MAX_SENDERS = 16;
 
+    private boolean forgotten;
     private final Map<String, Senders> keys = new LinkedHashMap<>(16, 0.75f, true) {
         @Override
         protected boolean removeEldestEntry(Map.Entry<String, Senders> eldest) {
+            // A part still sending may record a forgotten key again without the others.
+            forgotten |= size() > MAX_KEYS;
             return size() > MAX_KEYS;
         }
     };
@@ -77,7 +80,8 @@ final class StepVisits {
      * The position of the part this exchange runs in. A split part or branch is its own
      * exchange, so its index is fixed here, before a nested scope can replace Camel's index
      * property. A loop may reuse one exchange for every iteration, so its index is read
-     * each time, and is unknown once a nested scope has changed it.
+     * each time, and is unknown once a nested scope has changed it. An index Camel has not
+     * assigned yet, as while it prepares a part, is unknown and read again later.
      */
     static String path(Exchange exchange) {
         String path = exchange.getProperty(PATH, String.class);
@@ -89,12 +93,16 @@ final class StepVisits {
             return path;
         }
         if (isLoop(scope)) {
-            Object index = scope.equals(exchange.getProperty(LOOP_UNKNOWN, String.class)) ? UNKNOWN
+            Object index = scope.equals(exchange.getProperty(LOOP_UNKNOWN, String.class)) ? null
                     : exchange.getProperty(ExchangePropertyKey.LOOP_INDEX);
-            return path + scope + index;
+            return path + scope + (index == null ? UNKNOWN : index);
         }
-        String resolved = path + scope + exchange.getProperty(SPLIT.equals(kind(scope))
+        Object index = exchange.getProperty(SPLIT.equals(kind(scope))
                 ? ExchangePropertyKey.SPLIT_INDEX : ExchangePropertyKey.MULTICAST_INDEX);
+        if (index == null) {
+            return path + scope + UNKNOWN;
+        }
+        String resolved = path + scope + index;
         exchange.setProperty(PATH, resolved);
         exchange.removeProperty(SCOPE);
         return resolved;
@@ -117,7 +125,7 @@ final class StepVisits {
      */
     synchronized String repeatedIn(String path, String idempotencyKey) {
         Senders senders = keys.get(idempotencyKey);
-        if (senders == null || senders.unchecked || path.isEmpty() || path.contains(UNKNOWN)) {
+        if (forgotten || senders == null || senders.unchecked || path.isEmpty() || path.contains(UNKNOWN)) {
             return null;
         }
         String other = null;
