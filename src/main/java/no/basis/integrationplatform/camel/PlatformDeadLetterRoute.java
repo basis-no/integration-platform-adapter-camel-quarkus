@@ -14,6 +14,8 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
         var route = from(PlatformRouteConfiguration.DLQ_URI).routeId("bip-confirmed-dead-letter")
                 .errorHandler(noErrorHandler())
                 .process(exchange -> {
+                    // A handler that restored the original message also restored a replay's redo list.
+                    exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS);
                     if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) == null
                             && exchange.getMessage().getHeader(KafkaConstants.MANUAL_COMMIT) == null) {
                         Throwable failure = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);

@@ -9,6 +9,8 @@ import no.basis.integrationplatform.camel.model.StepStatus;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.step.StepOutcomeStore;
 import no.basis.integrationplatform.camel.step.StepTrackingInterceptStrategy;
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
+import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.component.kafka.KafkaConstants;
 import org.apache.camel.component.kafka.consumer.KafkaManualCommit;
@@ -18,6 +20,7 @@ import org.apache.kafka.clients.admin.NewTopic;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.testcontainers.junit.jupiter.Container;
@@ -33,6 +36,7 @@ import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Properties;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -121,6 +125,73 @@ class RedoHeaderBoundaryTest {
             assertEquals(List.of(StepStatus.DELIVERED, StepStatus.DELIVERED),
                     rows.getFirst().steps().stream().map(StepResult::status).toList());
         }
+    }
+
+    @Test
+    void noSendOfAnUnrecordedRouteCarriesTheList() throws Exception {
+        List<String> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", x -> {
+            requests.add(x.getRequestURI().getPath() + " " + x.getRequestHeaders().getFirst(PlatformHeaders.REDO_STEPS));
+            x.getRequestBody().readAllBytes();
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        server.start();
+        try (var context = new DefaultCamelContext()) {
+            // As the adapter installs it: every route that is not recorded gets the redo-list policy.
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(r -> { }, "orders", "postgres-inline", 1000, 30, true));
+            String receiver = "http://127.0.0.1:" + server.getAddress().getPort();
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:intake").routeId("orders-intake")
+                            .enrich(receiver + "/enrich").id("enrich-order")
+                            .wireTap(receiver + "/tap").id("tap-order")
+                            .recipientList(constant(receiver + "/recipients")).id("recipients")
+                            .routingSlip(constant(receiver + "/slip")).id("slip");
+                }
+            });
+            context.start();
+            context.createProducerTemplate().send("direct:intake", e -> {
+                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-1");
+                e.getMessage().setHeader(PlatformHeaders.REDO_STEPS, REDO);
+                e.getMessage().setBody("<Order/>");
+            });
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (requests.size() < 4 && System.nanoTime() < deadline) {
+                Thread.sleep(20);
+            }
+        } finally {
+            server.stop(0);
+        }
+        assertEquals(List.of("/enrich null", "/recipients null", "/slip null", "/tap null"),
+                requests.stream().sorted().toList());
+    }
+
+    @Test
+    void parkingDoesNotPublishTheListWhenAHandlerRestoredTheOriginalMessage() throws Exception {
+        List<Object> parked = new CopyOnWriteArrayList<>();
+        try (var context = new DefaultCamelContext()) {
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "direct:parked");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:parked").process(e -> parked.add(e.getMessage().getHeader(PlatformHeaders.REDO_STEPS)))
+                            .setHeader("parked", constant(true));
+                }
+            });
+            context.start();
+            // What a dead letter channel with useOriginalMessage() hands over for a replayed record.
+            context.createProducerTemplate().send("direct:bip-confirmed-dead-letter", e -> {
+                e.setProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT, (KafkaManualCommit) () -> { });
+                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-1");
+                e.getMessage().setHeader(PlatformHeaders.REDO_STEPS, REDO.getBytes(StandardCharsets.UTF_8));
+                e.getMessage().setBody("<Order/>");
+            });
+        }
+        assertEquals(java.util.Collections.singletonList(null), parked);
     }
 
     private static Object value(boolean bytes, String value) {

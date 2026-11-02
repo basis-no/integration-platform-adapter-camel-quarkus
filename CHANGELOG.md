@@ -48,23 +48,24 @@ with 0.4.
   chooses its component only when it sends, such as `${header.receiverUrl}` or
   `language:header:receiverUrl`, is treated as an HTTP send. Other HTTP components, such as
   `vertx-http`, are unchanged.
-- A `to` or `toD` to `kafka:` that would publish a header with a credential-like
-  name, by the same rule, logs a warning once per route and header name. The
-  warning names the header, never its value, and says how to remove it. The
-  record is published as before. Camel's Kafka producer publishes every header
-  that its header filter strategy lets through, so an HTTP intake that keeps the
-  caller's headers publishes the caller's `Authorization` with the message. Headers
-  the endpoint's filter drops are not reported, nor are values the producer does
-  not write as they are; only text, byte arrays, `Long`, `Integer`, `Double` and
-  `Boolean` count.
-- A replay's `x-bip-redo-steps` stays inside the integration. A Kafka input with
-  the Message Store reads the list before the route runs and keeps it for the
-  attempt's step tracking; on other inputs the route's first `to` or `toD` reads
-  it. The header is then removed, so HTTP sends, Kafka publishes and DLQ records
-  no longer carry it, and a route can no longer read it. Before, a receiver got
-  the list, and a downstream integration that consumed a published record with
-  the same message id sent its own steps with the same ids again. `x-bip-replay`
-  and `x-bip-attempt` are still forwarded.
+- A Kafka send that published a header with a credential-like name, by the same
+  rule, logs a warning once per route and header name. The warning names the
+  header, never its value, and says how to remove it. The record is published as
+  before. Camel's Kafka producer publishes every header that its header filter
+  strategy lets through, so an HTTP intake that keeps the caller's headers
+  publishes the caller's `Authorization` with the message. The check runs after
+  a successful `to` or `toD`, against the endpoint the send used, follows its
+  header filter strategy and counts only text, byte array, `Long`, `Integer`,
+  `Double` and `Boolean` values.
+- A replay's `x-bip-redo-steps` stays inside the integration. When an exchange
+  enters a route, the adapter reads the list, keeps it for the attempt's step
+  tracking and removes the header, so no send from the route carries it: `to`,
+  `toD`, `enrich`, `wireTap`, `recipientList` and `routingSlip`, nor a DLQ
+  record. A route can no longer read the header. Before, a receiver got the
+  list, and a downstream integration that consumed a published record with the
+  same message id sent its own steps with the same ids again. `x-bip-replay` and
+  `x-bip-attempt` are still forwarded. The warning for a malformed list no
+  longer logs its value.
 - When it creates a route, the adapter logs a warning for each HTTP timeout
   option that Camel 4's `http` component accepts without applying it, and names
   the replacement. The call otherwise waits for the component's timeout, three
@@ -229,8 +230,12 @@ and iteration its own step key. See the
   a route is created. A URI in a `recipientList` or `routingSlip`, or one whose
   scheme is only known at send time, is not checked. See the README's retry
   section for the full table.
-- The Kafka credential warning covers a `to`, or a `toD` whose URI starts with
-  `kafka:`. A send whose scheme is only known at send time is not checked.
+- The Kafka credential warning does not check an endpoint whose header filter
+  strategy or header serializer is an application class, and reports at most
+  100 header names per route.
+- A handler that restores the original message, for example with
+  `useOriginalMessage()`, gets `x-bip-redo-steps` back until the route's next
+  `to` or `toD` or DLQ parking removes it.
 
 ### Upgrade notes
 
@@ -266,7 +271,7 @@ and iteration its own step key. See the
 - Set the readiness probe timeout to 3–5 seconds. While the consumer reconnects,
   Camel's Kafka health check can take more than 2 seconds to answer.
 - **Look for the new warnings** `HTTP option … has no effect` at startup and
-  `Kafka send … publishes header …` while messages flow. Use the replacement the
+  `Kafka send … published header …` while messages flow. Use the replacement the
   first one names; remove the header the second one names before the send.
 - **Look for the new ERROR line `Step <step-id> was skipped in a …`.** Each one
   is a split part, loop iteration or branch that was not delivered. On 0.3.5 the

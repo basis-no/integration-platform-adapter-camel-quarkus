@@ -87,8 +87,8 @@ public class DefaultStepTracker implements StepTracker {
      * Reads a replay's {@code x-bip-redo-steps} into the exchange once and removes the header.
      * The list belongs to this integration's replayed attempt: a receiver or a downstream
      * integration that got it would send its own steps with the same ids again for the same
-     * message id. A managed Kafka input reads it before the route runs; on other inputs the
-     * first tracked send does.
+     * message id. With the adapter installed, every route reads it when an exchange enters
+     * the route; a tracked send and DLQ parking read it again in case a route restored it.
      * @param exchange the exchange
      * @return the step ids to send again in this attempt
      */
@@ -117,7 +117,8 @@ public class DefaultStepTracker implements StepTracker {
     /**
      * Contract §3 (DECISION D1): {@code x-bip-redo-steps} is a JSON array of step
      * ids. A malformed value is logged as a warning and treated as empty; it must
-     * never fail message processing.
+     * never fail message processing. The warning names the header only: the value
+     * comes from the message, and the parser's error would repeat it.
      */
     private static Set<String> parseRedoSteps(String headerValue) {
         if (headerValue == null || headerValue.isBlank()) {
@@ -126,8 +127,8 @@ public class DefaultStepTracker implements StepTracker {
         try {
             JsonNode root = REDO_STEPS_READER.readTree(headerValue);
             if (root == null || !root.isArray()) {
-                LOG.warn("Malformed {} header (expected JSON array of step ids, got '{}'); treating as no redo",
-                        PlatformHeaders.REDO_STEPS, headerValue);
+                LOG.warn("Malformed {} header (expected a JSON array of step ids); treating it as no redo",
+                        PlatformHeaders.REDO_STEPS);
                 return Set.of();
             }
             Set<String> redoSteps = new LinkedHashSet<>();
@@ -135,13 +136,13 @@ public class DefaultStepTracker implements StepTracker {
                 if (item.isTextual() && !item.asText().isBlank()) {
                     redoSteps.add(item.asText());
                 } else {
-                    LOG.warn("Ignoring non-string entry '{}' in {} header", item, PlatformHeaders.REDO_STEPS);
+                    LOG.warn("Ignoring an entry of the {} header that is not a step id", PlatformHeaders.REDO_STEPS);
                 }
             }
             return Set.copyOf(redoSteps);
         } catch (Exception e) {
-            LOG.warn("Malformed {} header (expected JSON array of step ids, got '{}'); treating as no redo",
-                    PlatformHeaders.REDO_STEPS, headerValue, e);
+            LOG.warn("Malformed {} header (expected a JSON array of step ids); treating it as no redo",
+                    PlatformHeaders.REDO_STEPS);
             return Set.of();
         }
     }

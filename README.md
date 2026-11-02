@@ -277,13 +277,18 @@ for example with `removeHeaders("*")` and then setting only the headers the
 message needs. Camel copies every request header onto the exchange, and the
 Kafka producer publishes them with the message, including `Authorization`, API
 keys and cookies, unmasked. Anyone who can read the topic can read them. From
-0.3.6 a `to` or `toD` to `kafka:` that would publish a header with a
-credential-like name, by the masking rule above, logs a warning once per route
-and header name. The warning names the header, never its value, and says how to
-remove it. What is published does not change. Headers that the endpoint's header
-filter strategy drops are not reported, nor are values that Camel's Kafka
-producer does not write as they are: only text, byte arrays, `Long`, `Integer`,
-`Double` and `Boolean` count. Also from 0.3.6, a tracked send through Camel's
+0.3.6 a Kafka send that published a header with a credential-like name, by the
+masking rule above, logs a warning once per route and header name. The warning
+names the header, never its value, and says how to remove it. What is published
+does not change. The check runs after a successful `to` or `toD`, against the
+endpoint the send used, including a `toD` that chooses its component only when
+it sends. It follows that endpoint's header filter strategy and counts only
+text, byte array, `Long`, `Integer`, `Double` and `Boolean` values, which
+Camel's header serializer writes as they are. An endpoint whose header filter
+strategy or header serializer is an application class is not checked: the
+adapter does not call application code to find out what was published. At most
+100 header names are reported per route; one more line then says that further
+names are not logged. Also from 0.3.6, a tracked send through Camel's
 `http` component does not forward credential-like headers that still hold a
 consumed record's bytes, and logs a
 warning that names the header. A `toD` that chooses its component only when it
@@ -460,14 +465,19 @@ idempotency key. A malformed header value is logged as a warning and treated as
 empty — it never fails message processing. Redo intentionally repeats an
 external side effect, so external systems still need domain idempotency for it.
 
-From 0.3.6 the list stays inside the integration. A Kafka input with the Message
-Store reads `x-bip-redo-steps` before the route runs, keeps the list for the
-attempt's step tracking and removes the header. On other inputs the route's
-first `to` or `toD` does the same. HTTP sends, Kafka publishes and DLQ records
-therefore no longer carry it. Before, a receiver got the list, and a downstream
-integration that consumed a published record with the same message id sent its
-own steps with the same ids again. `x-bip-replay` and `x-bip-attempt` are still
-forwarded; nothing in the adapter acts on `x-bip-replay` at a Kafka input.
+From 0.3.6 the list stays inside the integration. When an exchange enters a
+route, the adapter reads `x-bip-redo-steps`, keeps the list for the attempt's
+step tracking and removes the header: a Kafka input with the Message Store
+before the route runs, and every other route through a route policy the adapter
+adds. The route's sends therefore do not carry it, whether through `to`, `toD`,
+`enrich`, `wireTap`, `recipientList` or `routingSlip`. A handler that restores
+the original message, for example with `useOriginalMessage()`, gets the header
+back; the next `to` or `toD` and DLQ parking remove it again. Before, a receiver
+got the list, and a downstream integration that consumed a published record
+with the same message id sent its own steps with the same ids again.
+`x-bip-replay` and `x-bip-attempt` are still forwarded; nothing in the adapter
+acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
+the header only, not its value.
 
 ## Step Tracking
 

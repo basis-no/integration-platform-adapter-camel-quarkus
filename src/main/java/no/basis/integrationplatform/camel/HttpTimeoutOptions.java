@@ -13,9 +13,11 @@ import org.apache.camel.model.language.SimpleExpression;
 import org.apache.camel.spi.IdAware;
 import org.apache.camel.support.EndpointHelper;
 import org.apache.camel.support.LanguageSupport;
+import org.apache.camel.util.URISupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.net.URISyntaxException;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
@@ -78,16 +80,15 @@ public final class HttpTimeoutOptions {
             }
             String uri = send.uri().trim();
             String scheme = uri.substring(0, uri.indexOf(':')).toLowerCase(Locale.ROOT);
-            int query = uri.indexOf('?');
-            if (query < 0) {
+            String query = URISupport.extractQuery(uri);
+            if (query == null) {
                 return;
             }
-            for (String parameter : uri.substring(query + 1).split("&")) {
-                int equals = parameter.indexOf('=');
-                String option = (equals < 0 ? parameter : parameter.substring(0, equals)).trim();
-                warnIfIgnored(option, send, scheme, definition, target);
+            // Camel's own parser, so that an option inside a RAW(...) value is not taken for one.
+            for (String option : URISupport.parseQuery(query, true, true).keySet()) {
+                warnIfIgnored(option.trim(), send, scheme, definition, target);
             }
-        } catch (RuntimeException e) {
+        } catch (RuntimeException | URISyntaxException e) {
             // A warning must never stop a route from being created.
         }
     }
