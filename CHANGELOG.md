@@ -48,6 +48,15 @@ with 0.4.
   chooses its component only when it sends, such as `${header.receiverUrl}` or
   `language:header:receiverUrl`, is treated as an HTTP send. Other HTTP components, such as
   `vertx-http`, are unchanged.
+- A `to` or `toD` to `kafka:` that would publish a header with a credential-like
+  name, by the same rule, logs a warning once per route and header name. The
+  warning names the header, never its value, and says how to remove it. The
+  record is published as before. Camel's Kafka producer publishes every header
+  that its header filter strategy lets through, so an HTTP intake that keeps the
+  caller's headers publishes the caller's `Authorization` with the message. Headers
+  the endpoint's filter drops are not reported, nor are values the producer does
+  not write as they are; only text, byte arrays, `Long`, `Integer`, `Double` and
+  `Boolean` count.
 - A replay's `x-bip-redo-steps` stays inside the integration. A Kafka input with
   the Message Store reads the list before the route runs and keeps it for the
   attempt's step tracking; on other inputs the route's first `to` or `toD` reads
@@ -207,6 +216,8 @@ and iteration its own step key. See the
   option of Camel 4's `http` component: it is sent to the receiver as a query
   parameter, and the call waits up to the client's default of three minutes.
   Use `responseTimeout` and `connectTimeout`.
+- The Kafka credential warning covers a `to`, or a `toD` whose URI starts with
+  `kafka:`. A send whose scheme is only known at send time is not checked.
 
 ### Upgrade notes
 
