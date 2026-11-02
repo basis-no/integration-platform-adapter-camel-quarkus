@@ -3,12 +3,12 @@
 ## Prerequisites
 
 - JDK 21
-- a Camel Quarkus integration generated from a supported platform template
-- Kafka and Postgres enabled in the integration catalog for the normal v1 path
-- the platform-provisioned message-store schema
+- a Camel Quarkus integration
+- Kafka and Postgres for the normal production path
+- the message-store schema, provisioned by the database operator
 
-The template should pin the adapter dependency. For a standalone experiment,
-add the Maven Central artifact shown in the repository [README](../README.md).
+Add the Maven Central artifact shown in the repository [README](../README.md)
+and pin its version in the integration's build.
 
 ## Write a Business Route
 
@@ -45,7 +45,7 @@ different replay behavior.
 
 ## Production Configuration
 
-The platform chart supplies connection details and the production mode. The
+The deployment supplies connection details and the production mode. The
 normal direct-Postgres profile is conceptually:
 
 ```properties
@@ -56,7 +56,7 @@ basis.message-store.replay.enabled=true
 basis.message-store.failure-mode=dlq
 ```
 
-Integration developers should not duplicate platform-owned values such as the
+Integration developers should not duplicate deployment-owned values such as the
 deployment replica count, Postgres credentials, payload bucket, or canonical
 DLQ topic in repository configuration. See the
 [configuration reference](configuration.md) for ownership and environment
@@ -69,7 +69,7 @@ variable mappings.
 ```
 
 For application-level testing, use a fresh Kafka consumer group or a deliberate
-dashboard replay. Guarded test profiles exist when the test specifically needs
+replay through the admin endpoint. Guarded test profiles exist when the test specifically needs
 to suppress persistence or broker commits; see [Testing](testing.md).
 
 ## Next Reading

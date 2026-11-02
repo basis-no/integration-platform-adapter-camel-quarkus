@@ -4,14 +4,14 @@ Camel Quarkus runtime adapter for message auditing, Kafka recovery and controlle
 It keeps message-store persistence, retry and DLQ behavior, Kafka manual
 commit, replay, and replay-aware side-effect tracking out of business routes.
 
-The adapter implements message-store contract `v1.0.0-rc2`. It is
-self-contained: the documentation in [`docs/`](docs/index.md) describes the
-tables, topics and headers it uses, and the schema it expects ships in
-`src/main/resources/db/message-store/`.
+The adapter is self-contained: the documentation in [`docs/`](docs/index.md)
+describes the tables, topics and headers it uses, and the schema it expects
+ships in `src/main/resources/db/message-store/`. With the Postgres sink it
+checks at startup that `bip_contract` records store schema version 1.
 
 ## Installation
 
-The certified release is available from Maven Central:
+Releases are available from Maven Central:
 
 ```xml
 <dependency>
@@ -21,9 +21,10 @@ The certified release is available from Maven Central:
 </dependency>
 ```
 
-Platform templates pin the supported version and supply production runtime
-configuration. Integration repositories should not copy message-store routes,
-database writes, Kafka commit processors, or DLQ plumbing into business YAML.
+Pin the adapter version in the integration's build and let the deployment
+supply production runtime configuration. Integration repositories should not
+copy message-store routes, database writes, Kafka commit processors, or DLQ
+plumbing into business YAML.
 
 ## What It Provides
 
@@ -32,7 +33,7 @@ database writes, Kafka commit processors, or DLQ plumbing into business YAML.
 - standard retry and terminal DLQ handling;
 - stable `x-bip-*` envelope and idempotency headers;
 - durable delivered-step tracking and controlled replay;
-- Postgres-backed audit and dashboard read models;
+- Postgres-backed audit and message read models for operator tools;
 - inline or S3-compatible replay payload storage;
 - safe normalization of file, polling, and acknowledged queues into Kafka;
 - guarded local test profiles.
@@ -61,14 +62,14 @@ Start with the [documentation index](docs/index.md).
 
 ## Current Status
 
-- Camel adapter `0.3.1` is the certified/template baseline for contract
-  `v1.0.0-rc2`.
+- Released versions are on the `0.3` line and use message-store schema
+  version 1; see [CHANGELOG.md](CHANGELOG.md).
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3
   payload storage, output-side-effect checkpoints, non-Kafka ingress
   normalization, and replica-safety validation.
 - The `0.4` features have extensive local unit and Testcontainers coverage but
-  are not the certified platform baseline until the stacked changes are merged,
-  released, and the remote acceptance campaign is complete.
+  are not released until the stacked changes are merged, released, and the
+  remote acceptance campaign is complete.
 - Direct Postgres mode is the production path. The Kafka status sink requires a
   separate lifecycle consumer to materialize the Postgres read model.
 
@@ -82,7 +83,8 @@ JDK 21 is required. Use the repository Maven wrapper:
 ```
 
 Behavior and configuration changes must update the relevant local documentation.
-Cross-runtime semantic changes require a coordinated contract change.
+Changes to shared message-store semantics must stay compatible with the .NET
+adapter.
 
 Use `X.Y.Z-SNAPSHOT` builds from Sonatype's separate snapshot repository for
 remote acceptance. Create a `vX.Y.Z` tag only after local and remote acceptance
@@ -91,15 +93,16 @@ See [Releasing](docs/releasing.md) for the full workflow and checklist.
 
 ## License and Support
 
-Apache-2.0. Production support is provided to platform customers through their
-platform agreement; other issues and pull requests are handled best-effort.
+Apache-2.0. Basis provides production support to its customers under their
+support agreements; other issues and pull requests are handled best-effort.
 
-## Managed payload capture profile
+## Payload capture modes
 
-The managed runtime keeps the v1 Kafka consumer, Postgres lifecycle journal,
-step-outcome ledger, retry/DLQ handling and admin adapter active independently
-of payload storage. `BASIS_MESSAGE_STORE_PAYLOAD_MODE=metadata-only` processes
-messages but records no replay payload: lifecycle rows remain, with
+With the production Postgres sink and step-outcome store configured, the Kafka
+consumer, Postgres lifecycle journal, step-outcome ledger, retry/DLQ handling
+and replay admin endpoint stay active independently of payload storage.
+`BASIS_MESSAGE_STORE_PAYLOAD_MODE=metadata-only` processes messages but records
+no replay payload: lifecycle rows remain, with
 `replayable=false` and a reason. `postgres-inline` restores payload capture
 for subsequent deliveries subject to the existing size and retention policy.
 
@@ -115,9 +118,8 @@ Runtime stop/start remains deployment replica state. Do not disable the sink
 or step ledger to implement payload capture off: durable recording before
 commit remains mandatory. Missing or failed journal persistence must still
 prevent successful acknowledgement. No new adapter package or database schema
-is required for this profile; published .NET 0.3.0 and Camel 0.3.1 already
-implement the required payload modes. A coordinated managed projection release
-is required; do not infer fleet adoption from this documentation change.
+is required for these modes; published .NET 0.3.0 and Camel 0.3.1 already
+implement them.
 
 ### Runtime security bindings
 
@@ -125,7 +127,7 @@ Operators can supply one authenticated TLS broker binding for input, DLQ, replay
 and the optional Kafka status sink. Existing installations keep their plaintext
 default until configured. Application persistence uses a separate named
 datasource and scoped migration identity; the default datasource remains the
-platform Message Store. See the [configuration reference](docs/configuration.md).
+adapter's message store. See the [configuration reference](docs/configuration.md).
 
 ## How this project is developed
 

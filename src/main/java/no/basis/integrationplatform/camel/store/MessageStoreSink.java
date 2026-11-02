@@ -2,7 +2,7 @@ package no.basis.integrationplatform.camel.store;
 
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
-/** Durable boundary for recording one terminal platform message attempt. */
+/** Durable boundary for recording one terminal message attempt. */
 public interface MessageStoreSink {
     /**
      * Records a terminal attempt before the adapter acknowledges its source.

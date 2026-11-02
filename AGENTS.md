@@ -1,36 +1,29 @@
 # Repository Instructions
 
-This repository implements the Camel Quarkus runtime adapter for the Basis
-Integration Platform. These instructions apply to developers and coding
-agents.
+This repository implements a Camel Quarkus adapter that gives integrations
+message-store auditing, Kafka recovery and controlled replay. These
+instructions apply to developers and coding agents.
 
 ## Sources of truth
 
-- The public integration-platform contract is normative for cross-runtime
-  message-store behavior, schemas, SQL, and certification scenarios.
-- This repository owns Camel-specific implementation, configuration, examples,
-  limitations, and tests.
-- The public platform handbook owns user-facing guidance, the certified adapter
-  version matrix, and release snapshots.
+- This repository owns the adapter's implementation, configuration, examples,
+  limitations, tests and documentation, including the message-store schema it
+  expects in `src/main/resources/db/message-store/`.
+- The .NET adapter implements the same message-store tables, topics and
+  headers. Keep the two adapters compatible.
 
-Do not change cross-runtime semantics in this repository alone. Update the
-contract first or as part of the same coordinated change.
+Do not change shared message-store semantics, schemas, SQL, headers or topics
+in this adapter alone. Make the matching change in the .NET adapter in the same
+coordinated change, or record why it does not apply.
 
 ## Keep documentation synchronized
 
 A behavior or configuration change is not complete until its documentation is
-current. For every user-visible adapter change:
-
-1. update this repository's `README.md` and any relevant local documentation;
-2. update the public platform handbook's living guidance;
-3. update the handbook adapter-version matrix when package, contract,
-   certification, defaults, or limitations change; and
-4. update a release snapshot when the certified component set or visible
-   product behavior changes.
+current. For every user-visible adapter change, update this repository's
+`README.md`, the relevant pages in `docs/`, and `CHANGELOG.md`.
 
 Document current, tested behavior as supported. Keep proposals and future
-designs clearly labeled, and never describe a published package as certified
-until the coordinated certification baseline says so.
+designs clearly labeled, and never describe unreleased behavior as released.
 
 `docs/configuration.md` is the canonical adapter property reference. Keep every
 `basis.message-store.*` property there with its environment mapping, supported
@@ -44,6 +37,13 @@ Use provider-neutral examples. Do not add customer names, repositories,
 domains, payloads, topology, credentials, private endpoints, or internal
 incident details to tracked files.
 
+The adapter is generic open source. Describe its behavior in its own terms and
+do not refer to a particular product, service, dashboard, or documentation set
+that uses it. Existing identifiers such as the Maven coordinates, packages,
+`x-bip-*` headers and `bip_*` tables keep their names; refer to them as this
+adapter's identifiers. The `Public content` check refuses some of this wording
+in added lines.
+
 ## Engineering and verification
 
 Follow the existing architecture and keep the public API small. Preserve the
@@ -55,7 +55,7 @@ selection is Kafka-only. The HTTP audit-only preview requires an explicit route
 id, `basis.message-store.failure-mode=record-failed`, and replay disabled. It
 records terminal failures and propagates them to the source; it never commits a
 Kafka offset or claims a Kafka DLQ/replay path. Keep this preview clearly
-separate from certified contract v1.
+separate from the supported Kafka lifecycle.
 
 Classify endpoint sends by replay semantics, not by customer terminology or
 node-id naming conventions. Internal and repeatable sends must execute on every
@@ -71,8 +71,9 @@ Run the Maven wrapper rather than a global Maven installation:
 ./mvnw -DskipTests javadoc:javadoc
 ```
 
-Scale testing to the behavioral change. Contract-facing changes must also be
-validated through the shared cross-runtime certification suite before release.
+Scale testing to the behavioral change. A change to shared message-store
+behavior must also be tested for compatibility with the .NET adapter before
+release.
 
 ## Release notes and completion
 

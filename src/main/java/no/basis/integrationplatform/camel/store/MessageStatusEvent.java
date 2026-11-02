@@ -12,10 +12,10 @@ import java.util.List;
  * Runtime-neutral terminal lifecycle event emitted by the Kafka sink.
  *
  * @param schemaVersion event schema version
- * @param messageId stable platform message id
+ * @param messageId stable message id
  * @param correlationId optional business correlation id
  * @param integration integration name
- * @param attempt platform attempt number
+ * @param attempt message attempt number
  * @param occurredAt terminal outcome time
  * @param status terminal message status
  * @param steps observed durable step outcomes
@@ -33,7 +33,7 @@ public record MessageStatusEvent(
         String error) {
 
     /**
-     * Converts the adapter's terminal result into the status-event contract.
+     * Converts the adapter's terminal result into a status event.
      *
      * @param result terminal message attempt
      * @return equivalent lifecycle event
@@ -52,9 +52,9 @@ public record MessageStatusEvent(
     }
 
     /**
-     * Per-attempt step observation, contract §7 (DECISION D4). The serialized
-     * shape must match {@code spec/schemas/steps-json.schema.json}:
-     * step, status, idempotencyKey, endpointUri, targetRef, error, occurredAt.
+     * Per-attempt step observation. The serialized shape has exactly these
+     * fields: step, status, idempotencyKey, endpointUri, targetRef, error,
+     * occurredAt.
      *
      * @param step stable step id
      * @param status step outcome

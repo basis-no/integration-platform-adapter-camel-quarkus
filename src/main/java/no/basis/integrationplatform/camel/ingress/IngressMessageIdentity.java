@@ -12,7 +12,7 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.UUID;
 
-/** Derives stable platform message identity before a configured ingress route publishes to Kafka. */
+/** Derives a stable message identity before a configured ingress route publishes to Kafka. */
 @ApplicationScoped
 public class IngressMessageIdentity {
     private static final String JMS_MESSAGE_ID = "JMSMessageID";

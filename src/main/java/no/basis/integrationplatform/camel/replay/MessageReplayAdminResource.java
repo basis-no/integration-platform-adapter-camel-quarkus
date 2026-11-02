@@ -14,7 +14,7 @@ import jakarta.ws.rs.core.Response;
 import java.util.ArrayList;
 import java.util.List;
 
-/** HTTP admin boundary used by the dashboard agent to request audited replay. */
+/** HTTP admin endpoint that an operator's tool can call to request audited replay. */
 @ApplicationScoped
 @Path("/admin/messages")
 public class MessageReplayAdminResource {
@@ -38,8 +38,8 @@ public class MessageReplayAdminResource {
     /**
      * Requests replay of one stored message.
      *
-     * @param messageId stable platform message id
-     * @param requestedBy operator identity supplied by the dashboard
+     * @param messageId stable message id
+     * @param requestedBy operator identity supplied by the caller
      * @param reason audited replay reason
      * @param body optional JSON request body
      * @return replay result or actionable failure response
@@ -146,11 +146,11 @@ public class MessageReplayAdminResource {
      * JSON response returned by the replay admin endpoint.
      *
      * @param status request result
-     * @param messageId stable platform message id
+     * @param messageId stable message id
      * @param replayId replay audit id
      * @param integration integration name
      * @param topic replay target topic
-     * @param attempt new platform attempt
+     * @param attempt new message attempt
      * @param error failure description, when present
      */
     public record ReplayResponse(

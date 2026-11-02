@@ -7,7 +7,7 @@
 - Check whether `basis.messageStore.recordMessage=false` was set.
 - Confirm the effective sink is `postgres`, not `log` or the Kafka status sink.
 - Check for a test profile that disables persistence.
-- Verify the platform schema and datasource binding.
+- Verify the message-store schema and datasource binding.
 
 ## Message Completes but Kafka Offset Does Not Advance
 
@@ -30,7 +30,7 @@ Common fail-fast causes include:
 - normalization route also selected as a lifecycle boundary;
 - normalization without the durable Postgres step store;
 - unsafe polling with missing or multiple declared replicas;
-- contract major mismatch in `bip_contract`.
+- store schema version mismatch in `bip_contract`.
 
 Treat these as configuration errors. Do not bypass them in business routes.
 
@@ -58,7 +58,7 @@ adapter intentionally fails closed when claim-check metadata does not match.
 Uncoordinated polling is rejected with more than one replica. Use `master:`
 with the Kubernetes cluster service and leader-election RBAC, use a broker
 queue with competing consumers, or keep exactly one replica. Do not hardcode
-the deployment count in application properties; the chart injects it.
+the deployment count in application properties; the deployment sets it.
 
 ## Replayed Route Has a Missing Response Body
 
@@ -66,8 +66,8 @@ The skipped write likely produces output required downstream. Classify it as
 `OUTPUT_SIDE_EFFECT` so the adapter checkpoints and restores the response, or
 explicitly redo it when the receiver contract makes repetition safe.
 
-## Kafka Sink Produces Events but Dashboard Is Empty
+## Kafka Sink Produces Events but the Read Model Is Empty
 
 The Kafka sink only publishes terminal events to `bip.message.status`. It does
-not write Postgres. Deploy the separate lifecycle consumer required by the
-future central model, or use the direct Postgres sink for v1.
+not write Postgres. Deploy a separate lifecycle consumer that persists those
+events, or use the direct Postgres sink.
