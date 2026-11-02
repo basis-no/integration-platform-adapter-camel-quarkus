@@ -61,13 +61,13 @@ class MessageStatusEventJsonTest {
         assertTrue(step.get("error").isNull());
         assertEquals("2026-06-14T12:00:01Z", step.get("occurredAt").asText());
 
-        assertFalse(json.has("routeId"), "Camel route id must not leak into the platform status event");
+        assertFalse(json.has("routeId"), "Camel route id must not leak into the status event");
     }
 
     @Test
     void stepShapeMatchesStepsJsonSchemaFieldSet() throws Exception {
-        // Contract §7 (DECISION D4): steps_json entries carry exactly the fields
-        // defined in spec/schemas/steps-json.schema.json (additionalProperties: false).
+        // steps_json entries carry exactly the documented step fields and no
+        // others.
         MessageAttemptResult result = new MessageAttemptResult(
                 1,
                 "message-123",

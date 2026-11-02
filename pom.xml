@@ -12,8 +12,7 @@
   <name>Camel Quarkus Adapter</name>
   <description>Camel Quarkus runtime adapter for message-store integration:
     Kafka consume with manual commit, retry/DLQ, step and
-    idempotency ledger, journaling and message resend, per message-store
-    contract v1.</description>
+    idempotency ledger, journaling and message resend.</description>
   <url>https://github.com/basis-no/integration-platform-adapter-camel-quarkus</url>
 
   <licenses>
@@ -218,7 +217,7 @@
 
   <profiles>
     <!-- Signed, source+javadoc-complete publication to Maven Central via the
-         Sonatype Central Portal (ADR-003). Activated by the publish workflow;
+         Sonatype Central Portal. Activated by the publish workflow;
          plain builds never need GPG. -->
     <profile>
       <id>release</id>

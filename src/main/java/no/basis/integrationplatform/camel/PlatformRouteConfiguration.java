@@ -125,7 +125,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     }
 
     /**
-     * Contract §5: in-process retry diagnostics are reported via
+     * In-process retry diagnostics are reported via
      * auto_redelivered / auto_redelivery_count / auto_redelivery_max. Camel's
      * RedeliveryErrorHandler removes the redelivery headers from the message
      * before delivering an exhausted exchange to the dead letter channel, so
@@ -166,7 +166,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                     exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
         }
 
-        // Contract §8: the DLQ record must carry the ORIGINAL consumed payload,
+        // The DLQ record must carry the ORIGINAL consumed payload,
         // not a mid-transformation body. Restore it from the capture made at
         // route start when the payload was capturable; metadata_only /
         // uncapturable bodies are parked as-is.

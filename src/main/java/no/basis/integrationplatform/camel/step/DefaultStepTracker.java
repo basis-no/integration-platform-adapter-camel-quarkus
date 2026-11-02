@@ -137,7 +137,7 @@ public class DefaultStepTracker implements StepTracker {
         }
         boolean alreadyDelivered = stepOutcomeStore.wasDelivered(idempotencyKey);
 
-        // Contract §9 (DECISION D1): steps listed in x-bip-redo-steps MUST be
+        // Steps listed in x-bip-redo-steps MUST be
         // re-executed even when the durable ledger already has them DELIVERED.
         boolean redoRequested = redoSteps.contains(stepId) || redoSteps.contains(idempotencyKey);
         boolean skip = alreadyDelivered && !redoRequested;
@@ -202,7 +202,7 @@ public class DefaultStepTracker implements StepTracker {
     }
 
     /**
-     * Contract §3 (DECISION D1): {@code x-bip-redo-steps} is a JSON array of step
+     * {@code x-bip-redo-steps} is a JSON array of step
      * ids. A malformed value is logged as a warning and treated as empty; it must
      * never fail message processing. The warning names the header only: the value
      * comes from the message, and the parser's error would repeat it.

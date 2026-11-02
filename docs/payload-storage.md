@@ -11,7 +11,7 @@ retention and payload retention are separate policies.
 | `tiered` | Postgres `bytea` | S3-compatible object | yes within limits/retention |
 | `metadata-only` | metadata only | metadata only | no |
 
-The library default is `postgres-inline` for compatibility. Platform production
+The library default is `postgres-inline` for compatibility. Production
 configuration should select `tiered`; adding the dependency should not
 silently require local S3 credentials.
 
@@ -29,7 +29,7 @@ behavior. Do not raise it to accommodate large business payloads. In tiered
 mode, exceeding the inline threshold selects object storage; it does not make
 the message metadata-only.
 
-The object limit is a deliberate platform ceiling, not an invitation to put
+The object limit is a deliberate ceiling, not an invitation to put
 multi-gigabyte bytes into a Kafka record. Kafka receives a compact claim-check
 document. The consuming adapter resolves the object into a streaming body.
 
@@ -42,18 +42,23 @@ or unavailable required objects fail processing; success is not recorded and a
 consumed offset is not committed.
 
 Object storage failure during required capture also fails the message. The
-platform must not claim replayability without durable bytes.
+adapter never claims replayability without durable bytes.
 
 ## Retention
 
-Replay does not extend the original payload expiry. Cleanup removes inline
-bytes or the S3 object, sets `payload_deleted_at`, and marks the message
-non-replayable while retaining lifecycle audit. Bucket lifecycle rules are a
-safety net for orphaned objects, not the database source of truth.
+With the `postgres` sink, a replay captures an inline payload again and resets
+its expiry, capped at first receipt plus twice the retention. First receipt is
+the earliest outcome this integration recorded for the message. An S3 object
+payload keeps its first expiry together with its object.
+
+Cleanup removes inline bytes or the S3 object, sets `payload_deleted_at`, and
+marks the message non-replayable while retaining lifecycle audit. Bucket
+lifecycle rules are a safety net for orphaned objects, not the database source
+of truth.
 
 ## S3 Configuration
 
-The adapter uses the Quarkus-managed S3 client. The platform supplies bucket,
+The adapter uses the Quarkus-managed S3 client. The deployment supplies bucket,
 region, credentials/workload identity, encryption, endpoint policy, and any
 path-style setting. Local tests can use MinIO with an explicit endpoint.
 Automatic LocalStack Dev Services are disabled by the adapter.

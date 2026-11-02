@@ -182,7 +182,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             throw new IllegalArgumentException(
                     "Ingress normalization route '" + routeId + "' must use routeConfigurationId="
                             + PlatformRouteConfiguration.INGRESS_NORMALIZATION
-                            + " so source failures propagate without platform DLQ parking");
+                            + " so source failures propagate without adapter DLQ parking");
         }
         ingressReplicaSafety.validate(routeId, definition);
         if (boundarySelector.kind(route) == MessageBoundaryKind.HTTP) {

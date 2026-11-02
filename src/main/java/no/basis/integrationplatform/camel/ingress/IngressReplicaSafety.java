@@ -14,13 +14,13 @@ import java.util.Optional;
  */
 @ApplicationScoped
 public class IngressReplicaSafety {
-    /** Platform property containing the Deployment replica count. */
+    /** Deployment-supplied property containing the Kubernetes Deployment replica count. */
     public static final String PROPERTY = "basis.message-store.deployment-replicas";
 
     private final Optional<Integer> deploymentReplicas;
 
     /**
-     * Creates the startup validator from the platform-supplied replica count.
+     * Creates the startup validator from the deployment-supplied replica count.
      *
      * @param deploymentReplicas declared Kubernetes Deployment replica count
      */
@@ -59,7 +59,7 @@ public class IngressReplicaSafety {
 
         int replicas = deploymentReplicas.orElseThrow(() -> new IllegalArgumentException(
                 "Ingress normalization route '" + routeId + "' uses uncoordinated source '" + sourceUri
-                        + "', but " + PROPERTY + " is not set. The platform must declare the deployment replica "
+                        + "', but " + PROPERTY + " is not set. The deployment must declare its replica "
                         + "count so the adapter can prevent duplicate polling."));
         if (replicas > 1) {
             throw new IllegalArgumentException(

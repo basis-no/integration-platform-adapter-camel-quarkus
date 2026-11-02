@@ -12,7 +12,7 @@ The global route configuration applies unless a route selects a variant:
 | `bip-ingress-normalization` | 3 | 1 second | propagate to source |
 
 Retries use exponential backoff. Automatic redelivery does not increment the
-platform attempt; it adds diagnostics to that attempt.
+message attempt; it adds diagnostics to that attempt.
 
 The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
 client inside Camel's `http` component (Apache HttpClient 5) also retries by
@@ -88,7 +88,8 @@ writes a `bip_message_replay_audit` row, then publishes to the configured input
 topic. It retains the message id and envelope, sets `x-bip-replay=true`, and
 sets `x-bip-attempt` to the previous attempt plus one.
 
-The dashboard supplies operator identity and reason through headers or the JSON
+The caller, typically an operator's tool, supplies operator identity and reason
+through the `x-dashboard-user` and `x-dashboard-reason` headers or the JSON
 request body. The default target pattern is `bip.%s.in`, where `%s` is the
 stored integration name.
 
@@ -122,9 +123,9 @@ gets the header back; the next `to` or `toD` and DLQ parking remove it again.
 acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
 the header only, not its value.
 
-## Contract Startup Gate
+## Schema Version Startup Gate
 
-With the Postgres sink, startup reads the highest contract major from
-`bip_contract`. A different major fails startup. A missing table or empty row
-uses the contract-v1 rollout grace with a prominent warning; other database
-errors are not treated as a missing schema.
+With the Postgres sink, startup reads the highest store schema version
+(`contract_major`) from `bip_contract`. A version other than 1 fails startup. A
+missing table or empty row is treated as version 1 with a prominent warning;
+other database errors are not treated as a missing schema.

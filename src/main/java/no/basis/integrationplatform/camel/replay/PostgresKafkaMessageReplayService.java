@@ -333,7 +333,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
     }
 
     /**
-     * Contract §3 (DECISION D1): the {@code x-bip-redo-steps} wire format is the
+     * The {@code x-bip-redo-steps} wire format is the
      * same JSON array written to the {@code redo_steps} audit column. The header
      * is omitted when no redo was requested.
      */

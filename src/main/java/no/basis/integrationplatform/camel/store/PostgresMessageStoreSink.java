@@ -148,7 +148,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     /**
      * Creates a direct Postgres outcome sink.
      *
-     * @param dataSource platform message-store datasource
+     * @param dataSource message-store datasource
      */
     public PostgresMessageStoreSink(DataSource dataSource) {
         this(dataSource, new MessageStatusEventJson());
@@ -156,7 +156,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     /**
      * Creates the sink.
-     * @param dataSource platform message-store datasource
+     * @param dataSource message-store datasource
      * @param retention configured payload retention; a replay's new inline expiry is capped at
      *        first receipt plus twice this duration
      */

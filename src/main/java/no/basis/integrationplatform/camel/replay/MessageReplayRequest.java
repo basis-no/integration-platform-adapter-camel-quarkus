@@ -5,7 +5,7 @@ import java.util.List;
 /**
  * Operator context for one audited replay request.
  *
- * @param messageId stable platform message id
+ * @param messageId stable message id
  * @param requestedBy operator identity
  * @param reason audited replay reason
  * @param redoSteps side-effect step ids that must execute again
@@ -23,7 +23,7 @@ public record MessageReplayRequest(
     /**
      * Creates a replay request without optional operator context.
      *
-     * @param messageId stable platform message id
+     * @param messageId stable message id
      * @return replay request
      */
     public static MessageReplayRequest forMessage(String messageId) {

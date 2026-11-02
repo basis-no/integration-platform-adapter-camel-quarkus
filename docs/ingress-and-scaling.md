@@ -4,7 +4,7 @@
 
 | Source shape | Recommended boundary | Replay | Replica rule |
 | --- | --- | --- | --- |
-| Kafka topic | Kafka consumer route | Full v1 | same consumer group |
+| Kafka topic | Kafka consumer route | full | same consumer group |
 | File/FTP/SFTP | normalize to canonical Kafka topic | from Kafka boundary | one replica or `master:` |
 | Timer/database poll | normalize each real source item to Kafka | from Kafka boundary | one replica or `master:` |
 | JMS/SJMS queue | normalize to Kafka | from Kafka boundary | broker competing consumers |
@@ -18,9 +18,10 @@ replicas can process separate partitions concurrently; records with the same
 key remain in one partition and retain partition order.
 
 A different consumer group is an independent subscriber and receives its own
-delivery of every relevant record. The current v1 model is a single-delivery
+delivery of every relevant record. The current model is a single-delivery
 profile and must not be used to represent several independent receivers under
-one message id without the planned delivery-identity contract.
+one message id; that needs a separate delivery identity, which the adapter does
+not provide.
 
 An HTTP intake that publishes to Kafka must remove the caller's headers first,
 for example with `removeHeaders("*")` and then setting only the headers the
@@ -95,8 +96,8 @@ replay starts at Kafka and does not reread the original file, queue, or poll.
 
 ## Singleton Polling
 
-The platform chart injects `basis.message-store.deployment-replicas` from the
-Kubernetes Deployment. An uncoordinated polling route is accepted only with one
+The deployment sets `basis.message-store.deployment-replicas` from the
+Kubernetes Deployment's replica count. An uncoordinated polling route is accepted only with one
 declared replica. With multiple replicas, wrap the source in Camel `master:`
 and configure `camel-quarkus-kubernetes-cluster-service` plus its Kubernetes
 leader-election permissions:
@@ -123,7 +124,7 @@ basis.message-store.sink=postgres
 ```
 
 Success records `COMPLETED`; technical or HTTP 4xx/5xx failure records `FAILED`
-and propagates to the caller. Payload is metadata-only and the dashboard must
-not offer resend. This is an implemented Camel preview, not certified
-cross-runtime contract v1, and cannot be mixed with adapter-managed Kafka
-boundaries in the current global-policy implementation.
+and propagates to the caller. Payload is metadata-only, so operator tools must
+not offer resend. This is an implemented Camel-only preview, not part of the
+Kafka lifecycle shared with the .NET adapter, and cannot be mixed with
+adapter-managed Kafka boundaries in the current global-policy implementation.

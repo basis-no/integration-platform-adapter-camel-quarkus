@@ -475,7 +475,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return attempt == null || attempt < 1 ? 1 : attempt;
     }
 
-    // Contract §5 retry diagnostics. The redelivery headers survive on the
+    // Retry diagnostics. The redelivery headers survive on the
     // retry-then-success path but are stripped by Camel's error handler before
     // a dead-letter delivery, so the properties captured during redelivery
     // (PlatformRouteConfiguration#captureRedeliveryDiagnostics) take precedence.
