@@ -2,8 +2,12 @@ package no.basis.integrationplatform.camel.step;
 
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import org.apache.camel.model.LoopDefinition;
+import org.apache.camel.model.MulticastDefinition;
 import org.apache.camel.model.ProcessorDefinition;
+import org.apache.camel.model.RecipientListDefinition;
 import org.apache.camel.model.RouteDefinition;
+import org.apache.camel.model.SplitDefinition;
 import org.apache.camel.util.URISupport;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
@@ -20,6 +24,9 @@ import org.apache.camel.processor.SendDynamicProcessor;
 import org.apache.camel.processor.SendProcessor;
 import org.apache.camel.spi.InterceptStrategy;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
+import org.apache.camel.support.processor.DelegateAsyncProcessor;
+
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Wraps endpoint-send processors with automatic classification and step tracking. */
 @ApplicationScoped
@@ -30,6 +37,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
     private final StepTracker stepTracker;
     private final boolean allowGeneratedStepIds;
+    private final AtomicLong scopes = new AtomicLong();
 
     /**
      * Creates the intercept strategy for programmatic use: generated step ids log a warning.
@@ -63,7 +71,9 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         EndpointSend endpointSend = endpointSend(definition, target);
         if (endpointSend == null) {
-            return target;
+            String kind = scopeKind(definition);
+            return kind == null ? target
+                    : new PartsScope(AsyncProcessorConverterHelper.convert(target), StepVisits.marker(kind, scopes.incrementAndGet()));
         }
         checkStepId(definition, endpointSend);
 
@@ -85,6 +95,55 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         int colon = uri.indexOf(':');
         String scheme = colon < 0 ? uri : uri.substring(0, colon);
         return scheme.contains("$") || scheme.contains("{") || scheme.equalsIgnoreCase("language");
+    }
+
+    /** The kind of a node whose parts Camel runs as copies of the exchange, or as iterations of it. */
+    private static String scopeKind(NamedNode definition) {
+        if (definition instanceof SplitDefinition) return StepVisits.SPLIT;
+        if (definition instanceof LoopDefinition) return StepVisits.LOOP;
+        if (definition instanceof MulticastDefinition) return StepVisits.MULTICAST;
+        if (definition instanceof RecipientListDefinition<?>) return StepVisits.RECIPIENT_LIST;
+        return null;
+    }
+
+    /**
+     * Shares one record of the attempt's step visits with the parts of a split, loop,
+     * multicast or recipient list, and marks the exchange so that each part gets its own
+     * path. Camel may copy a part's properties back afterwards, so the caller's own record
+     * and path are restored. Only these adapter properties change: the parts, the outcome
+     * and the error handling are Camel's.
+     */
+    private static final class PartsScope extends DelegateAsyncProcessor {
+        private final String marker;
+
+        private PartsScope(AsyncProcessor processor, String marker) {
+            super(processor);
+            this.marker = marker;
+        }
+
+        @Override
+        public boolean process(Exchange exchange, AsyncCallback callback) {
+            StepVisits visits = StepVisits.of(exchange);
+            String parent = StepVisits.path(exchange);
+            String path = exchange.getProperty(StepVisits.PATH, String.class);
+            String scope = exchange.getProperty(StepVisits.SCOPE, String.class);
+            exchange.setProperty(StepVisits.PATH, parent);
+            exchange.setProperty(StepVisits.SCOPE, marker);
+            return super.process(exchange, doneSync -> {
+                exchange.setProperty(StepVisits.PROPERTY, visits);
+                restore(exchange, StepVisits.PATH, path);
+                restore(exchange, StepVisits.SCOPE, scope);
+                callback.done(doneSync);
+            });
+        }
+
+        private static void restore(Exchange exchange, String name, String value) {
+            if (value == null) {
+                exchange.removeProperty(name);
+            } else {
+                exchange.setProperty(name, value);
+            }
+        }
     }
 
     /**

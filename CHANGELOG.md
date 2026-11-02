@@ -29,6 +29,14 @@
 - Document the HTTP client's own 503/429 retry inside one Camel attempt, the
   Camel 4 HTTP timeout options (`socketTimeout` is not one), and what a replay
   does after a timed-out call whose effect happened.
+- A send skipped because another split part, loop iteration or multicast or
+  recipient list branch of the same attempt already sent its step key is
+  logged at ERROR, once per skipped send, with the step, the input route, the
+  kind of part and the safe forms, and no message content or header values.
+  Only the log changes; a skip of an earlier attempt's delivery stays at INFO.
+  See
+  [Steps and idempotency](docs/steps-and-idempotency.md#splitting-before-a-side-effect-send).
+  Same rule as adapter 0.3.6.
 - A replay resets an inline payload's expiry, capped at first receipt plus twice
   the retention, instead of keeping the first expiry. First receipt is the
   earliest outcome this integration recorded for the message. Object payloads
