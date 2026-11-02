@@ -26,7 +26,16 @@ An HTTP intake that publishes to Kafka must remove the caller's headers first,
 for example with `removeHeaders("*")` and then setting only the headers the
 message needs. Camel copies every request header onto the exchange, and the
 Kafka producer publishes them with the message, including `Authorization`, API
-keys and cookies, unmasked. Anyone who can read the topic can read them. A
+keys and cookies, unmasked. Anyone who can read the topic can read them. A `to`
+or `toD` to `kafka:` that would publish a header with a credential-like name
+(`Authorization`, cookies, authentication challenges, and names containing
+secret, token, password, credential, session, signature or auth, or ending in
+`-key` or `_key`; not `x-bip-*` or `Idempotency-Key`) logs a warning once per
+route and header name. The warning
+names the header, never its value, and says how to remove it. What is published
+does not change. Headers that the endpoint's header filter strategy drops are
+not reported, nor are values that Camel's Kafka producer does not write as they
+are: only text, byte arrays, `Long`, `Integer`, `Double` and `Boolean` count. A
 tracked send through Camel's `http` component does not forward credential-like
 headers that still hold a consumed record's bytes, and logs a warning that names
 the header, never its value. A `toD` that chooses its component only when it
