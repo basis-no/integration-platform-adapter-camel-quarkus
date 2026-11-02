@@ -77,6 +77,21 @@ captured payload to `basis.message-store.dlq-uri`, preserves the envelope, adds
 `x-bip-error` and `x-bip-dlq-at`, records `DLQ`, and only then commits the input
 offset. A replay's `x-bip-redo-steps` is not carried; see [Redo Steps](#redo-steps).
 
+The message counts as parked only after the DLQ endpoint accepted the record; a
+Kafka producer with Camel's default `requestRequiredAcks=all` returns once the
+broker acknowledged it. The publish runs in the
+adapter's `bip-confirmed-dead-letter` route. If it fails, the adapter records
+`FAILED`, does not commit the offset and leaves the exchange failed. With the
+adapter's default `camel.component.kafka.break-on-first-error=true`, the
+consumer then reads the record again before the partition's later records, so
+the partition waits until the DLQ accepts the record. Each attempt logs at
+ERROR. The same applies when an application's own `onException` keeps a
+failure from reaching the adapter's dead letter channel: the message is
+recorded `FAILED`, not committed, and read again. A record that the DLQ endpoint
+can never accept, for example one above the DLQ topic's size limit, keeps its
+partition waiting until an operator fixes the DLQ or moves the consumer group
+past it.
+
 The historical Kafka DLQ record remains after recovery. Postgres is
 authoritative for current lifecycle state, so a later successful replay changes
 the message to `COMPLETED` while retaining both attempts and replay audit.

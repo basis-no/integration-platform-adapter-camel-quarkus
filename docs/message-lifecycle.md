@@ -17,18 +17,22 @@ Kafka record
   -> commit consumed Kafka offset only after required durable work succeeds
 ```
 
-A persistence or required DLQ failure prevents the managed Kafka commit. Kafka
-can then redeliver the record, which is why side effects still require stable
-idempotency.
+A persistence failure or a failed DLQ publish prevents the managed Kafka commit
+and leaves the exchange failed. With `camel.component.kafka.break-on-first-error=true`,
+the adapter's default, the consumer reads the record again before the
+partition's later records. Kafka can also redeliver a record after a rebalance,
+which is why side effects still require stable idempotency.
 
 ## Status and Attempt Semantics
 
 The Camel adapter records one terminal outcome per message attempt:
 
 - `COMPLETED`: route processing and required outcome recording succeeded.
-- `DLQ`: retries were exhausted and the record was parked successfully.
+- `DLQ`: retries were exhausted and the DLQ endpoint accepted the record.
 - `FAILED`: terminal failure was recorded without a Kafka DLQ, as used by the
-  explicit non-Kafka audit-only preview.
+  explicit non-Kafka audit-only preview. At a Kafka boundary, `FAILED` means the
+  failure was not parked, for example because the DLQ publish failed; the
+  offset is not committed and the record is read again.
 - `RECEIVED`: reserved for a future capture layer; the Camel terminal flow
   does not emit it.
 
@@ -85,6 +89,7 @@ business message. Before any external endpoint send, set:
 ```
 
 No message, attempt, status event, or step outcome is then recorded. A Kafka
-record is still committed after successful suppressed processing. The adapter
-does not infer suppression from a null or empty body because an empty Kafka
-payload can be a legitimate business message.
+record is still committed after successful suppressed processing, or once its
+failure was parked; a suppressed record that failed without being parked is not
+committed. The adapter does not infer suppression from a null or empty body
+because an empty Kafka payload can be a legitimate business message.

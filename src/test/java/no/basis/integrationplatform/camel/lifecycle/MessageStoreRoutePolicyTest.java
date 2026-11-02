@@ -28,6 +28,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -320,6 +321,61 @@ class MessageStoreRoutePolicyTest {
         // Then the message-store sink receives a FAILED outcome with the error text.
         assertEquals(MessageStatus.FAILED, sink.result.status());
         assertEquals("bad payload", sink.result.error());
+    }
+
+    @Test
+    void failedKafkaOutcomeIsRecordedButNotCommitted() {
+        // Given an exchange that is still failed: it was neither completed nor parked.
+        RecordingSink sink = new RecordingSink();
+        RecordingManualCommit commit = new RecordingManualCommit(sink);
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
+        IllegalStateException publishFailure = new IllegalStateException("DLQ unavailable");
+        exchange.setException(publishFailure);
+
+        policy.onExchangeDone(route("order-pipeline"), exchange);
+
+        // Then the outcome is FAILED, the offset stays uncommitted and the exchange stays failed,
+        // so the Kafka consumer reads the record again.
+        assertEquals(MessageStatus.FAILED, sink.result.status());
+        assertFalse(commit.committed);
+        assertSame(publishFailure, exchange.getException());
+    }
+
+    @Test
+    void ineligibleExchangeThatFailedIsNotCommitted() {
+        RecordingSink sink = new RecordingSink();
+        sink.recordedBeforeCommit = true;
+        RecordingManualCommit commit = new RecordingManualCommit(sink);
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.setProperty(PlatformExchangeProperties.RECORD_MESSAGE, false);
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
+        exchange.setException(new IllegalStateException("DLQ unavailable"));
+
+        policy.onExchangeDone(route("order-pipeline"), exchange);
+
+        assertEquals(0, sink.recordCalls());
+        assertFalse(commit.committed);
+    }
+
+    @Test
+    void commitFailureAfterRecordingSaysTheOutcomeWasRecorded() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT,
+                (KafkaManualCommit) () -> { throw new IllegalStateException("rebalance in progress"); });
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                () -> policy.onExchangeDone(route("order-pipeline"), exchange));
+
+        assertEquals("Message outcome was recorded but Kafka offset commit failed", thrown.getMessage());
+        assertEquals(1, sink.recordCalls());
+        assertSame(thrown, exchange.getException());
     }
 
     @Test

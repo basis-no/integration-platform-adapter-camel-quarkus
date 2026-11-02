@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- A Kafka input is committed only after it completed or the DLQ endpoint
+  accepted its record. Before, a failed DLQ publish was recorded as `DLQ` and
+  the offset committed, so the message was acknowledged without being parked;
+  the same happened when an application's `onException` kept a failure from
+  reaching the adapter's dead letter channel. The DLQ publish now runs in the
+  adapter's `bip-confirmed-dead-letter` route, and the message counts as parked
+  only after it. Otherwise the adapter records `FAILED`, does not commit the
+  offset and leaves the exchange failed. The new default
+  `camel.component.kafka.break-on-first-error=true` makes the consumer read
+  such a record again before the partition's later records, whose commit
+  would otherwise move past it; this also covers a record whose outcome could
+  not be journaled. The partition waits until the DLQ accepts the record, and
+  each attempt logs at ERROR. A failed offset commit after a recorded outcome
+  is reported as such. Same rule as adapter 0.3.6.
+  Upgrade: keep `break-on-first-error=true`. A test that adds
+  `PlatformRouteConfiguration` to a hand-built `CamelContext` must also add
+  `PlatformDeadLetterRoute`; Quarkus applications get both.
 - Parity with adapter 0.3.6: a `to` or `toD` send to a non-internal endpoint
   without an explicit id fails startup (emergency flag `basis.message-store.step-ids.emergency-allow-generated`),
   and keeping the generated id as the explicit id, such as `id: to1`, keeps the

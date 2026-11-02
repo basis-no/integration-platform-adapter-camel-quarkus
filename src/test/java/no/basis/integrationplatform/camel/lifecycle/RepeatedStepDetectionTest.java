@@ -1,6 +1,7 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
 import no.basis.integrationplatform.camel.LogCapture;
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
@@ -382,6 +383,7 @@ class RepeatedStepDetectionTest {
         context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(new DefaultStepTracker(stepStore,
                 sideEffects("send-line,send-flaky,fetch-batch,mark-processed"))));
         context.addRoutes(new PlatformRouteConfiguration());
+        context.addRoutes(new PlatformDeadLetterRoute());
         context.addRoutes(new RouteBuilder() {
             public void configure() {
                 from("direct:parking").routeId("parking").errorHandler(noErrorHandler())

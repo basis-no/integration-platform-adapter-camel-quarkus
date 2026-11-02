@@ -50,6 +50,7 @@ class HttpRedeliveryDiagnosticsTest {
             http.setAutomaticRetriesDisabled(clientRetriesDisabled);
             context.addComponent("http", http);
             context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
             context.addRoutes(new RouteBuilder() {
                 public void configure() {
                     from("direct:input").routeId("input")

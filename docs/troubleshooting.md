@@ -12,7 +12,11 @@
 ## Message Completes but Kafka Offset Does Not Advance
 
 - Check sink, DLQ, and step-store errors before looking at the business route.
-- Confirm `allow-manual-commit=true` and `auto-commit-enable=false`.
+- A message recorded `FAILED` at a Kafka boundary was not parked, for example
+  because the DLQ publish failed. Its offset is not committed and the consumer
+  reads it again until the DLQ accepts it; the ERROR log names the message.
+- Confirm `allow-manual-commit=true`, `auto-commit-enable=false` and
+  `break-on-first-error=true`.
 - Check whether the guarded `no-commit` test profile is active.
 - A running no-commit consumer advances its in-memory position; inspect broker
   group offsets rather than expecting an immediate duplicate delivery.

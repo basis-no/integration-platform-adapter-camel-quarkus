@@ -28,10 +28,11 @@ class PlatformRouteConfigurationTest {
         Instant before = Instant.now();
 
         // When the dead letter channel prepares the exchange for parking.
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
-        // Then the DLQ record carries the original consumed payload plus diagnostics.
-        assertTrue(Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class)));
+        // Then the DLQ record carries the original consumed payload plus diagnostics. It is not
+        // parked until the dead-letter route has published it.
+        assertEquals(Boolean.FALSE, exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
         assertEquals("{\"original\":true}",
                 new String(exchange.getMessage().getBody(byte[].class), StandardCharsets.UTF_8));
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
@@ -50,7 +51,7 @@ class PlatformRouteConfigurationTest {
         exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"post-receiver\"]".getBytes(StandardCharsets.UTF_8));
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         assertNull(exchange.getMessage().getHeader(PlatformHeaders.REDO_STEPS));
     }
@@ -62,7 +63,7 @@ class PlatformRouteConfigurationTest {
         exchange.getMessage().setBody("stream-derived body");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         assertEquals("stream-derived body", exchange.getMessage().getBody());
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
@@ -77,7 +78,7 @@ class PlatformRouteConfigurationTest {
         exchange.getMessage().setBody("transformed body");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("target unavailable"));
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         assertEquals("{\"storage\":\"s3_object\"}",
                 new String(exchange.getMessage().getBody(byte[].class), StandardCharsets.UTF_8));
@@ -101,7 +102,7 @@ class PlatformRouteConfigurationTest {
         message.setHeader("kafka.KEY", "order-1");
         message.setHeader("Content-Type", "application/xml");
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         for (String name : java.util.List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
                 "x-functions-key", "X-Access-Key", "x_client_key", "Set-Cookie", "WWW-Authenticate", "X-Request-Token-Echo")) {
@@ -123,7 +124,7 @@ class PlatformRouteConfigurationTest {
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "derived-downstream-id");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("broker unavailable"));
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         assertEquals("input-message", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
     }
@@ -132,7 +133,7 @@ class PlatformRouteConfigurationTest {
     void dlqParkingWithoutACapturedInputKeepsTheMessageId() {
         Exchange exchange = exchange();
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
         assertEquals("message-123", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
     }
 
@@ -141,7 +142,7 @@ class PlatformRouteConfigurationTest {
         Exchange exchange = exchange();
         exchange.setException(new IllegalStateException((String) null));
 
-        configuration.markDlqParked(exchange);
+        configuration.prepareDlq(exchange);
 
         assertEquals(IllegalStateException.class.getName(), exchange.getMessage().getHeader(PlatformHeaders.ERROR));
     }

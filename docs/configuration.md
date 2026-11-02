@@ -13,7 +13,7 @@ into integration repositories.
 | `basis.message-store.step-outcome-store` | `BASIS_MESSAGE_STORE_STEP_OUTCOME_STORE` | `noop`, `postgres`; default `noop` | Deployment profile. Production replay protection requires `postgres`. |
 | `basis.message-store.test-profile` | `BASIS_MESSAGE_STORE_TEST_PROFILE` | `disabled`, `no-persistence`, `no-commit`, `no-persistence-no-commit`; default `disabled` | Test-only; non-default values are unsafe in production. |
 | `basis.message-store.allow-test-profiles` | `BASIS_MESSAGE_STORE_ALLOW_TEST_PROFILES` | boolean; default `false` | Explicit test guard. Production deployments should keep `false`. |
-| `basis.message-store.dlq-uri` | `BASIS_MESSAGE_STORE_DLQ_URI` | Camel URI; default `kafka:bip.message.dlq` | Deployment-owned terminal parking endpoint. |
+| `basis.message-store.dlq-uri` | `BASIS_MESSAGE_STORE_DLQ_URI` | Camel URI; default `kafka:bip.message.dlq` | Deployment-owned terminal parking endpoint. The adapter records `DLQ` and commits only after this endpoint accepted the record. |
 | `basis.message-store.payload.mode` | `BASIS_MESSAGE_STORE_PAYLOAD_MODE` | `tiered`, `postgres-inline`, `metadata-only`; default `postgres-inline` | Deployment profile. Production should use `tiered`. |
 | `basis.message-store.payload.inline-threshold-bytes` | `BASIS_MESSAGE_STORE_PAYLOAD_INLINE_THRESHOLD_BYTES` | `0..16777216`; default `1048576` | Deployment-owned threshold; do not tune per integration. |
 | `basis.message-store.payload.max-bytes` | `BASIS_MESSAGE_STORE_PAYLOAD_MAX_BYTES` | bytes; unset | Deprecated alias for the inline threshold. The new property wins. |
@@ -51,6 +51,7 @@ These are integration/runtime dependencies rather than adapter-owned options:
 | `kafka.bootstrap.servers` / `KAFKA_BOOTSTRAP_SERVERS` | Required for Kafka boundaries, replay, DLQ, and Kafka sink. |
 | `camel.component.kafka.auto-commit-enable=false` | Adapter default; must remain false. |
 | `camel.component.kafka.allow-manual-commit=true` | Adapter default; must remain true. |
+| `camel.component.kafka.break-on-first-error=true` | Adapter default; must remain true. A record that was not committed is read again before the partition's later records, whose commit would otherwise move past it. |
 | `quarkus.datasource.jdbc.url` / `QUARKUS_DATASOURCE_JDBC_URL` | Required by Postgres sink/store/replay. |
 | `quarkus.datasource.username` / `QUARKUS_DATASOURCE_USERNAME` | Message-store database identity. |
 | `quarkus.datasource.password` / `QUARKUS_DATASOURCE_PASSWORD` | Secret binding when password auth is used. |

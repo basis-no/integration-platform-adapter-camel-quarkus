@@ -118,8 +118,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     @Override
     public void onExchangeDone(Route route, Exchange exchange) {
         if (recordingSuppressed(exchange)) {
-            commitKafkaOffsetIfPresent(exchange);
             LOG.debug("Skipped message-store recording for an ineligible exchange on route {}", route.getRouteId());
+            acknowledge(exchange);
             return;
         }
 
@@ -127,7 +127,6 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
         try {
             sink.record(result);
-            commitKafkaOffsetIfPresent(exchange);
         } catch (Exception e) {
             String consequence = boundaryKind == MessageBoundaryKind.KAFKA
                     ? "Kafka offset was not committed"
@@ -144,6 +143,14 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 exchange.getMessage().setHeader(Exchange.CONTENT_TYPE, "text/plain");
                 exchange.getMessage().setBody("Message outcome could not be recorded");
             }
+            throw failure;
+        }
+        try {
+            acknowledge(exchange);
+        } catch (Exception e) {
+            IllegalStateException failure = new IllegalStateException(
+                    "Message outcome was recorded but Kafka offset commit failed", e);
+            exchange.setException(failure);
             throw failure;
         }
     }
@@ -192,6 +199,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private List<StepResult> steps(Exchange exchange) {
         List<StepResult> steps = exchange.getProperty(PlatformExchangeProperties.STEPS, List.class);
         return steps == null ? List.of() : List.copyOf(steps);
+    }
+
+    /**
+     * Commits a Kafka input that completed or whose DLQ parking was confirmed. An input that
+     * is still failed was neither: its offset is not committed, and its exchange stays failed,
+     * so the Kafka consumer reads the record again.
+     */
+    private void acknowledge(Exchange exchange) {
+        if (boundaryKind == MessageBoundaryKind.KAFKA && exchange.getException() != null && !dlqParked(exchange)) {
+            LOG.error("Message {} failed without confirmed DLQ parking; its Kafka offset was not committed",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+            return;
+        }
+        commitKafkaOffsetIfPresent(exchange);
     }
 
     private void commitKafkaOffsetIfPresent(Exchange exchange) {

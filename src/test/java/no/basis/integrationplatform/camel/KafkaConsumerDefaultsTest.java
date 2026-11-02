@@ -37,6 +37,8 @@ class KafkaConsumerDefaultsTest {
             assertEquals(PollOnError.RECONNECT, component.getConfiguration().getPollOnError());
             assertFalse(component.getConfiguration().isAutoCommitEnable());
             assertTrue(component.getConfiguration().isAllowManualCommit());
+            // A failed record is read again before the next one, whose commit would move past it.
+            assertTrue(component.getConfiguration().isBreakOnFirstError());
         }
     }
 }

@@ -29,7 +29,10 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     public static final String NO_RETRY = "ip-no-retry";
     /** Named source-to-Kafka profile that propagates exhausted failure. */
     public static final String INGRESS_NORMALIZATION = "bip-ingress-normalization";
-    private static final String DLQ_URI = "{{basis.message-store.dlq-uri:kafka:bip.message.dlq}}";
+    /** The dead-letter channel's endpoint: the adapter's route that confirms parking. */
+    static final String DLQ_URI = "direct:" + PlatformDeadLetterRoute.ROUTE_ID;
+    /** The configured parking endpoint that the dead-letter route publishes to. */
+    static final String DLQ_ENDPOINT = "{{basis.message-store.dlq-uri:kafka:bip.message.dlq}}";
     private final MessageFailureMode failureMode;
 
     /** Creates the default Kafka DLQ configuration. */
@@ -61,8 +64,9 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
         routeConfiguration()
                 .errorHandler(deadLetterChannel(DLQ_URI)
+                        .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::markDlqParked)
+                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
                         .useExponentialBackOff()
@@ -70,8 +74,9 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
         routeConfiguration(SLOW_BACKEND)
                 .errorHandler(deadLetterChannel(DLQ_URI)
+                        .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::markDlqParked)
+                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(6)
                         .redeliveryDelay(5000)
                         .useExponentialBackOff()
@@ -79,8 +84,9 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
         routeConfiguration(NO_RETRY)
                 .errorHandler(deadLetterChannel(DLQ_URI)
+                        .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::markDlqParked)
+                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(0));
 
         ingressNormalizationConfiguration();
@@ -146,8 +152,13 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
     }
 
-    void markDlqParked(Exchange exchange) {
-        exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, true);
+    /**
+     * Prepares an exhausted exchange for parking. The message counts as parked only once
+     * {@link PlatformDeadLetterRoute} has published it; until then, and when the publish fails,
+     * it is not.
+     */
+    void prepareDlq(Exchange exchange) {
+        exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, false);
 
         // The parked record is the consumed input. A route may have set another id for a
         // send to another integration and failed before restoring it; park and journal the

@@ -14,6 +14,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
 import no.basis.integrationplatform.camel.HttpTimeoutOptions;
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PublishedCredentialHeaders;
 import org.apache.camel.AsyncCallback;
@@ -77,6 +78,10 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             Processor nextTarget) {
 
         httpTimeoutOptions.check(context, definition, target);
+        if (inDeadLetterRoute(definition)) {
+            // Parking is the adapter's own work, not a step that a replay may skip.
+            return target;
+        }
         EndpointSend endpointSend = endpointSend(definition, target);
         if (endpointSend == null) {
             String kind = scopeKind(definition);
@@ -189,6 +194,10 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                         + "route is edited and can match another integration's step for the same message id. "
                         + "Give the send an explicit id ({}=true is set)",
                 endpoint, routeId, endpointSend.nodeId(), EMERGENCY_ALLOW_GENERATED_STEP_IDS);
+    }
+
+    private static boolean inDeadLetterRoute(NamedNode definition) {
+        return PlatformDeadLetterRoute.ROUTE_ID.equals(routeId(definition));
     }
 
     private static String routeId(NamedNode definition) {
