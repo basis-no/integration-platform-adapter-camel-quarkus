@@ -192,9 +192,14 @@ and iteration its own step key. See the
   receiver's host names. Only credential-like values are masked.
 - `auto_redelivery_count` counts Camel's redeliveries. The HTTP client in
   Camel's `http` component repeats a request answered with 503 or 429 once by
-  itself, so a receiver can see more requests than the count says. Setting
-  `camel.component.http.automatic-retries-disabled=true` leaves every retry to
-  the adapter's retry policy.
+  itself, POST included, so a receiver can see more requests than the count
+  says. Before that retry it waits for the receiver's `Retry-After`, with no
+  upper limit, or one second without it. The wait runs on the Kafka consumer
+  thread and counts against `max.poll.interval.ms` (300 seconds by default);
+  see the processing-time budget under [Retry and DLQ](README.md#retry-and-dlq).
+  Setting `camel.component.http.automatic-retries-disabled=true` leaves every
+  retry to the adapter's retry policy. Set it for receivers that send a long
+  `Retry-After` and for routes on `ip-slow-backend`.
 - The adapter does not check HTTP endpoint options. `socketTimeout` is not an
   option of Camel 4's `http` component: it is sent to the receiver as a query
   parameter, and the call waits up to the client's default of three minutes.
