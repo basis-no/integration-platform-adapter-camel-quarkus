@@ -2,6 +2,7 @@ package no.basis.integrationplatform.camel.lifecycle;
 
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.store.MessageStoreSinkException;
 import org.apache.camel.Exchange;
@@ -71,6 +72,12 @@ public final class MessageStoreAuditRoutePolicy extends MessageStoreRoutePolicy 
                 exchange.setException(storeFailure);
             }
             throw storeFailure;
+        }
+        // A request whose step outcome was not recorded fails, also when its route caught the failure,
+        // so that the caller does not take it as delivered.
+        Throwable unrecorded = StepOutcomeFailure.of(exchange);
+        if (unrecorded != null && exchange.getException() == null) {
+            exchange.setException(unrecorded);
         }
         // Never commit an offset, park a payload, handle a receiver failure, or change its exception.
     }

@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel;
 
+import no.basis.integrationplatform.camel.lifecycle.MessageStoreAuditRoutePolicy;
 import no.basis.integrationplatform.camel.lifecycle.MessageStoreRoutePolicy;
 import no.basis.integrationplatform.camel.lifecycle.PayloadCapturePolicy;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
@@ -214,6 +215,83 @@ class FailureOwnershipTest {
         assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
         assertEquals("synthetic step outcome outage", result.rows.getFirst().error());
         assertEquals(0, result.commits.get());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"plain, false", "plain, true", "caught, false", "caught, true",
+            "audit, false", "audit, true", "audit-caught, false", "audit-caught, true"})
+    void aRequestWhoseStepOutcomeWasNotRecordedKeepsTheInputThatPassesItOnFromCommitting(
+            String child, boolean asyncReceiver) throws Exception {
+        // The input sends a separate request with a ProducerTemplate and passes its failure on.
+        // The request fails also when its own route caught the failure.
+        var result = new Delivery();
+        var requests = new ArrayList<MessageAttemptResult>();
+        ExecutorService receiverThread = Executors.newSingleThreadExecutor();
+        try (var context = new DefaultCamelContext()) {
+            context.getShutdownStrategy().setTimeout(1);
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            Processor receiver = e -> result.received.add(e.getMessage().getBody(String.class));
+            context.addComponent("receiver", asyncReceiver ? new AsyncReceiver(receiverThread, receiver)
+                    : new ReceiverComponent(receiver));
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
+                    new DefaultStepTracker(new StepOutcomeStore() {
+                        public boolean wasDelivered(String idempotencyKey) { return false; }
+                        public void recordDelivered(StepResult step) { throw outage(); }
+                        public void recordFailed(StepResult step) { throw outage(); }
+                    })));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:input").routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .routePolicy(new MessageStoreRoutePolicy(result.rows::add, "order-pipeline"))
+                            .process(e -> {
+                                try (var producer = getContext().createProducerTemplate()) {
+                                    Exchange reply = producer.request("direct:request",
+                                            request -> request.getMessage().setBody("<Request/>"));
+                                    if (reply.getException() != null) {
+                                        e.setException(reply.getException());
+                                    }
+                                }
+                            });
+                    var request = from("direct:request").routeId("request")
+                            .routeConfigurationId(PlatformRouteConfiguration.NO_RETRY);
+                    if (child.startsWith("audit")) {
+                        request.routePolicy(new MessageStoreAuditRoutePolicy(requests::add, "order-pipeline",
+                                PayloadCapturePolicy.defaultPolicy()));
+                    }
+                    if (child.endsWith("caught")) {
+                        request.doTry().to("receiver:orders").id("deliver-request")
+                                .doCatch(Exception.class).log("caught by the request route").end();
+                    } else {
+                        request.to("receiver:orders").id("deliver-request");
+                    }
+                    from("direct:parking").routeId("parking").errorHandler(noErrorHandler())
+                            .process(e -> result.parked.add(e.getMessage().getBody(String.class)));
+                }
+            });
+            context.start();
+            try (var producer = context.createProducerTemplate()) {
+                result.exchange = producer.asyncSend("direct:input", e -> {
+                    e.getMessage().setBody("<Input/>");
+                    e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT,
+                            (KafkaManualCommit) result.commits::incrementAndGet);
+                }).get(10, TimeUnit.SECONDS);
+            }
+        } finally {
+            receiverThread.shutdownNow();
+        }
+
+        assertEquals(List.of("<Request/>"), result.received);
+        assertTrue(result.exchange.isFailed());
+        assertTrue(result.parked.isEmpty());
+        assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
+        assertEquals(0, result.commits.get());
+        if (child.startsWith("audit")) {
+            assertEquals(MessageStatus.FAILED, requests.getFirst().status());
+        }
     }
 
     @Test

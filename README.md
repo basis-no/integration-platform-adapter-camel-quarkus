@@ -180,7 +180,10 @@ outcome, failed journal write or failed commit leaves the exchange failed. A
 step outcome that cannot be checked or recorded fails the send's exchange after
 Camel's retries; the input is then recorded as `FAILED` and neither parked nor
 committed, also when the route catches the failure or it happens in a split
-part.
+part. A separate request, such as one sent with a `ProducerTemplate`, fails in
+the same case, and an input that passes its failure on is neither parked nor
+committed. Work that ends after the input completed, such as a `wireTap`, and a
+request whose failure the route ignores cannot hold the input back.
 `break-on-first-error` prevents a later record in the batch from advancing past
 that unresolved input. Applications must not override these safety defaults.
 This can intentionally block processing during a durability outage; it is not a

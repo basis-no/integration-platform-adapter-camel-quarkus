@@ -121,7 +121,11 @@ with 0.4.
   let the input complete and commit. Camel's retries still run before the
   input fails, so a receiver can get the same send again; receivers deduplicate
   on the stable `Idempotency-Key`. A failed send keeps its own exception, with
-  the recording failure attached as suppressed.
+  the recording failure attached as suppressed. A separate request, such as one
+  sent with a `ProducerTemplate` or recorded by delivery audit, likewise fails
+  when one of its step outcomes is not recorded, also when its own route caught
+  the failure. An input that passes that failure on is neither parked nor
+  committed either.
 - The DLQ record carries the consumed input, also when the route changed it.
   Before, a route that changed a byte-array input in place changed both the
   parked record and the payload stored for replay. When the payload was not
@@ -211,6 +215,10 @@ and iteration its own step key. See the
 
 ### Known limitations
 
+- A step outcome that is not recorded holds back the input only while the input
+  waits for it. Work that ends after the input completed, such as a `wireTap`,
+  fails only its own exchange, and a route that ignores a separate request's
+  failure lets its input complete. Such work needs its own recovery.
 - Split parts and loop iterations that send through the same node share one
   step identity. With the Postgres step store, only the first is delivered and
   the rest are skipped, also in the first attempt. From 0.3.6 such a skip is
