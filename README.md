@@ -176,7 +176,9 @@ camel.component.kafka.poll-on-error=RECONNECT
 
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
 processing completed or DLQ publication was confirmed. An unparked `FAILED`
-outcome, failed journal write or failed commit leaves the exchange failed.
+outcome, failed journal write or failed commit leaves the exchange failed. A
+step outcome that cannot be checked or recorded fails the send's exchange, which
+then goes through the route's retries and DLQ parking like a failed send.
 `break-on-first-error` prevents a later record in the batch from advancing past
 that unresolved input. Applications must not override these safety defaults.
 This can intentionally block processing during a durability outage; it is not a
@@ -309,9 +311,12 @@ sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record
 as byte-array text unless they are `x-bip-*` headers.
 
 - the body is the **original consumed payload**, restored from the payload
-  captured at route start — not a mid-transformation body. When the payload
-  could not be captured (`metadata_only` mode or an uncapturable body type),
-  the current body is parked as-is.
+  captured at route start — not a mid-transformation body, and not a byte array
+  the route changed in place. The adapter keeps one copy of a `byte[]` input:
+  the inline replay copy, or, when the payload is not stored for replay
+  (`metadata_only` mode, replay disabled or above the size cap), a copy kept
+  only for parking. A `String` input is not copied. When the body type cannot be
+  captured, the current body is parked as-is.
 - all `x-bip-*` envelope headers are preserved, plus two diagnostics headers
   set at parking time: `x-bip-error` (the failure message) and `x-bip-dlq-at`
   (RFC 3339 timestamp). From 0.3.6 a replay's `x-bip-redo-steps` is not among

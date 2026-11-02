@@ -18,10 +18,13 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -240,6 +243,52 @@ class MessageStoreRoutePolicyTest {
         assertEquals(null, sink.result.payloadBytes());
         assertFalse(sink.result.replayable());
         assertEquals("payload exceeds max inline size", sink.result.replayDisabledReason());
+    }
+
+    @Test
+    void keepsOneCopyOfAByteArrayInputForReplayAndParking() {
+        Exchange exchange = kafkaInput("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        new MessageStoreRoutePolicy(new RecordingSink(), "adapter-test")
+                .onExchangeBegin(route("order-pipeline"), exchange);
+
+        byte[] captured = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
+        assertNotSame(exchange.getMessage().getBody(), captured);
+        assertArrayEquals(exchange.getMessage().getBody(byte[].class), captured);
+        assertNull(exchange.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD),
+                "Parking uses the replay copy");
+    }
+
+    @Test
+    void keepsAParkingCopyOnlyWhenReplayStorageDoesNotKeepTheInputAndTheInputCanBeParked() {
+        var policy = new MessageStoreRoutePolicy(new RecordingSink(), "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.METADATA_ONLY, 1000, java.time.Duration.ofDays(30), true));
+        Exchange bytes = kafkaInput("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Exchange text = kafkaInput("ORIGINAL");
+        Exchange empty = kafkaInput(null);
+        Exchange internal = exchange();
+        internal.getMessage().setBody("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        for (Exchange exchange : List.of(bytes, text, empty, internal)) {
+            policy.onExchangeBegin(route("order-pipeline"), exchange);
+            assertNull(exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES));
+        }
+
+        byte[] parked = bytes.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD, byte[].class);
+        assertNotSame(bytes.getMessage().getBody(), parked);
+        assertArrayEquals(bytes.getMessage().getBody(byte[].class), parked);
+        assertSame(text.getMessage().getBody(), text.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD),
+                "A String cannot change, so it is not copied");
+        assertArrayEquals(new byte[0], empty.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD, byte[].class));
+        assertNull(internal.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD),
+                "An input without a Kafka commit is never parked");
+    }
+
+    private Exchange kafkaInput(Object body) {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> { });
+        exchange.getMessage().setBody(body);
+        return exchange;
     }
 
     @Test

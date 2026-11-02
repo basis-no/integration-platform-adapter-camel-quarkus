@@ -39,10 +39,6 @@ public final class MessageStoreAuditRoutePolicy extends MessageStoreRoutePolicy 
             throw failure;
         }
         super.onExchangeBegin(route, exchange);
-        byte[] captured = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
-        if (captured != null) {
-            exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, captured.clone());
-        }
         exchange.setProperty(MESSAGE_ID, exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
         exchange.setProperty(CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
         String contentType = exchange.getMessage().getHeader(PlatformHeaders.CONTENT_TYPE, String.class);

@@ -15,6 +15,11 @@ public final class PlatformExchangeProperties {
     public static final String PAYLOAD_STORAGE = "basis.messageStore.payloadStorage";
     public static final String PAYLOAD_SIZE_BYTES = "basis.messageStore.payloadSizeBytes";
     public static final String PAYLOAD_BYTES = "basis.messageStore.payloadBytes";
+    /**
+     * The consumed input of a managed Kafka input for DLQ parking, kept as a byte array or
+     * String only when {@link #PAYLOAD_BYTES} does not keep it for replay.
+     */
+    public static final String PARKING_PAYLOAD = "basis.messageStore.parkingPayload";
     public static final String PAYLOAD_EXPIRES_AT = "basis.messageStore.payloadExpiresAt";
     public static final String PAYLOAD_DELETED_AT = "basis.messageStore.payloadDeletedAt";
     public static final String REPLAYABLE = "basis.messageStore.replayable";

@@ -110,6 +110,27 @@ with 0.4.
   `basis.messageStore.stepAlreadyDelivered` in the step after a send.
 - A failure that is sent to the dead letter queue is logged at ERROR with its
   stack trace first.
+- A send whose step outcome cannot be checked or recorded, for example during a
+  Message Store outage, fails its exchange. Before, when the outcome write failed
+  after a send that completed asynchronously, such as a Kafka publish, the
+  exchange never completed. A send that completed synchronously hung the same
+  way in a route with no error handler. The failure now goes through the
+  route's retries and DLQ parking like a failed send. The commit rule is
+  unchanged: the offset is committed only after the journal records the
+  message's outcome and the message completed or its parking was confirmed. A
+  failed send keeps its own exception, with the recording failure attached as
+  suppressed.
+- The DLQ record carries the consumed input, also when the route changed it.
+  Before, a route that changed a byte-array input in place changed both the
+  parked record and the payload stored for replay. When the payload was not
+  stored for replay, in `metadata-only` mode, with replay disabled or above
+  `basis.message-store.payload.max-bytes`, a route that transformed the body
+  and then failed parked the transformed body. The adapter now keeps one copy of
+  the input at route start: the replay copy when the payload is stored, and
+  otherwise a copy for parking, only for a Kafka input. A String input is not
+  copied. A body of another type, such as a stream, is still parked as the
+  route left it. A missing body is parked as an empty payload, as with inline
+  storage.
 - An application with more than one `@Default` JDBC DataSource no longer starts
   with the Postgres Message Store or step store. A second DataSource from a
   `@Named` producer is also `@Default`. Before, the application started and
@@ -290,6 +311,8 @@ and iteration its own step key. See the
   `x-bip-correlation-id`. Explicit step ids must also be unique across the
   integrations that can see the same message id.
 - Tools that read DLQ records see `xxxxxx` instead of credential header values.
+- A byte-array Kafka input now holds one extra copy of its size until its
+  exchange completes, in every payload mode. A String input does not.
 - The journal writer works with and without the optional message recovery
   SQL. With it installed, the recovery history protection, payload expiry clamp
   and replay refusals apply as before. No grant changes are needed.

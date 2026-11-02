@@ -94,12 +94,18 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                     exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
         }
 
-        // The DLQ record must carry the ORIGINAL consumed payload,
-        // not a mid-transformation body. Restore it from the capture made at
-        // route start when the payload was capturable; metadata_only /
-        // uncapturable bodies are parked as-is.
-        byte[] originalPayload = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
-        if (originalPayload != null) {
+        // The DLQ record must carry the ORIGINAL consumed payload, not a body the route
+        // transformed or changed in place. Restore it from the capture made at route start:
+        // the replay copy, or the parking copy when replay storage does not keep the payload.
+        // A body type that cannot be captured is parked as the route left it.
+        Object originalPayload = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
+        if (originalPayload == null) {
+            originalPayload = exchange.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD);
+        }
+        if (originalPayload instanceof byte[] bytes) {
+            // The parking endpoint gets its own array, so the capture stays the input for replay storage.
+            exchange.getMessage().setBody(bytes.clone());
+        } else if (originalPayload != null) {
             exchange.getMessage().setBody(originalPayload);
         }
 

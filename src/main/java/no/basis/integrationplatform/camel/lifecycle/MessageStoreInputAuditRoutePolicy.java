@@ -60,10 +60,6 @@ public final class MessageStoreInputAuditRoutePolicy extends MessageStoreRoutePo
         // Capturing a poll/batch must not seed one operational ID into all records
         // emitted by its split, or override the producer's recovery state.
         super.onExchangeBegin(route, capture);
-        byte[] captured = capture.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
-        if (captured != null) {
-            capture.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, captured.clone());
-        }
         Map<String, Object> headers = new LinkedHashMap<>();
         for (String name : HEADERS) {
             Object value = capture.getMessage().getHeader(name);

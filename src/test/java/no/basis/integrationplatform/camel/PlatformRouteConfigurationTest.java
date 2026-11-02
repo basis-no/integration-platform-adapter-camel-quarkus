@@ -11,6 +11,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -36,6 +37,8 @@ class PlatformRouteConfigurationTest {
         assertEquals(false, exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
         assertEquals("{\"original\":true}",
                 new String(exchange.getMessage().getBody(byte[].class), StandardCharsets.UTF_8));
+        assertNotSame(originalPayload, exchange.getMessage().getBody(),
+                "The parking endpoint gets its own array; the capture stays the input for replay storage");
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
 
         String dlqAt = exchange.getMessage().getHeader(PlatformHeaders.DLQ_AT, String.class);
@@ -46,8 +49,20 @@ class PlatformRouteConfigurationTest {
     }
 
     @Test
+    void dlqParkingRestoresTheParkingCopyWhenReplayStorageDidNotKeepThePayload() {
+        Exchange exchange = exchange();
+        exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, "<Input/>");
+        exchange.getMessage().setBody("<Transformed/>");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
+
+        configuration.prepareDlq(exchange);
+
+        assertEquals("<Input/>", exchange.getMessage().getBody());
+    }
+
+    @Test
     void dlqParkingLeavesBodyAsIsWhenPayloadWasNotCaptured() {
-        // Given a metadata_only / uncapturable message: no PAYLOAD_BYTES property was recorded.
+        // Given an uncapturable body: neither the replay nor the parking copy was recorded.
         Exchange exchange = exchange();
         exchange.getMessage().setBody("stream-derived body");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));

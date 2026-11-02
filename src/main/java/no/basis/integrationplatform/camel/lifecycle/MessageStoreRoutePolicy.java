@@ -167,28 +167,53 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, sizeBytes);
         }
 
-        if (!payloadPolicy.replayEnabled()) {
-            metadataOnly(exchange, "replay disabled by policy");
-            return;
-        }
-        if (payloadPolicy.mode() == PayloadMode.METADATA_ONLY) {
-            metadataOnly(exchange, "payload storage mode is metadata-only");
-            return;
-        }
-        if (bytes == null) {
-            metadataOnly(exchange, "payload body type is not safely capturable");
-            return;
-        }
-        if (bytes.length > payloadPolicy.maxBytes()) {
-            metadataOnly(exchange, "payload exceeds max inline size");
+        String metadataOnlyReason = metadataOnlyReason(bytes);
+        if (metadataOnlyReason != null) {
+            metadataOnly(exchange, metadataOnlyReason);
+            keepForParking(exchange, body);
             return;
         }
 
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_STORAGE, PayloadMode.POSTGRES_INLINE.storageValue());
-        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, bytes);
+        // A route may change a byte array body in place; replay and parking keep the consumed input.
+        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, body instanceof byte[] ? bytes.clone() : bytes);
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_EXPIRES_AT,
                 Instant.now().plus(payloadPolicy.retention()));
         exchange.setProperty(PlatformExchangeProperties.REPLAYABLE, true);
+    }
+
+    private String metadataOnlyReason(byte[] bytes) {
+        if (!payloadPolicy.replayEnabled()) {
+            return "replay disabled by policy";
+        }
+        if (payloadPolicy.mode() == PayloadMode.METADATA_ONLY) {
+            return "payload storage mode is metadata-only";
+        }
+        if (bytes == null) {
+            return "payload body type is not safely capturable";
+        }
+        if (bytes.length > payloadPolicy.maxBytes()) {
+            return "payload exceeds max inline size";
+        }
+        return null;
+    }
+
+    /**
+     * DLQ parking sends the consumed input also when replay storage does not keep it. Only a
+     * managed Kafka input is parked, so other inputs keep no copy. A String cannot change and
+     * is kept as it is; another body type is parked as the route left it.
+     */
+    private void keepForParking(Exchange exchange, Object body) {
+        if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) == null) {
+            return;
+        }
+        if (body == null) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, new byte[0]);
+        } else if (body instanceof byte[] bytes) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, bytes.clone());
+        } else if (body instanceof String) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, body);
+        }
     }
 
     private void metadataOnly(Exchange exchange, String reason) {
