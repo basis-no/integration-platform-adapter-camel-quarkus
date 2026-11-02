@@ -7,10 +7,13 @@ import no.basis.integrationplatform.camel.step.StepTracker;
 import no.basis.integrationplatform.camel.step.StepTrackingInterceptStrategy;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.direct.DirectConsumerNotAvailableException;
 import org.apache.camel.component.kafka.KafkaConstants;
 import org.apache.camel.component.kafka.consumer.KafkaManualCommit;
 import org.apache.camel.impl.DefaultCamelContext;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -88,30 +91,39 @@ class FailureOwnershipTest {
         assertEquals(1, result.commits.get());
     }
 
-    @Test
-    void dlqUriThatIsAnExpressionFailsStartup() throws Exception {
+    @ParameterizedTest
+    @ValueSource(strings = {"${header.missingDlqUri}", "direct:no-consumer?failIfNoConsumers=false",
+            "file:target/dead-letters", "kafka:dlq?requestRequiredAcks=0", "kafka:dlq?additionalProperties.acks=0"})
+    void dlqUriWhoseSuccessDoesNotConfirmParkingFailsStartup(String dlqUri) throws Exception {
         try (var context = new DefaultCamelContext()) {
             var properties = new Properties();
-            properties.setProperty("basis.message-store.dlq-uri", "${header.missingDlqUri}");
+            properties.setProperty("basis.message-store.dlq-uri", dlqUri);
             context.getPropertiesComponent().setOverrideProperties(properties);
-            Exception thrown = assertThrows(Exception.class, () -> context.addRoutes(new PlatformDeadLetterRoute()));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            Exception thrown = assertThrows(Exception.class, context::start);
             Throwable cause = thrown;
             while (cause.getCause() != null && !(cause instanceof IllegalArgumentException)) cause = cause.getCause();
-            assertTrue(cause.getMessage().startsWith("basis.message-store.dlq-uri must name one fixed endpoint"),
-                    cause.getMessage());
+            assertInstanceOf(IllegalArgumentException.class, cause);
+            assertTrue(cause.getMessage().startsWith("basis.message-store.dlq-uri must"), cause.getMessage());
         }
     }
 
     @Test
-    void dlqUriThatSendsNowhereIsNotParkedOrCommitted() throws Exception {
-        // Accepted when the route was configured, an expression by the time it runs.
-        var outcome = run(false, false, false, "${header.missingDlqUri}");
+    void directDlqWithoutConsumerIsNotParkedOrCommitted() throws Exception {
+        var outcome = run(false, false, false, "direct:no-consumer?block=false");
         assertTrue(outcome.parked.isEmpty());
         assertEquals(0, outcome.commits.get());
         assertEquals(MessageStatus.FAILED, outcome.rows.getFirst().status());
-        assertNotNull(outcome.exchange.getException());
-        assertEquals("basis.message-store.dlq-uri resolved to no endpoint; the message was not parked",
-                outcome.exchange.getException().getMessage());
+        assertInstanceOf(DirectConsumerNotAvailableException.class, outcome.exchange.getException());
+    }
+
+    @Test
+    void parkingRouteThatStopsStillCountsAsParked() throws Exception {
+        var outcome = run(false, false, false, "direct:parking-then-stop");
+        assertEquals(List.of("<Input/>"), outcome.parked);
+        assertEquals(MessageStatus.DLQ, outcome.rows.getFirst().status());
+        assertEquals(1, outcome.commits.get());
     }
 
     @Test
@@ -211,6 +223,9 @@ class FailureOwnershipTest {
                             if (dlqFailure) throw new IllegalStateException("synthetic DLQ outage");
                             result.parked.add(e.getMessage().getBody(String.class));
                         });
+                from("direct:parking-then-stop").routeId("parking-then-stop").errorHandler(noErrorHandler())
+                        .process(e -> result.parked.add(e.getMessage().getBody(String.class)))
+                        .stop();
             }
         });
         return context;

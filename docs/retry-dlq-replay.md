@@ -89,9 +89,14 @@ that the DLQ endpoint can never accept, for example one above the DLQ topic's
 size limit, keeps its partition waiting until an operator fixes the DLQ or
 moves the consumer group past it.
 
-`basis.message-store.dlq-uri` must name one fixed endpoint. An expression such
-as `${header.name}` fails startup, because it can evaluate to no endpoint at
-all.
+`basis.message-store.dlq-uri` must name one fixed endpoint that reports a
+failed publish as an error: a `kafka:` endpoint whose producer waits for the
+broker, or the application's own `direct:` route. The adapter counts a message
+parked when that route completes without an error, also when it ends with
+`stop()`; give it `errorHandler(noErrorHandler())` so that its failures reach
+the adapter. Startup fails for an expression such as `${header.name}`, which
+can evaluate to no endpoint at all, for Kafka with `acks=0`, for `direct:` with
+`failIfNoConsumers=false`, and for any other endpoint.
 
 An application's own `onException` changes this. If it leaves a failure
 unhandled (`handled(false)`), the adapter does not park it: the message is

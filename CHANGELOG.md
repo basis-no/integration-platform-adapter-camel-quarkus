@@ -16,9 +16,12 @@
   not be journaled. The partition waits until the DLQ accepts the record, and
   each attempt logs at ERROR. A failed offset commit after a recorded outcome
   is reported as such. Same rule as adapter 0.3.6.
-  `basis.message-store.dlq-uri` must name one fixed endpoint: an expression
-  such as `${header.name}` now fails startup. The adapter now depends on
-  `camel-quarkus-direct`.
+  `basis.message-store.dlq-uri` must now name a fixed `kafka:` endpoint whose
+  producer waits for the broker, or the application's own `direct:` route,
+  which counts as parked when it completes without an error. An expression
+  such as `${header.name}`, Kafka with `acks=0`, `direct:` with
+  `failIfNoConsumers=false` and any other endpoint fail startup. The adapter
+  now depends on `camel-quarkus-direct`.
   Upgrade: keep `break-on-first-error=true`. A test that adds
   `PlatformRouteConfiguration` to a hand-built `CamelContext` must also add
   `PlatformDeadLetterRoute`; Quarkus applications get both.
