@@ -123,19 +123,28 @@ The message is one line. It names the step, the input route and the kind of
 part, and contains no message content or header values. Only the log changes:
 the skip, the input's outcome, retries, the configured failure mode and commits
 are as before. The adapter tells parts apart by their position in the enclosing
-splits, loops, multicasts and recipient lists. A skip of a step that an earlier
+splits, loops, multicasts and recipient lists, and by the `direct:`, `seda:` or
+`vm:` call that started each of these, so the same splitting sub-route called
+twice keeps the two calls' parts apart. A skip of a step that an earlier
 attempt sent, after a redelivery or a replay, stays at INFO, and so does a part
 that meets its own delivered send again when Camel repeats a sub-route or a
 whole split within one attempt. With `parallelProcessing()`, each part is
-either sent or logged at ERROR. The `noop` store, and sends that are not
+either sent or logged at ERROR; parts that sent the same key in parallel each
+skip their own send at INFO when Camel repeats the split. The `noop` store, and sends that are not
 classified as side effects, never skip, so every part is sent and nothing is
 logged.
 
 Not detected, so these skips are logged at INFO only: one part that reaches the
 same send twice on its own, for example by calling one `direct:` sub-route
 twice; a send that follows an inner loop in an outer loop, because Camel leaves
-the inner loop's `CamelLoopIndex` on the exchange; and a part sent through a new
-exchange that copies the input's `x-bip-message-id`.
+the inner loop's `CamelLoopIndex` on the exchange; a part sent through a new
+exchange that copies the input's `x-bip-message-id`; a split, loop, multicast
+or recipient list that runs again from the same call without a Camel retry,
+for example through a routing slip or a dynamic router, whose later parts are
+compared with the first run's parts at the same positions; and a step key that
+the attempt last used more than 10,000 step keys earlier. The adapter keeps the
+10,000 most recently used keys per attempt, so a large split stays bounded in
+memory; a key that every part reaches stays known.
 
 Safe forms, which send every part:
 

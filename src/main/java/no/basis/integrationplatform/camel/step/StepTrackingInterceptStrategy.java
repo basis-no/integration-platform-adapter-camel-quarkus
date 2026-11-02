@@ -78,7 +78,16 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         checkStepId(definition, endpointSend);
 
         AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
-        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, dynamicScheme(target, endpointSend));
+        StepTrackingProcessor tracking = new StepTrackingProcessor(delegate, endpointSend, stepTracker,
+                dynamicScheme(target, endpointSend));
+        return subRouteCall(endpointSend.endpointUri())
+                ? new PartsScope(tracking, StepVisits.marker(StepVisits.CALL, scopes.incrementAndGet())) : tracking;
+    }
+
+    /** Whether a send runs another route of this application, so that a scope it starts is told apart by caller. */
+    private static boolean subRouteCall(String endpointUri) {
+        String uri = endpointUri == null ? "" : endpointUri.trim();
+        return uri.startsWith("direct:") || uri.startsWith("seda:") || uri.startsWith("vm:");
     }
 
     /**
@@ -109,9 +118,11 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     /**
      * Shares one record of the attempt's step visits with the parts of a split, loop,
      * multicast or recipient list, and marks the exchange so that each part gets its own
-     * path. Camel may copy a part's properties back afterwards, so the caller's own record
-     * and path are restored. Only these adapter properties change: the parts, the outcome
-     * and the error handling are Camel's.
+     * path. A sub-route call is noted too, so that a scope it starts is told apart from the
+     * same scope started by another call; Camel repeating the same call keeps its path.
+     * Camel may copy a part's properties back afterwards, so the caller's own record and
+     * path are restored. Only these adapter properties change: the parts, the outcome and
+     * the error handling are Camel's.
      */
     private static final class PartsScope extends DelegateAsyncProcessor {
         private final String marker;
@@ -124,15 +135,25 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
             StepVisits visits = StepVisits.of(exchange);
-            String parent = StepVisits.path(exchange);
+            String calls = exchange.getProperty(StepVisits.CALLS, String.class);
+            if (marker.startsWith("/" + StepVisits.CALL + ".")) {
+                exchange.setProperty(StepVisits.CALLS, (calls == null ? "" : calls) + marker);
+                return super.process(exchange, doneSync -> {
+                    restore(exchange, StepVisits.CALLS, calls);
+                    callback.done(doneSync);
+                });
+            }
+            String parent = StepVisits.path(exchange) + (calls == null ? "" : calls);
             String path = exchange.getProperty(StepVisits.PATH, String.class);
             String scope = exchange.getProperty(StepVisits.SCOPE, String.class);
             exchange.setProperty(StepVisits.PATH, parent);
             exchange.setProperty(StepVisits.SCOPE, marker);
+            exchange.removeProperty(StepVisits.CALLS);
             return super.process(exchange, doneSync -> {
                 exchange.setProperty(StepVisits.PROPERTY, visits);
                 restore(exchange, StepVisits.PATH, path);
                 restore(exchange, StepVisits.SCOPE, scope);
+                restore(exchange, StepVisits.CALLS, calls);
                 callback.done(doneSync);
             });
         }

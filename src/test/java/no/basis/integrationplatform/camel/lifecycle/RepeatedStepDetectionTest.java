@@ -34,6 +34,8 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CyclicBarrier;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 import java.util.logging.Level;
@@ -60,6 +62,7 @@ class RepeatedStepDetectionTest {
     private final List<String> parked = Collections.synchronizedList(new ArrayList<>());
     private final AtomicInteger commits = new AtomicInteger();
     private final AtomicInteger flakyFailures = new AtomicInteger();
+    private volatile CyclicBarrier linesBarrier;
     private DefaultCamelContext context;
     private LogCapture log;
 
@@ -140,6 +143,50 @@ class RepeatedStepDetectionTest {
         assertEquals(1, infoSkips());
         assertEquals(MessageStatus.COMPLETED, rows.getFirst().status());
         assertEquals(1, commits.get());
+    }
+
+    @Test
+    void partsThatAllSentInParallelSkipTheirOwnSendsAtInfoWhenCamelRepeatsTheSplit() throws Exception {
+        // Both parts pass the delivered check before either delivers, so both are sent. The
+        // sub-route has no error handler, so the input's retry repeats the whole split.
+        flakyFailures.set(1);
+        linesBarrier = new CyclicBarrier(2);
+        start(store, route -> route.to("direct:deliver").id("call-deliver"));
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:deliver").errorHandler(noErrorHandler())
+                        .split(body().tokenize(",")).parallelProcessing().to("vendor:lines").id("send-line").end()
+                        .to("vendor:flaky").id("send-flaky");
+            }
+        });
+
+        sendKafka("a,b");
+
+        assertEquals(2, received.stream().filter(r -> r.startsWith("lines:")).count(), received.toString());
+        assertEquals(List.of("flaky:a,b", "flaky:a,b"), received.stream().filter(r -> r.startsWith("flaky:")).toList());
+        assertEquals(List.of(), errorScopes());
+        assertEquals(2, infoSkips());
+        assertEquals(MessageStatus.COMPLETED, rows.getFirst().status());
+    }
+
+    @Test
+    void aSplittingSubRouteCalledTwiceTellsTheSecondCallsPartsApart() throws Exception {
+        // Each call runs the same split, so the second call's first part has the same
+        // position as the first call's; the call it came from tells them apart.
+        start(store, route -> route.to("direct:lines").id("first-batch")
+                .setBody(constant("c")).to("direct:lines").id("second-batch"));
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:lines").split(body().tokenize(",")).to("vendor:lines").id("send-line").end();
+            }
+        });
+
+        sendKafka("a,b");
+
+        assertEquals(List.of("lines:a"), received);
+        assertEquals(List.of("split part", "split part"), errorScopes());
+        assertEquals(0, infoSkips());
+        assertEquals(MessageStatus.COMPLETED, rows.getFirst().status());
     }
 
     @ParameterizedTest(name = "{0}")
@@ -261,6 +308,9 @@ class RepeatedStepDetectionTest {
             @Override protected Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) {
                 return new ProcessorEndpoint(uri, this, e -> {
                     received.add(remaining + ":" + e.getMessage().getBody(String.class));
+                    if (remaining.equals("lines") && linesBarrier != null) {
+                        linesBarrier.await(10, TimeUnit.SECONDS);
+                    }
                     if (remaining.equals("flaky") && flakyFailures.getAndDecrement() > 0) {
                         throw new IllegalStateException("synthetic transient failure");
                     }
