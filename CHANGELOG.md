@@ -65,6 +65,19 @@ with 0.4.
   the list, and a downstream integration that consumed a published record with
   the same message id sent its own steps with the same ids again. `x-bip-replay`
   and `x-bip-attempt` are still forwarded.
+- When it creates a route, the adapter logs a warning for each HTTP timeout
+  option that Camel 4's `http` component accepts without applying it, and names
+  the replacement. The call otherwise waits for the component's timeout, three
+  minutes unless configured. Checked on Camel 4.18.0 and 4.18.4:
+  `socketTimeout`, a Camel 3 option, is sent to the receiver as a query
+  parameter; `httpConnection.*` applies only `soTimeout` and drops other
+  timeouts; and on a `toD`, an `enrich` or a `wireTap` whose URI contains
+  `${…}`, Camel's optimised send also sends `responseTimeout`, `connectTimeout`,
+  `connectionRequestTimeout` and `soTimeout` to the receiver. Use the
+  `httpClient.` forms or `httpConnection.soTimeout` there. The warning appears
+  once per route, step and option and names no URI or value. Forms that fail on
+  their own, such as `httpClient.socketTimeout` or
+  `camel.component.http.socket-timeout`, are not reported.
 - An outcome from an older attempt that arrives late cannot replace a newer
   attempt's message summary. This includes the original Kafka record consumed
   again as attempt 1 after a replay recovered it, which used to reset the
@@ -212,10 +225,10 @@ and iteration its own step key. See the
   itself, so a receiver can see more requests than the count says. Setting
   `camel.component.http.automatic-retries-disabled=true` leaves every retry to
   the platform's policy.
-- The adapter does not check HTTP endpoint options. `socketTimeout` is not an
-  option of Camel 4's `http` component: it is sent to the receiver as a query
-  parameter, and the call waits up to the client's default of three minutes.
-  Use `responseTimeout` and `connectTimeout`.
+- The HTTP timeout warning reads `to`, `toD`, `enrich` and `wireTap` URIs when
+  a route is created. A URI in a `recipientList` or `routingSlip`, or one whose
+  scheme is only known at send time, is not checked. See the README's retry
+  section for the full table.
 - The Kafka credential warning covers a `to`, or a `toD` whose URI starts with
   `kafka:`. A send whose scheme is only known at send time is not checked.
 
@@ -252,6 +265,9 @@ and iteration its own step key. See the
   reconnection. NotReady does not restart a pod: alert on sustained NotReady.
 - Set the readiness probe timeout to 3–5 seconds. While the consumer reconnects,
   Camel's Kafka health check can take more than 2 seconds to answer.
+- **Look for the new warnings** `HTTP option … has no effect` at startup and
+  `Kafka send … publishes header …` while messages flow. Use the replacement the
+  first one names; remove the header the second one names before the send.
 - **Look for the new ERROR line `Step <step-id> was skipped in a …`.** Each one
   is a split part, loop iteration or branch that was not delivered. On 0.3.5 the
   same parts were skipped without a log line. Move the route to one of the safe

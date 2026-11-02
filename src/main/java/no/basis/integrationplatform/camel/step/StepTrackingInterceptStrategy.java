@@ -4,6 +4,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
+import no.basis.integrationplatform.camel.HttpTimeoutOptions;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PublishedCredentialHeaders;
 import org.apache.camel.AsyncCallback;
@@ -43,6 +44,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private final TrafficSignals trafficSignals;
     private final boolean allowGeneratedStepIds;
     private final AtomicLong scopes = new AtomicLong();
+    private final HttpTimeoutOptions httpTimeoutOptions = new HttpTimeoutOptions();
     private final PublishedCredentialHeaders publishedCredentials = new PublishedCredentialHeaders();
 
     public StepTrackingInterceptStrategy(StepTracker stepTracker) {
@@ -81,6 +83,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             Processor target,
             Processor nextTarget) {
 
+        httpTimeoutOptions.check(context, definition, target);
         // Parking is infrastructure work, not a replay-skippable business step.
         for (NamedNode node = definition; node != null; node = node.getParent()) {
             if (node instanceof RouteDefinition && "bip-confirmed-dead-letter".equals(node.getId())) {
