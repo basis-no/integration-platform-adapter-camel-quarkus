@@ -270,7 +270,8 @@ as byte-array text unless they are `x-bip-*` headers.
   the current body is parked as-is.
 - all `x-bip-*` envelope headers are preserved, plus two diagnostics headers
   set at parking time: `x-bip-error` (the failure message) and `x-bip-dlq-at`
-  (RFC 3339 timestamp).
+  (RFC 3339 timestamp). From 0.3.6 a replay's `x-bip-redo-steps` is not among
+  them; see [Redo behavior](#redo-behavior).
 - the attempt is recorded with status `DLQ`, and the Kafka offset is committed
   only after the outcome record (and DLQ publish) succeeded.
 
@@ -432,6 +433,15 @@ exactly the listed steps even when the durable ledger already has them
 idempotency key. A malformed header value is logged as a warning and treated as
 empty — it never fails message processing. Redo intentionally repeats an
 external side effect, so external systems still need domain idempotency for it.
+
+From 0.3.6 the list stays inside the integration. A Kafka input with the Message
+Store reads `x-bip-redo-steps` before the route runs, keeps the list for the
+attempt's step tracking and removes the header. On other inputs the route's
+first `to` or `toD` does the same. HTTP sends, Kafka publishes and DLQ records
+therefore no longer carry it. Before, a receiver got the list, and a downstream
+integration that consumed a published record with the same message id sent its
+own steps with the same ids again. `x-bip-replay` and `x-bip-attempt` are still
+forwarded; nothing in the adapter acts on `x-bip-replay` at a Kafka input.
 
 ## Step Tracking
 

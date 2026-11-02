@@ -48,6 +48,14 @@ with 0.4.
   chooses its component only when it sends, such as `${header.receiverUrl}` or
   `language:header:receiverUrl`, is treated as an HTTP send. Other HTTP components, such as
   `vertx-http`, are unchanged.
+- A replay's `x-bip-redo-steps` stays inside the integration. A Kafka input with
+  the Message Store reads the list before the route runs and keeps it for the
+  attempt's step tracking; on other inputs the route's first `to` or `toD` reads
+  it. The header is then removed, so HTTP sends, Kafka publishes and DLQ records
+  no longer carry it, and a route can no longer read it. Before, a receiver got
+  the list, and a downstream integration that consumed a published record with
+  the same message id sent its own steps with the same ids again. `x-bip-replay`
+  and `x-bip-attempt` are still forwarded.
 - An outcome from an older attempt that arrives late cannot replace a newer
   attempt's message summary. This includes the original Kafka record consumed
   again as attempt 1 after a replay recovered it, which used to reset the

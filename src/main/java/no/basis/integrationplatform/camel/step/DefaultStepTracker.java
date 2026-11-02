@@ -42,6 +42,8 @@ public class DefaultStepTracker implements StepTracker {
     @Override
     public void beforeSend(Exchange exchange) {
         String endpointUri = exchange.getProperty(Exchange.INTERCEPTED_ENDPOINT, String.class);
+        // Before any send, so that no send carries this attempt's redo list.
+        Set<String> redoSteps = captureRedoSteps(exchange);
         clearCurrentStep(exchange);
         // The journal keeps the endpoint without credentials: a resolved password or
         // token in the URI must never reach the Message Store. Step ids still derive
@@ -61,7 +63,6 @@ public class DefaultStepTracker implements StepTracker {
 
         // Contract §9 (DECISION D1): steps listed in x-bip-redo-steps MUST be
         // re-executed even when the durable ledger already has them DELIVERED.
-        Set<String> redoSteps = redoSteps(exchange);
         boolean redoRequested = redoSteps.contains(stepId) || redoSteps.contains(idempotencyKey);
         boolean skip = alreadyDelivered && !redoRequested;
         if (alreadyDelivered && redoRequested) {
@@ -82,19 +83,28 @@ public class DefaultStepTracker implements StepTracker {
         }
     }
 
+    /**
+     * Reads a replay's {@code x-bip-redo-steps} into the exchange once and removes the header.
+     * The list belongs to this integration's replayed attempt: a receiver or a downstream
+     * integration that got it would send its own steps with the same ids again for the same
+     * message id. A managed Kafka input reads it before the route runs; on other inputs the
+     * first tracked send does.
+     * @param exchange the exchange
+     * @return the step ids to send again in this attempt
+     */
     @SuppressWarnings("unchecked")
-    private Set<String> redoSteps(Exchange exchange) {
+    public static Set<String> captureRedoSteps(Exchange exchange) {
+        Object header = exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS);
         Set<String> cached = exchange.getProperty(PlatformExchangeProperties.REDO_STEPS, Set.class);
         if (cached != null) {
             return cached;
         }
-        Set<String> redoSteps = parseRedoSteps(redoStepsHeaderValue(exchange));
+        Set<String> redoSteps = parseRedoSteps(redoStepsHeaderValue(header));
         exchange.setProperty(PlatformExchangeProperties.REDO_STEPS, redoSteps);
         return redoSteps;
     }
 
-    private String redoStepsHeaderValue(Exchange exchange) {
-        Object value = exchange.getMessage().getHeader(PlatformHeaders.REDO_STEPS);
+    private static String redoStepsHeaderValue(Object value) {
         if (value == null) {
             return null;
         }
@@ -109,7 +119,7 @@ public class DefaultStepTracker implements StepTracker {
      * ids. A malformed value is logged as a warning and treated as empty; it must
      * never fail message processing.
      */
-    private Set<String> parseRedoSteps(String headerValue) {
+    private static Set<String> parseRedoSteps(String headerValue) {
         if (headerValue == null || headerValue.isBlank()) {
             return Set.of();
         }
