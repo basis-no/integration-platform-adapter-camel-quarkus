@@ -10,7 +10,6 @@ import no.basis.integrationplatform.camel.step.StepOutcomeStore;
 import no.basis.integrationplatform.camel.step.StepOutcomeStoreException;
 import no.basis.integrationplatform.camel.step.StepTracker;
 import no.basis.integrationplatform.camel.step.StepTrackingInterceptStrategy;
-import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.Component;
 import org.apache.camel.Consumer;
@@ -143,9 +142,7 @@ class FailureOwnershipTest {
     void sendCompletesFailedWithoutCommitWhenTheMessageStoreCannotRecordItsOutcome(boolean asyncReceiver) throws Exception {
         // A Message Store outage that starts while the receiver handles the send: the check
         // before the send succeeded, then the step outcome and the journal cannot be written.
-        var result = deliver(asyncReceiver, row -> {
-            throw new IllegalStateException("synthetic journal outage");
-        }, null);
+        var result = deliver(asyncReceiver, "send", true, false, null);
 
         assertTrue(result.exchange.isFailed(), "The outcome was not recorded, so the exchange must fail");
         assertEquals(0, result.commits.get());
@@ -156,7 +153,7 @@ class FailureOwnershipTest {
     void stepOutcomeWriteFailureFailsTheSendWithoutCommit(boolean asyncReceiver) throws Exception {
         // The journal works and the route has no adapter parking: the failed step write alone
         // must fail the exchange, so the journal records FAILED and the offset stays.
-        var result = deliver(asyncReceiver, null, null);
+        var result = deliver(asyncReceiver, "send", false, true, null);
 
         assertTrue(result.exchange.isFailed(), "The step outcome was not recorded, so the exchange must fail");
         assertEquals(1, result.rows.size());
@@ -169,13 +166,53 @@ class FailureOwnershipTest {
     @ValueSource(booleans = {false, true})
     void stepOutcomeWriteFailureKeepsTheReceiverFailure(boolean asyncReceiver) throws Exception {
         var rejection = new IllegalArgumentException("synthetic receiver rejection");
-        var result = deliver(asyncReceiver, null, rejection);
+        var result = deliver(asyncReceiver, "send", false, true, rejection);
 
         assertTrue(result.exchange.isFailed());
         assertEquals(1, rejection.getSuppressed().length);
         assertInstanceOf(StepOutcomeStoreException.class, rejection.getSuppressed()[0]);
         assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
         assertEquals("synthetic receiver rejection", result.rows.getFirst().error());
+        assertEquals(0, result.commits.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void stepOutcomeWriteFailureIsNeitherParkedNorCommittedWhileTheJournalWorks(boolean asyncReceiver) throws Exception {
+        // Only the step outcome store fails: the receiver got the input, but the step is not
+        // known as delivered. Parking would commit; the input must be consumed again instead.
+        var result = deliver(asyncReceiver, "send", true, true, null);
+
+        assertTrue(result.exchange.isFailed());
+        assertEquals(List.of("<Input/>"), result.received);
+        assertTrue(result.parked.isEmpty(), "A parked copy would repeat the input that is consumed again");
+        assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
+        assertEquals(0, result.commits.get());
+    }
+
+    @ParameterizedTest
+    @CsvSource({"false, split", "true, split", "false, split-handled", "true, split-handled"})
+    void stepOutcomeWriteFailureInASplitPartKeepsTheInputFromCommitting(boolean asyncReceiver, String shape) throws Exception {
+        // A part runs on a copy of the input exchange; the failure must still reach the input,
+        // also when the part catches it and the input otherwise completes.
+        var result = deliver(asyncReceiver, shape, true, true, null);
+
+        assertTrue(result.exchange.isFailed());
+        assertEquals(List.of("a", "b"), result.received);
+        assertTrue(result.parked.isEmpty());
+        assertEquals(MessageStatus.FAILED, result.rows.getLast().status());
+        assertEquals(0, result.commits.get());
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void stepOutcomeWriteFailureIsNotCommittedWhenTheRouteHandlesIt(boolean asyncReceiver) throws Exception {
+        var result = deliver(asyncReceiver, "handled", true, true, null);
+
+        assertTrue(result.exchange.isFailed());
+        assertTrue(result.parked.isEmpty());
+        assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
+        assertEquals("synthetic step outcome outage", result.rows.getFirst().error());
         assertEquals(0, result.commits.get());
     }
 
@@ -239,11 +276,14 @@ class FailureOwnershipTest {
     }
 
     /**
-     * Sends {@code <Input/>} from a managed Kafka input to a tracked receiver while the step
-     * outcome store fails its writes. {@code journal} replaces the recording journal, and a
-     * {@code null} one routes without the adapter's parking.
+     * Sends a managed Kafka input to a tracked receiver while the step outcome store fails its
+     * writes. The {@code send} and {@code handled} shapes send {@code <Input/>}, the second in a
+     * {@code doTry} that catches every failure; {@code split} sends the parts of {@code a,b} with
+     * their own ids, and only the second part's write fails, and {@code split-handled} catches
+     * each part's failure in the part. Without {@code adapterParking} the route has no error handler.
      */
-    private Delivery deliver(boolean asyncReceiver, MessageStoreSink journal, RuntimeException rejection) throws Exception {
+    private Delivery deliver(boolean asyncReceiver, String shape, boolean adapterParking, boolean journalWorks,
+            RuntimeException rejection) throws Exception {
         var result = new Delivery();
         ExecutorService receiverThread = Executors.newSingleThreadExecutor();
         try (var context = new DefaultCamelContext()) {
@@ -252,6 +292,7 @@ class FailureOwnershipTest {
             properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
             context.getPropertiesComponent().setOverrideProperties(properties);
             Processor receiver = e -> {
+                result.received.add(e.getMessage().getBody(String.class));
                 if (rejection != null) throw rejection;
             };
             context.addComponent("receiver", asyncReceiver ? new AsyncReceiver(receiverThread, receiver)
@@ -259,21 +300,41 @@ class FailureOwnershipTest {
             context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
                     new DefaultStepTracker(new StepOutcomeStore() {
                         public boolean wasDelivered(String idempotencyKey) { return false; }
-                        public void recordDelivered(StepResult step) { throw outage(); }
-                        public void recordFailed(StepResult step) { throw outage(); }
+                        public void recordDelivered(StepResult step) { write(step); }
+                        public void recordFailed(StepResult step) { write(step); }
+
+                        private void write(StepResult step) {
+                            if (!shape.startsWith("split") || step.idempotencyKey().startsWith("message-1-1:")) throw outage();
+                        }
                     })));
             context.addRoutes(new PlatformRouteConfiguration());
             context.addRoutes(new PlatformDeadLetterRoute());
             context.addRoutes(new RouteBuilder() {
                 public void configure() {
                     var input = from("direct:input").routeId("input");
-                    if (journal == null) {
-                        input.errorHandler(noErrorHandler());
-                    } else {
+                    if (adapterParking) {
                         input.routeConfigurationId(PlatformRouteConfiguration.NO_RETRY);
+                    } else {
+                        input.errorHandler(noErrorHandler());
                     }
-                    input.routePolicy(new MessageStoreRoutePolicy(journal == null ? result.rows::add : journal, "order-pipeline"))
-                            .to("receiver:orders").id("deliver-order");
+                    input.routePolicy(new MessageStoreRoutePolicy(row -> {
+                        if (!journalWorks) throw new IllegalStateException("synthetic journal outage");
+                        result.rows.add(row);
+                    }, "order-pipeline"));
+                    switch (shape) {
+                        case "send" -> input.to("receiver:orders").id("deliver-order");
+                        case "handled" -> input.doTry().to("receiver:orders").id("deliver-order")
+                                .doCatch(Exception.class).log("handled by the route").end();
+                        case "split" -> input.split(body().tokenize(","))
+                                .setHeader(PlatformHeaders.MESSAGE_ID, simple("message-1-${exchangeProperty.CamelSplitIndex}"))
+                                .to("receiver:orders").id("deliver-order").end();
+                        case "split-handled" -> input.split(body().tokenize(","))
+                                .setHeader(PlatformHeaders.MESSAGE_ID, simple("message-1-${exchangeProperty.CamelSplitIndex}"))
+                                .doTry().to("receiver:orders").id("deliver-order")
+                                .doCatch(Exception.class).log("part handled by the route").end()
+                                .end();
+                        default -> throw new IllegalArgumentException(shape);
+                    }
                     from("direct:parking").routeId("parking").errorHandler(noErrorHandler())
                             .process(e -> result.parked.add(e.getMessage().getBody(String.class)));
                 }
@@ -281,7 +342,8 @@ class FailureOwnershipTest {
             context.start();
             try (var producer = context.createProducerTemplate()) {
                 result.exchange = producer.asyncSend("direct:input", e -> {
-                    e.getMessage().setBody("<Input/>");
+                    e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-1");
+                    e.getMessage().setBody(shape.startsWith("split") ? "a,b" : "<Input/>");
                     e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT,
                             (KafkaManualCommit) result.commits::incrementAndGet);
                 }).get(10, TimeUnit.SECONDS);
@@ -385,6 +447,7 @@ class FailureOwnershipTest {
     }
 
     private static final class Delivery extends Result {
+        final List<String> received = new java.util.concurrent.CopyOnWriteArrayList<>();
         Exchange exchange;
     }
 

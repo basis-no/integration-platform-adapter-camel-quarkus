@@ -111,15 +111,17 @@ with 0.4.
 - A failure that is sent to the dead letter queue is logged at ERROR with its
   stack trace first.
 - A send whose step outcome cannot be checked or recorded, for example during a
-  Message Store outage, fails its exchange. Before, when the outcome write failed
-  after a send that completed asynchronously, such as a Kafka publish, the
-  exchange never completed. A send that completed synchronously hung the same
-  way in a route with no error handler. The failure now goes through the
-  route's retries and DLQ parking like a failed send. The commit rule is
-  unchanged: the offset is committed only after the journal records the
-  message's outcome and the message completed or its parking was confirmed. A
-  failed send keeps its own exception, with the recording failure attached as
-  suppressed.
+  Message Store outage, fails its exchange. The input is then neither parked
+  nor committed, and is recorded as `FAILED`, so it is consumed again. This
+  also holds when the route catches the failure and when it happens in a split
+  part, loop iteration or branch. Before, when the outcome write failed after a
+  send that completed asynchronously, such as a Kafka publish, the exchange
+  never completed. A send that completed synchronously hung the same way in a
+  route with no error handler or inside `doTry`, and in a split part it could
+  let the input complete and commit. Camel's retries still run before the
+  input fails, so a receiver can get the same send again; receivers deduplicate
+  on the stable `Idempotency-Key`. A failed send keeps its own exception, with
+  the recording failure attached as suppressed.
 - The DLQ record carries the consumed input, also when the route changed it.
   Before, a route that changed a byte-array input in place changed both the
   parked record and the payload stored for replay. When the payload was not

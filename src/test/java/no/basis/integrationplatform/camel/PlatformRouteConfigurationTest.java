@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel;
 
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import org.apache.camel.Exchange;
 import org.apache.camel.impl.DefaultCamelContext;
 import org.apache.camel.support.DefaultExchange;
@@ -89,6 +90,27 @@ class PlatformRouteConfigurationTest {
             assertSame(failure, errors.getFirst().getThrown());
             assertEquals("Message message-123 failed after its configured retries and is being sent to the dead letter queue",
                     LogCapture.text(errors.getFirst()));
+        }
+    }
+
+    @Test
+    void aMessageWhoseStepOutcomeWasNotRecordedIsLoggedAsNotParked() {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        var failure = new IllegalStateException("step outcome store unavailable");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
+        StepOutcomeFailure.begin(exchange);
+        exchange.getProperty(PlatformExchangeProperties.STEP_OUTCOME_FAILURE,
+                java.util.concurrent.atomic.AtomicReference.class).set(failure);
+
+        try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
+            configuration.prepareDlq(exchange);
+
+            var errors = logs.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            assertSame(failure, errors.getFirst().getThrown());
+            assertEquals("Message message-123 failed after its configured retries and is not parked: a step outcome "
+                    + "was not checked or recorded, so it is consumed again", LogCapture.text(errors.getFirst()));
         }
     }
 

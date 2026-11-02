@@ -1,6 +1,7 @@
 package no.basis.integrationplatform.camel;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteConfigurationBuilder;
 import org.slf4j.Logger;
@@ -89,7 +90,11 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
         // The DLQ header keeps only the message; operators need the stack trace to diagnose it.
         Throwable failure = failure(exchange);
-        if (failure != null) {
+        if (failure != null && StepOutcomeFailure.of(exchange) != null) {
+            LOG.error("Message {} failed after its configured retries and is not parked: a step outcome was not "
+                            + "checked or recorded, so it is consumed again",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+        } else if (failure != null) {
             LOG.error("Message {} failed after its configured retries and is being sent to the dead letter queue",
                     exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
         }

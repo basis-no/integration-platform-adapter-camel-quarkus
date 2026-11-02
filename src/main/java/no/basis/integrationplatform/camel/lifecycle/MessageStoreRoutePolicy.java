@@ -7,6 +7,7 @@ import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.Exchange;
@@ -56,6 +57,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         normalizeKafkaEnvelopeHeaders(exchange);
         // A replay's redo list is for this attempt only; the route must not forward it.
         DefaultStepTracker.captureRedoSteps(exchange);
+        StepOutcomeFailure.begin(exchange);
         exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
         exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
         captureInputEnvelope(exchange);
@@ -74,6 +76,11 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             fail(exchange, "Failed to record message outcome; Kafka offset was not committed", e);
             return;
         }
+        Throwable unrecorded = StepOutcomeFailure.of(exchange);
+        if (unrecorded != null) {
+            fail(exchange, "A step outcome was not checked or recorded; Kafka offset was not committed", unrecorded);
+            return;
+        }
         if (result.status() == MessageStatus.FAILED) {
             fail(exchange, "Processing failed without confirmed DLQ parking; Kafka offset was not committed", null);
             return;
@@ -85,7 +92,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
     }
 
-    private void fail(Exchange exchange, String message, Exception cause) {
+    private void fail(Exchange exchange, String message, Throwable cause) {
         var failure = new IllegalStateException(message, cause);
         // Camel logs/ignores exceptions thrown by route-policy completion. Keep
         // the exchange failed as well, so the Kafka consumer can seek/retry.
@@ -96,7 +103,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     protected MessageAttemptResult result(Route route, Exchange exchange) {
         boolean dlqParked = dlqParked(exchange);
         Throwable failure = failure(exchange, dlqParked);
-        MessageStatus status = status(dlqParked, failure);
+        // The input is consumed again, also when a route handled the failure or a copy was parked.
+        Throwable unrecorded = StepOutcomeFailure.of(exchange);
+        MessageStatus status = unrecorded != null ? MessageStatus.FAILED : status(dlqParked, failure);
+        if (failure == null) {
+            failure = unrecorded;
+        }
 
         return new MessageAttemptResult(
                 schemaVersion(exchange),

@@ -177,8 +177,10 @@ camel.component.kafka.poll-on-error=RECONNECT
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
 processing completed or DLQ publication was confirmed. An unparked `FAILED`
 outcome, failed journal write or failed commit leaves the exchange failed. A
-step outcome that cannot be checked or recorded fails the send's exchange, which
-then goes through the route's retries and DLQ parking like a failed send.
+step outcome that cannot be checked or recorded fails the send's exchange after
+Camel's retries; the input is then recorded as `FAILED` and neither parked nor
+committed, also when the route catches the failure or it happens in a split
+part.
 `break-on-first-error` prevents a later record in the batch from advancing past
 that unresolved input. Applications must not override these safety defaults.
 This can intentionally block processing during a durability outage; it is not a
