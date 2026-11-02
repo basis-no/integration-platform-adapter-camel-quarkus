@@ -209,7 +209,7 @@ class PostgresKafkaMessageReplayServiceTest {
             assertEquals("vendor", header(record, PlatformHeaders.TARGET_SYSTEM));
             assertEquals("true", header(record, PlatformHeaders.REPLAY));
             assertEquals("2", header(record, PlatformHeaders.ATTEMPT));
-            // Contract D1: the redo header wire format is the same JSON array as the audit column.
+            // The redo header wire format is the same JSON array as the audit column.
             assertEquals("[\"sftp\"]", header(record, PlatformHeaders.REDO_STEPS));
         }
     }

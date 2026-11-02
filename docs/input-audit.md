@@ -8,10 +8,10 @@ example, an integration can expose an optional ordinary application setting:
 basis.input-audit.routes=${INPUT_AUDIT_ROUTES:receive-file,receive-http}
 ```
 
-Unknown ids, wildcards, Kafka inputs, the platform parking route, and overlap
+Unknown ids, wildcards, Kafka inputs, the adapter's parking route, and overlap
 with `basis.delivery-audit.routes` are rejected. An explicitly empty value
-disables inspection. Keep platform-generated `basis.message-store.*` settings
-under platform ownership.
+disables inspection. Leave the deployment-owned `basis.message-store.*` settings
+to the deployment.
 
 Select the actual non-Kafka input boundary: for example an SFTP consumer, HTTP
 ingress, scheduler, or a dedicated fresh `direct:` input called by a poller.

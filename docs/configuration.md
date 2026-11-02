@@ -35,4 +35,4 @@ databases remain supported and need no migration to adopt this adapter.
 
 [Activity metrics](activity-metrics.md) defines admission and broker-ACK semantics,
 static-producer requirements, fixed metrics and unknown coverage. Empty selection
-preserves existing behavior. Export alone does not enable a platform alert policy.
+preserves existing behavior. Export alone does not enable an alert policy.

@@ -17,7 +17,7 @@ side effect. The same check also applies to parts of a single attempt. A part
 is **not sent** when all three of these hold:
 
 1. `basis.message-store.step-outcome-store=postgres`. The library default
-   `noop` never skips. Managed deployments with a Message Store normally use
+   `noop` never skips. Production deployments with a Message Store normally use
    `postgres`.
 2. The parts share one `x-bip-message-id`. That happens when the exchange has
    an id before the split:

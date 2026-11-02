@@ -1,7 +1,7 @@
 # Optional Kafka activity metrics
 
 This is an **unreleased source candidate**, pending adapter and installed
-platform qualification. It is disabled by default. No integration version,
+runtime qualification. It is disabled by default. No integration version,
 route, Kafka setting or alert policy is changed automatically.
 
 ## Choose an actual event

@@ -156,7 +156,7 @@ class PostgresMessageStoreSinkTest {
     void reconsumedOriginalInputAfterReplayKeepsReplayedLatestAttempt() {
         // The original record fails, a replay recovers it, then the original Kafka record is
         // consumed again without an attempt header. It is attempt 1 again and must not reset
-        // the summary that the dashboard reads as the recovered latest attempt.
+        // the summary that operator views read as the recovered latest attempt.
         sink.record(result(MessageStatus.FAILED, 1, "vendor unavailable"));
         sink.record(result(MessageStatus.COMPLETED, 2, null));
 
