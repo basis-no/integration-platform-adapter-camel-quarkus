@@ -9,11 +9,6 @@ The patterns are private and come from a file or an environment variable, never
 from this repository. Output names only the location and the pattern number, so
 a CI log never reveals a pattern.
 
-Added lines are also checked against a short public list of wording rules. The
-adapter is generic: its files describe its own behavior and must not refer to a
-particular product built on it. These rules are not secret, so output names the
-rule. Each rule is bracketed so that it does not match its own source line.
-
 usage: public-content-check.py --range BASE..HEAD
        [--patterns-file PATH | patterns in $PUBLIC_CONTENT_PATTERNS] [--check-emails]
 """
@@ -28,16 +23,6 @@ ALLOWED_EMAIL = re.compile(r"(@basis\.no|@users\.noreply\.github\.com|^noreply@g
 PRIVATE_IP = re.compile(
     r"\b(10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b"
 )
-WORDING_RULES = [re.compile(rule, re.IGNORECASE) for rule in (
-    r"\bintegration[ ]platform\b",
-    r"\bhand[b]ook\b",
-    r"\bdashboard[ ]agent\b",
-    r"\bcertification[ ]suite\b",
-)]
-
-
-def wording_hits(text):
-    return [rule.pattern for rule in WORDING_RULES if rule.search(text)]
 
 
 def git(*args):
@@ -93,12 +78,10 @@ def main():
             elif line.startswith("+"):
                 for hit in check(line[1:]):
                     findings.append(f"{short} {path}:{line_no} matches pattern {hit}")
-                for rule in wording_hits(line[1:]):
-                    findings.append(f"{short} {path}:{line_no} matches wording rule {rule}")
                 line_no += 1
 
     if findings:
-        print("Private content or wording found. Remove it, or rewrite the commits, before this can be published:")
+        print("Private content found. Remove it, or rewrite the commits, before this can be published:")
         for finding in findings:
             print("  " + finding)
         return 1

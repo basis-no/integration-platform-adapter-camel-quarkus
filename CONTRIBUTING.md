@@ -34,9 +34,7 @@ rules the agents follow; human contributors follow the same rules.
   `release/*` for credentials and for private names and hosts. It reports only
   the file, line and pattern number.
 - Describe the adapter in its own terms. Do not refer to a particular product,
-  service or documentation set that uses it. The `Public content` check also
-  applies a short public list of wording rules from
-  `.github/scripts/public-content-check.py` to added lines.
+  service or documentation set that uses it.
 
 ## Security
 

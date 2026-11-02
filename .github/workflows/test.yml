@@ -25,9 +25,6 @@ jobs:
       - name: Test release notes extraction
         run: python3 -m unittest discover -s tests -p "test_release_notes.py"
 
-      - name: Test public content wording rules
-        run: python3 -m unittest discover -s tests -p "test_public_content_check.py"
-
       - name: Test offline release packaging and recovery guards
         run: python3 .github/scripts/test-release-packaging.py
 

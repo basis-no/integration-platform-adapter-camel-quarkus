@@ -1,10 +1,9 @@
 name: Public content
 
 # This repository is public. Every pull request and every push to a protected
-# branch is scanned for credentials (gitleaks), for private names and hosts, and
-# for a short public list of wording rules in the check script. The private
-# patterns live in the PUBLIC_CONTENT_PATTERNS secret, never here, and the check
-# reports only file, line and pattern number for them.
+# branch is scanned for credentials (gitleaks) and for private names and hosts.
+# The private patterns live in the PUBLIC_CONTENT_PATTERNS secret, never here,
+# and the check reports only file, line and pattern number.
 on:
   pull_request:
   push:

@@ -41,8 +41,7 @@ The adapter is generic open source. Describe its behavior in its own terms and
 do not refer to a particular product, service, dashboard, or documentation set
 that uses it. Existing identifiers such as the Maven coordinates, packages,
 `x-bip-*` headers and `bip_*` tables keep their names; refer to them as this
-adapter's identifiers. The `Public content` check refuses some of this wording
-in added lines.
+adapter's identifiers.
 
 ## Engineering and verification
 
