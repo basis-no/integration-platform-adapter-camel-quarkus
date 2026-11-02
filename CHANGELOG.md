@@ -110,6 +110,14 @@ with 0.4.
   `basis.messageStore.stepAlreadyDelivered` in the step after a send.
 - A failure that is sent to the dead letter queue is logged at ERROR with its
   stack trace first.
+- An application's own `onException` handler, in a route, a route builder or a
+  route configuration, sees and sends the message as the route left it, as a
+  `doCatch` does. The adapter prepares a message for the dead letter queue, and
+  logs it at ERROR, only when its dead letter channel sends the message there.
+  Before, Camel ran that preparation also before such a handler: the handler,
+  and with `continued(true)` the rest of the route, got the consumed input
+  stored for replay instead of the body the route left, plus `x-bip-error` and
+  `x-bip-dlq-at`.
 - A send whose step outcome cannot be checked or recorded, for example during a
   Message Store outage, fails its exchange. The input is then neither parked
   nor committed, and is recorded as `FAILED`, so it is consumed again. This
@@ -351,6 +359,11 @@ and iteration its own step key. See the
   publishing to another integration's input, and carry continuity in
   `x-bip-correlation-id`. Explicit step ids must also be unique across the
   integrations that can see the same message id.
+- An `onException` handler that used the consumed input as its body, or read
+  `x-bip-error`, now gets the body the route left and neither `x-bip-error` nor
+  `x-bip-dlq-at`. Use Camel's `useOriginalMessage()` on the `onException` and
+  `${exception.message}`. A Camel event notifier for `ExchangeFailureHandlingEvent`
+  also gets the message as the route left it, also when the adapter parks it.
 - Tools that read DLQ records see `xxxxxx` instead of credential header values.
 - A byte-array Kafka input now holds one extra copy of its size until its
   exchange completes, in every payload mode. A String input does not.

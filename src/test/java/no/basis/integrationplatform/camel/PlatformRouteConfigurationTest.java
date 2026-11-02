@@ -32,7 +32,7 @@ class PlatformRouteConfigurationTest {
         Instant before = Instant.now();
 
         // When the dead letter channel prepares the exchange for parking.
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         // Then the DLQ record carries the original consumed payload plus diagnostics.
         assertEquals(false, exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
@@ -56,7 +56,7 @@ class PlatformRouteConfigurationTest {
         exchange.getMessage().setBody("<Transformed/>");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
 
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         assertEquals("<Input/>", exchange.getMessage().getBody());
     }
@@ -68,7 +68,7 @@ class PlatformRouteConfigurationTest {
         exchange.getMessage().setBody("stream-derived body");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
 
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         assertEquals("stream-derived body", exchange.getMessage().getBody());
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
@@ -83,7 +83,7 @@ class PlatformRouteConfigurationTest {
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
 
         try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
-            configuration.prepareDlq(exchange);
+            PlatformRouteConfiguration.prepareDlq(exchange);
 
             var errors = logs.at(java.util.logging.Level.SEVERE);
             assertEquals(1, errors.size());
@@ -104,7 +104,7 @@ class PlatformRouteConfigurationTest {
                 java.util.concurrent.atomic.AtomicReference.class).set(failure);
 
         try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
-            configuration.prepareDlq(exchange);
+            PlatformRouteConfiguration.prepareDlq(exchange);
 
             var errors = logs.at(java.util.logging.Level.SEVERE);
             assertEquals(1, errors.size());
@@ -141,7 +141,7 @@ class PlatformRouteConfigurationTest {
         message.setHeader("Content-Type", "application/xml");
         message.setHeader("CamelHttpResponseCode", 200);
 
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         for (String name : List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
                 "x-functions-key", "X-Access-Key", "x_client_key",
@@ -161,7 +161,7 @@ class PlatformRouteConfigurationTest {
     @Test
     void dlqParkingWithoutAFailureLogsNoError() {
         try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
-            configuration.prepareDlq(exchange());
+            PlatformRouteConfiguration.prepareDlq(exchange());
 
             assertTrue(logs.records().isEmpty());
         }
@@ -172,7 +172,7 @@ class PlatformRouteConfigurationTest {
         Exchange exchange = exchange();
         exchange.setException(new IllegalStateException((String) null));
 
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         assertEquals(IllegalStateException.class.getName(), exchange.getMessage().getHeader(PlatformHeaders.ERROR));
     }

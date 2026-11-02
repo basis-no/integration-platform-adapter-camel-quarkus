@@ -31,7 +31,6 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
                         .useExponentialBackOff()
@@ -41,7 +40,6 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(6)
                         .redeliveryDelay(5000)
                         .useExponentialBackOff()
@@ -51,7 +49,6 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(0));
     }
 
@@ -77,7 +74,12 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
     }
 
-    void prepareDlq(Exchange exchange) {
+    /**
+     * Prepares the exchange the dead letter channel sends to the parking route. The parking
+     * route runs it, not onPrepareFailure: Camel runs that also before an application's own
+     * onException handler, which must see and send the message as the route left it.
+     */
+    static void prepareDlq(Exchange exchange) {
         exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, false);
 
         // The parked record is the consumed input. A route may have set another id for a
@@ -142,7 +144,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 || lower.endsWith("-key") || lower.endsWith("_key");
     }
 
-    private String failureMessage(Exchange exchange) {
+    private static String failureMessage(Exchange exchange) {
         Throwable failure = failure(exchange);
         if (failure == null) {
             return "unknown failure";
@@ -150,7 +152,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
     }
 
-    private Throwable failure(Exchange exchange) {
+    private static Throwable failure(Exchange exchange) {
         Throwable failure = exchange.getException();
         return failure != null ? failure : exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
     }
