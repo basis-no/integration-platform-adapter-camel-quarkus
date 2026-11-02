@@ -2,7 +2,10 @@
 
 Status: known limitation in every 0.3.x release. Behaviour was checked against
 the 0.3.1, 0.3.3, 0.3.4 and 0.3.5 tags and the 0.3.6 candidate, with the same
-result on each. `SplitStepIdentityMatrixTest` pins the cases below.
+result on each. 0.3.6 logs each lost part at ERROR and changes nothing else (see
+[From 0.3.6: an ERROR for each skipped part](#from-036-an-error-for-each-skipped-part)).
+`SplitStepIdentityMatrixTest` and `RepeatedStepDetectionTest` pin the cases
+below.
 
 ## What can be lost
 
@@ -28,17 +31,57 @@ is **not sent** when all three of these hold:
    `xslt-saxon`. The send can be direct, behind a `direct:` sub-route, or inside
    a multicast within the part.
 
-Then only the first part to reach that node is sent. Later parts are skipped
-without an error, the input completes, and a Kafka offset is committed. A
+Then only the first part to reach that node is sent. Later parts are skipped,
+the input completes, and a Kafka offset is committed. A
 `toD` whose URI differs per part does not help, because the step id is the node
 id. The aggregation strategy, `streaming`, `shareUnitOfWork` and
 `stopOnException` make no difference. A `loop` that sends through one node
 behaves the same way, with or without `copy()`. With `parallelProcessing`, the
 parts race on the delivered check: all of them may be sent, or not.
 
-Version 0.3.5 and earlier log nothing for a skipped send. From 0.3.6 each skip
-is logged at INFO as `Step <id> SKIPPED for message <id>`. If this appears
-without a replay, it marks this case.
+Multicast and recipient list branches that reach one send node behave the same
+way. Version 0.3.5 and earlier log nothing for a skipped send.
+
+## From 0.3.6: an ERROR for each skipped part
+
+A send that is skipped because another part, iteration or branch of the same
+attempt already sent or skipped its key is logged at ERROR, once per skipped
+send:
+
+```text
+Step <step-id> was skipped in a <split part|loop iteration|multicast branch|recipient list branch>
+of input route <route-id>, so this part was not delivered: another part of the same attempt
+already sent or skipped this step key. In 0.3.x split parts, loop iterations and multicast and
+recipient list branches keep the input's x-bip-message-id, so they share one step key. Give
+each part its own x-bip-message-id, send each part through a new exchange with its own id, or
+publish each part with its own id. See docs/split-step-identity.md
+```
+
+The message is one line. It names the step, the input route and the kind of
+part, and contains no message content or header values.
+
+- Detection only. Whether a part is sent, the input's outcome, retries, DLQ
+  parking, offset commits and the recorded step outcomes are the same as in
+  0.3.5. A Kafka input still commits; a polling route still marks its batch
+  processed.
+- The adapter tells parts apart by their position in the enclosing splits,
+  loops, multicasts and recipient lists. A part that meets its own step again is a
+  normal skip at INFO (`Step <id> SKIPPED for message <id>`): Camel repeating a
+  sub-route or a whole split within one attempt, and a redelivered or replayed
+  input whose earlier attempt sent the step. In a redelivered input the first
+  part to reach the step is logged at INFO and each later one at ERROR.
+- With `parallelProcessing`, each part is either sent or logged at ERROR.
+- The `noop` step store never skips, so it logs nothing.
+
+Not detected, so these skips are logged at INFO only:
+
+- One part that reaches the same send twice on its own, for example by calling
+  one `direct:` sub-route twice.
+- A loop inside a loop. After the inner loop, Camel leaves the inner loop's
+  `CamelLoopIndex` on the exchange, so a send that follows it in the outer loop
+  can look like the same iteration.
+- A part sent through a new exchange that copies the input's
+  `x-bip-message-id`: the new exchange does not see the other parts' sends.
 
 ## Not affected
 
@@ -58,11 +101,15 @@ without a replay, it marks this case.
   inside the split or a branch pipeline. If a split's aggregation strategy
   returns a part's message (for example `useLatest`), restore the input's id
   afterwards, so that the input is journaled under its own id.
-- Alternatively, publish each part through a new exchange with an explicit id.
+- Alternatively, send each part through a new exchange with its own id, or
+  publish each part with its own id, for example as a Kafka record to the
+  integration's own input, and send it from there.
 - Do not depend on `parallelProcessing` to avoid the skip.
 - Switching the integration to the `noop` store also avoids the skip. It
   removes replay protection for every step, so a replay repeats delivered side
   effects.
+- Moving a route to per-part ids changes its keys. A replay of a message
+  recorded before the change sends its first part once more.
 
 0.4 gives each part and iteration its own step key; 0.3.6 is the last 0.3
 release. Changing the adapter's step identity is not part of 0.3.x. Existing

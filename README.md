@@ -214,7 +214,9 @@ Known split limitations in 0.3.x: split parts keep the input's message id, and
 a send node has one step id, so all parts share one idempotency key. With
 `basis.message-store.step-outcome-store=postgres`, only the first part sent
 through a node is delivered; later parts are `SKIPPED`, also in the first
-attempt. Without `stopOnException()`, each failed part is parked separately and
+attempt. From 0.3.6 each such skip is logged at ERROR; see
+[Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
+Without `stopOnException()`, each failed part is parked separately and
 the input still records `COMPLETED`; with it, the first failure parks the input
 once and records `DLQ`. Per-part identity is not part of 0.3.x; 0.4 adds it. See the
 [split step identity advisory](docs/split-step-identity.md) for the exact
@@ -527,7 +529,9 @@ message attempt. `SKIPPED` means the configured `StepOutcomeStore` says the same
 idempotency key was already delivered, so the endpoint send was not repeated.
 From 0.3.6 each skip is logged at INFO with the step, message id and masked
 endpoint, and the logging sink counts delivered, skipped and failed steps
-separately. A route log placed after a send cannot tell by itself whether the send
+separately. A skip that loses a split part, loop iteration or branch is logged
+at ERROR instead; see
+[Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x). A route log placed after a send cannot tell by itself whether the send
 happened. Directly after the send, the exchange property
 `basis.messageStore.stepAlreadyDelivered`
 (`PlatformExchangeProperties.STEP_ALREADY_DELIVERED`) is `true` only when that
@@ -543,6 +547,63 @@ step entries use the same masked endpoint, as does the warning emitted when a
 send has no stable Camel node id. This masks the endpoint field, not arbitrary
 exception messages or application logs. Existing rows, logs and backups are not
 rewritten; review their access and retention separately.
+
+### Splitting before a tracked send in 0.3.x
+
+A step key is `<x-bip-message-id>:<step-id>`. Split parts, loop iterations and
+multicast and recipient list branches keep the input's message id, so parts
+that reach the same tracked send share one key. With
+`basis.message-store.step-outcome-store=postgres`, only the first part is sent.
+Each later part's send is skipped as already delivered, and that part's data
+does not reach the receiver. The input still completes: a Kafka offset is
+committed, and a polling route goes on to mark its batch processed. This is the
+same in every 0.3.x release.
+
+From 0.3.6 each such skip is logged at ERROR, once per skipped send:
+
+```text
+Step <step-id> was skipped in a <split part|loop iteration|multicast branch|recipient list branch>
+of input route <route-id>, so this part was not delivered: another part of the same attempt
+already sent or skipped this step key. In 0.3.x split parts, loop iterations and multicast and
+recipient list branches keep the input's x-bip-message-id, so they share one step key. Give
+each part its own x-bip-message-id, send each part through a new exchange with its own id, or
+publish each part with its own id. See docs/split-step-identity.md
+```
+
+The log message is one line. It names the step, the input route and the kind of
+part, and contains no message content or header values. Only the log changes:
+the skip, the input's outcome, retries, parking and commits are as before. A
+skip of a step that an earlier attempt sent, after a redelivery or a replay,
+stays at INFO (`Step <step-id> SKIPPED for message <id>`). So does a part that
+meets its own delivered send again when Camel repeats a sub-route or a whole
+split within one attempt. The `noop` step store never skips, so every part is
+sent and nothing is logged.
+
+Safe forms, which send every part:
+
+1. Give each part its own `x-bip-message-id` before the send, derived from its
+   record so that a replay keeps the same key:
+
+   ```java
+   .split(body().tokenize("\n"))
+       .setHeader("x-bip-message-id", simple("${header.x-bip-message-id}-${exchangeProperty.CamelSplitIndex}"))
+       .to("https://receiver.example/lines").id("post-line")
+   .end()
+   ```
+
+   Prefer a business key from the record over the split index when the input
+   can change between replays.
+2. Send each part through a new exchange, for example with a `ProducerTemplate`,
+   with its own `x-bip-message-id`.
+3. Publish each part with its own id, for example as a Kafka record to the
+   integration's own input, and send it from there.
+
+If an aggregation strategy returns a part's message, restore the input's id
+after the split so that the input is journaled under its own id. After a route
+moves to per-part ids, its keys change: a replay of a message recorded before
+the change sends its first part once more. 0.4 gives each part and iteration
+its own step key. The [split step identity advisory](docs/split-step-identity.md)
+has the exact conditions and the cases the ERROR line does not catch.
 
 ## Key-Value Store
 

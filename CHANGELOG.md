@@ -86,6 +86,53 @@ with 0.4.
   DataSource". The error now says that the lookup is ambiguous. Give the
   additional DataSource a qualifier, such as `@Identifier("<name>")`.
 
+### Splitting before a tracked send in 0.3.x
+
+In 0.3.x a step key is `<x-bip-message-id>:<step-id>`. Split parts, loop
+iterations and multicast and recipient list branches keep the input's message
+id, so parts that reach the same tracked send share one key. With the Postgres
+step store, only the first part is sent. The later ones are skipped as already
+delivered and their data does not reach the receiver, while the input completes:
+a Kafka offset is committed, or a polling route goes on to mark its batch
+processed. Version 0.3.5 and earlier log nothing for these skips.
+
+From 0.3.6 each such skip is logged at ERROR, once per skipped send:
+
+```text
+Step <step-id> was skipped in a <split part|loop iteration|multicast branch|recipient list branch>
+of input route <route-id>, so this part was not delivered: another part of the same attempt
+already sent or skipped this step key. In 0.3.x split parts, loop iterations and multicast and
+recipient list branches keep the input's x-bip-message-id, so they share one step key. Give
+each part its own x-bip-message-id, send each part through a new exchange with its own id, or
+publish each part with its own id. See docs/split-step-identity.md
+```
+
+- The message is one line and contains no message content or header values.
+- Only the log changes. The skip itself, the input's outcome, retries, DLQ
+  parking, offset commits and the recorded step outcomes are as in 0.3.5.
+- A skip of a step that an earlier attempt sent, after a redelivery or a
+  replay, stays at INFO. So does a part that meets its own delivered send again
+  when Camel repeats a sub-route or a whole split within one attempt.
+- The `noop` step store never skips, so every part is sent and nothing is
+  logged.
+- Not detected, and still logged at INFO only: one part that reaches the same
+  send twice on its own, a send after an inner loop in an outer loop, and a part
+  sent through a new exchange that copies the input's `x-bip-message-id`.
+
+The safe forms, which send every part:
+
+1. Give each part its own `x-bip-message-id` before the send, derived from its
+   record so that a replay keeps the same key.
+2. Send each part through a new exchange, for example with a `ProducerTemplate`,
+   with its own `x-bip-message-id`.
+3. Publish each part with its own id, for example as a Kafka record to the
+   integration's own input, and send it from there.
+
+After a route changes to per-part ids, its keys change: replaying a message
+recorded before the change sends its first part once more. 0.4 gives each part
+and iteration its own step key. See the
+[split step identity advisory](docs/split-step-identity.md).
+
 ### New and opt-in
 
 - Key-Value Store: an integration-scoped API for small JSON cursors and markers,
@@ -102,7 +149,10 @@ with 0.4.
 
 - Split parts and loop iterations that send through the same node share one
   step identity. With the Postgres step store, only the first is delivered and
-  the rest are skipped, also in the first attempt. Without `stopOnException()`,
+  the rest are skipped, also in the first attempt. From 0.3.6 each such skip is
+  logged at ERROR (see
+  [Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x));
+  nothing else changes. Without `stopOnException()`,
   each failed part is parked separately while the input records `COMPLETED`. See
   the [split step identity advisory](docs/split-step-identity.md). This applies
   to every 0.3.x release. Fixed in 0.4, which gives each part and iteration its
@@ -180,6 +230,11 @@ with 0.4.
   reconnection. NotReady does not restart a pod: alert on sustained NotReady.
 - Set the readiness probe timeout to 3–5 seconds. While the consumer reconnects,
   Camel's Kafka health check can take more than 2 seconds to answer.
+- **Look for the new ERROR line `Step <step-id> was skipped in a …`.** Each one
+  is a split part, loop iteration or branch that was not delivered. On 0.3.5 the
+  same parts were skipped without a log line. Move the route to one of the safe
+  forms in
+  [Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
 - Give each integration its own `x-bip-message-id`: set a new one before
   publishing to another integration's input, and carry continuity in
   `x-bip-correlation-id`. Explicit step ids must also be unique across the
