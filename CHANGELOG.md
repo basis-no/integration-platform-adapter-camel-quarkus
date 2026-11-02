@@ -291,6 +291,10 @@ and iteration its own step key. See the
   the retention by up to the time between those two outcomes.
 - DLQ records still carry other headers present at failure, such as a
   receiver's host names. Only credential-like values are masked.
+- For an input that is not a managed Kafka input, the ERROR line `Message <id>
+  failed after its configured retries and is being sent to the dead letter
+  queue` is also logged when the failure is returned to the caller instead of
+  parked.
 - `auto_redelivery_count` counts Camel's redeliveries. The HTTP client in
   Camel's `http` component repeats a request answered with 503 or 429 once by
   itself, POST included, so a receiver can see more requests than the count
