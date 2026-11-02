@@ -129,11 +129,14 @@ Not detected, so these skips are logged at INFO only:
   `ProducerTemplate`, is not a safe form on its own. Sent straight to the
   receiver's endpoint, the send is not tracked: it has no step key, the
   receiver gets no `Idempotency-Key`, and a replay sends it again. Sent to a
-  route that contains the tracked send, such as a `direct:` route, it is tracked under the
-  new exchange's `x-bip-message-id`. Without its own id, each send then gets a
-  new random id, so a replay sends it again too. In neither case is the part
-  journaled, and the input's journal row does not list its send.
-  `NewExchangePartTrackingTest` pins these cases.
+  route that contains the tracked send, such as a `direct:` route, it is
+  tracked under the new exchange's `x-bip-message-id`. Without its own id, each
+  send then gets a new random id, so a replay sends it again too. The input's
+  journal row does not list the part's send. The part is journaled only when it
+  goes to a route selected for delivery audit, as its own row that cannot be
+  replayed; delivery audit refuses a request with its own `x-bip-message-id`,
+  so a replay sends such a part again. `NewExchangePartTrackingTest` pins these
+  cases.
 - Do not depend on `parallelProcessing` to avoid the skip.
 - Switching the integration to the `noop` store also avoids the skip. It
   removes replay protection for every step, so a replay repeats delivered side

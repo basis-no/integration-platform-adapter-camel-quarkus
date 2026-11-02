@@ -97,6 +97,51 @@ class NewExchangePartTrackingTest {
         }
     }
 
+    @org.junit.jupiter.api.Test
+    void aPartSentToADeliveryAuditRouteIsJournaledAsItsOwnRequest() throws Exception {
+        var delivered = Collections.synchronizedSet(new LinkedHashSet<String>());
+        var rows = Collections.synchronizedList(new ArrayList<MessageAttemptResult>());
+        var receiver = new ReceiverComponent();
+        try (var context = new DefaultCamelContext()) {
+            context.addComponent("receiver", receiver);
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
+                    new DefaultStepTracker(new DurableStore(delivered))));
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:input").routeId("orders-in")
+                            .routePolicy(new MessageStoreRoutePolicy(rows::add, "order-pipeline"))
+                            .split(body().tokenize(","))
+                            .process(part -> {
+                                String line = part.getMessage().getBody(String.class);
+                                try (var producer = getContext().createProducerTemplate()) {
+                                    // Delivery audit refuses a request that carries its own x-bip-message-id.
+                                    var reply = producer.request("direct:send-line", r -> r.getMessage().setBody(line));
+                                    assertNull(reply.getException());
+                                }
+                            })
+                            .end();
+                    from("direct:send-line").routeId("line-sender")
+                            .routePolicy(new MessageStoreAuditRoutePolicy(rows::add, "order-pipeline",
+                                    PayloadCapturePolicy.defaultPolicy()))
+                            .to("receiver:lines").id("send-line");
+                }
+            });
+            context.start();
+            consume(context, 1);
+            consume(context, 2);
+        }
+
+        var inputRows = rows.stream().filter(row -> row.routeId().equals("orders-in")).toList();
+        var requestRows = rows.stream().filter(row -> row.routeId().equals("line-sender")).toList();
+        assertEquals(2, inputRows.size());
+        assertTrue(inputRows.stream().allMatch(row -> row.steps().isEmpty()), inputRows.toString());
+        // Each part is its own non-replayable row with its step, under a new id, so the replay sends it again.
+        assertEquals(4, requestRows.size());
+        assertTrue(requestRows.stream().allMatch(row -> row.steps().size() == 1 && !row.replayable()), requestRows.toString());
+        assertEquals(4, receiver.received().size());
+        assertEquals(4, delivered.size(), delivered.toString());
+    }
+
     private static void consume(DefaultCamelContext context, int attempt) {
         try (var producer = context.createProducerTemplate()) {
             var result = producer.send("direct:input", e -> {

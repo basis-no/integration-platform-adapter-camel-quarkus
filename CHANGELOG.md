@@ -194,8 +194,10 @@ is not tracked: it has no step key, the receiver gets no `Idempotency-Key`, and
 a replay sends it again. Sent to a route that contains the tracked send, such as a
 `direct:` route, it is tracked under the new exchange's `x-bip-message-id`.
 Without its own id, each send then gets a new random id, so a replay sends it
-again too. In neither case is the part journaled, and the input's journal row
-does not list its send.
+again too. The input's journal row does not list the part's send. The part is
+journaled only when it goes to a route selected for delivery audit, as its
+own row that cannot be replayed; delivery audit refuses a request with its
+own `x-bip-message-id`, so a replay sends such a part again.
 
 After a route changes to per-part ids, its keys change: replaying a message
 recorded before the change sends its first part once more. 0.4 gives each part
