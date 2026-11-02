@@ -26,6 +26,19 @@
   name, without the value. A `toD` that chooses its component only when it
   sends, such as `${header.receiverUrl}` or `language:header:receiverUrl`, is
   treated as an HTTP send. Same rule as adapter 0.3.6.
+- When it creates a route, the adapter logs a warning for each HTTP timeout
+  option that Camel 4's `http` component accepts without applying it, and names
+  the replacement. The call otherwise waits for the component's timeout, three
+  minutes unless configured. Checked on Camel 4.18.0 and 4.18.4:
+  `socketTimeout`, a Camel 3 option, is sent to the receiver as a query
+  parameter; `httpConnection.*` applies only `soTimeout` and drops other
+  timeouts; and on a `toD`, an `enrich` or a `wireTap` whose URI contains
+  `${…}`, Camel's optimised send also sends `responseTimeout`, `connectTimeout`,
+  `connectionRequestTimeout` and `soTimeout` to the receiver. Use the
+  `httpClient.` forms or `httpConnection.soTimeout` there. The warning appears
+  once per route, step and option and names no URI or value. A URI in a
+  `recipientList` or `routingSlip`, or one whose scheme is only known at send
+  time, is not checked. Same rule as adapter 0.3.6.
 - A `to` or `toD` to `kafka:` that would publish a header with a credential-like
   name, by the DLQ masking rule, logs a warning once per route and header name.
   The warning names the header, never its value, and says how to remove it. The

@@ -13,6 +13,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
+import no.basis.integrationplatform.camel.HttpTimeoutOptions;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PublishedCredentialHeaders;
 import org.apache.camel.AsyncCallback;
@@ -42,6 +43,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private final StepTracker stepTracker;
     private final boolean allowGeneratedStepIds;
     private final AtomicLong scopes = new AtomicLong();
+    private final HttpTimeoutOptions httpTimeoutOptions = new HttpTimeoutOptions();
     private final PublishedCredentialHeaders publishedCredentials = new PublishedCredentialHeaders();
 
     /**
@@ -74,6 +76,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             Processor target,
             Processor nextTarget) {
 
+        httpTimeoutOptions.check(context, definition, target);
         EndpointSend endpointSend = endpointSend(definition, target);
         if (endpointSend == null) {
             String kind = scopeKind(definition);

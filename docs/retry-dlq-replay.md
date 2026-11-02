@@ -24,13 +24,32 @@ keeps answering 503 can get eight requests before the message is parked. Set
 the platform's policy.
 
 On Camel 4's `http` component, bound a receiver call with `responseTimeout`
-and `connectTimeout`, on the endpoint URI or as `camel.component.http.*`
-settings. `socketTimeout`, a Camel 3 option, does not exist on Camel 4. The
-endpoint does not reject unknown options: it sends them to the receiver as
-query parameters, and the call then waits up to the client's default of three
-minutes. The adapter does not check endpoint options. Camel's own component
-metadata does not help here: it lists the timeouts as component options only,
-although the endpoint accepts them.
+and `connectTimeout`. Camel accepts some timeout options without applying them,
+and the call then waits for the component's timeout, three minutes unless
+configured. Checked on Camel 4.18.0 and 4.18.4:
+
+| Option | Where | What Camel does | Use instead |
+| --- | --- | --- | --- |
+| `socketTimeout` (Camel 3) | any `http`/`https` URI | Sends it to the receiver as a query parameter | `responseTimeout`; on a dynamic send, `httpClient.responseTimeout` |
+| `httpConnection.socketTimeout`, `.responseTimeout`, `.connectTimeout`, `.connectionRequestTimeout` | any `http`/`https` URI | Drops it without an error; only `httpConnection.soTimeout` applies | `responseTimeout`, `connectTimeout`, `connectionRequestTimeout`; on a dynamic send, the `httpClient.` form |
+| `responseTimeout`, `connectTimeout`, `connectionRequestTimeout`, `soTimeout` | dynamic send: a `toD`, an `enrich`, or a `wireTap` whose URI contains `${…}` | Sends it to the receiver as a query parameter | `httpClient.responseTimeout`, `httpClient.connectTimeout`, `httpClient.connectionRequestTimeout`, `httpConnection.soTimeout` |
+
+A dynamic send keeps only the options that Camel's endpoint metadata lists, and
+the metadata lists these four timeouts as component options only, so the rest
+go to the receiver. `allowOptimisedComponents(false)` on a `toD` or `enrich`
+turns that off, at the cost of one endpoint per distinct URI. The `httpClient.`
+forms, `httpConnection.soTimeout` and the component settings
+`camel.component.http.response-timeout`, `connect-timeout`,
+`connection-request-timeout` and `so-timeout` apply to every send. Some forms
+fail on their own: `httpClient.socketTimeout` and `httpClient.soTimeout` when
+Camel creates the endpoint, which is at startup for a `to` and at the first send
+for a dynamic send, and `camel.component.http.socket-timeout` at startup.
+
+The adapter logs a warning for each option in the table when it creates a route
+with it in a `to`, `toD`, `enrich` or `wireTap` URI, once per route, step and
+option. The warning names the option, the step and the replacement, never the
+URI or a value. A URI in a `recipientList` or
+`routingSlip`, or one whose scheme is only known at send time, is not checked.
 
 A timeout does not mean the receiver did nothing. A receiver can apply the
 effect after the client gave up, and the message is then retried and parked
