@@ -42,13 +42,17 @@ class StepVisitsTest {
     }
 
     @Test
-    void forgottenKeysAndKeysSentByManyPartsAreNotChecked() {
+    void noSkipIsCheckedOnceAKeyWasForgottenAndKeysSentByManyPartsAreNotChecked() {
         StepVisits visits = new StepVisits();
         visits.sent("/split.1#0", "m:old");
         for (int i = 0; i < StepVisits.MAX_KEYS; i++) {
             visits.sent("/split.1#0", "m:own-" + i);
         }
         assertNull(visits.repeatedIn("/split.1#1", "m:old"));
+        // A parallel part still sending records the forgotten key again, without the first sender.
+        visits.sent("/split.1#1", "m:old");
+        assertNull(visits.repeatedIn("/split.1#0", "m:old"));
+        assertNull(visits.repeatedIn("/split.1#2", "m:old"));
 
         StepVisits crowded = new StepVisits();
         for (int i = 0; i <= StepVisits.MAX_SENDERS; i++) {

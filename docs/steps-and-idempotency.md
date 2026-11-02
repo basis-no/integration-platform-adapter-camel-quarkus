@@ -150,10 +150,11 @@ Not detected, so these skips are logged at INFO only:
   loop. A key sent from such an iteration is not checked either.
 - A part sent through a new exchange that copies the input's
   `x-bip-message-id`: the new exchange does not see the other parts' sends.
-- A key the attempt has not used for more than 10,000 other step keys, and a
-  key sent from more than 16 positions in one attempt. The record keeps at most
-  10,000 keys and 16 positions per key, so it stays bounded in memory; a key
-  that every part reaches stays known.
+- A send made while Camel prepares a part (`onPrepare`), before Camel numbers
+  it: its position is unknown.
+- Every skip after the attempt has used more than 10,000 step keys, and a key
+  sent from more than 16 positions in one attempt. The record keeps at most
+  10,000 keys and 16 positions per key, so it stays bounded in memory.
 
 Safe forms, which send every part:
 
