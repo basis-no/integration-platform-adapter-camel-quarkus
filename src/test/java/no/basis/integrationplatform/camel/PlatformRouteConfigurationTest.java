@@ -20,7 +20,7 @@ class PlatformRouteConfigurationTest {
 
     @Test
     void dlqParkingRestoresOriginalPayloadAndSetsDiagnosticsHeaders() {
-        // Given a message whose body was transformed mid-route before the failure (contract §8).
+        // Given a message whose body was transformed mid-route before the failure.
         byte[] originalPayload = "{\"original\":true}".getBytes(StandardCharsets.UTF_8);
         Exchange exchange = exchange();
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, originalPayload);
@@ -142,7 +142,7 @@ class PlatformRouteConfigurationTest {
 
     @Test
     void redeliveryCapturesDiagnosticsIntoExchangeProperties() {
-        // Contract §5: the redelivery headers are only present while a
+        // The redelivery headers are only present while a
         // redelivery attempt is in flight (Camel strips them before dead-letter
         // delivery), so onRedelivery must snapshot them into properties.
         Exchange exchange = exchange();

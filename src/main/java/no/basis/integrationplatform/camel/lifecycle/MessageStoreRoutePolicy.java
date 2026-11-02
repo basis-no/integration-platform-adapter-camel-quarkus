@@ -225,7 +225,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return null;
     }
 
-    // A route or aggregation strategy can replace the message without the platform headers
+    // A route or aggregation strategy can replace the message without the x-bip-* headers
     // (for example a grouped split). The outcome still belongs to the consumed input.
     private String messageId(Exchange exchange) {
         String current = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
@@ -301,7 +301,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return attempt == null || attempt < 1 ? 1 : attempt;
     }
 
-    // Contract §5 retry diagnostics. The redelivery headers survive on the
+    // Retry diagnostics. The redelivery headers survive on the
     // retry-then-success path but are stripped by Camel's error handler before
     // a dead-letter delivery, so the properties captured during redelivery
     // (PlatformRouteConfiguration#captureRedeliveryDiagnostics) take precedence.

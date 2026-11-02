@@ -13,15 +13,15 @@ import java.time.Duration;
 import java.util.Optional;
 
 /**
- * Produces the Key-Value Store on the platform Message Store datasource.
+ * Produces the Key-Value Store on the Message Store datasource.
  *
  * <p>The bean is created on its first use, so an application that does not use
  * the Key-Value Store never touches {@code bip_key_value} and runs
- * unchanged against a Message Store before contract 1.2.</p>
+ * unchanged against a Message Store without that table.</p>
  */
 @ApplicationScoped
 public class KeyValueStoreProducer {
-    // Contract section 13 requires the sweep at least hourly, so the default is also the maximum.
+    // Expired keys must be swept at least hourly, so the default is also the maximum.
     static final long MAX_SWEEP_INTERVAL_SECONDS = 3_600;
 
     /** Creates the CDI producer. */

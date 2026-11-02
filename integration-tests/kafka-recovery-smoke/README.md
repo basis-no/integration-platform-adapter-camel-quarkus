@@ -3,7 +3,7 @@
 Both the SmallRye-only baseline and optional upstream health-bridge profile
 passed isolated local qualification on Quarkus BOM 3.32.2, Camel Quarkus 3.32.0,
 Camel 4.18.0 and SmallRye Health 4.3.0. This is finite fixture evidence, not a
-release, template certification or customer deployment. The adapter library is
+release, an application qualification or a customer deployment. The adapter library is
 unchanged: the health bridge is an application dependency composition.
 
 ## What it proves
@@ -58,7 +58,7 @@ predicate. Raw state pairs, HTTP bodies and phase times remain required evidence
 - Routes initially remain stopped for phase ordering. Only in the bridge
   profile, activation sets supported Route.setAutoStartup(true). The pinned
   consumer wrapper exempts autoStartup=false without a per-route controller.
-  This is fixture activation, not an adapter/template/customer default change.
+  This is fixture activation, not an adapter/application/customer default change.
 - Camel 4.18's natural poll-auth exit does not set isTerminated. The observer
   requires real SASL error and exit from the same polling thread plus task state;
   a log line or internal flag alone is insufficient.
@@ -70,9 +70,9 @@ controller superuser exist only inside this synthetic fixture. Retain actual
 PID/CID/session/port/volume/network ownership and positive cleanup proof. A
 passing functional test does not replace host pressure/paging evidence.
 
-A different application or template BOM needs its own dependency and runtime
-qualification. No automatic adapter dependency/default, contract certification,
-S1–S22 completion or existing integration rewrite is implied.
+A different application BOM needs its own dependency and runtime
+qualification. No automatic adapter dependency/default, cross-runtime test
+result or existing integration rewrite is implied.
 
 Pinned source references:
 

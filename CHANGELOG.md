@@ -3,9 +3,9 @@
 ## 0.3.6 — Unreleased
 
 Maintenance release on the 0.3 line. The Kafka recovery baseline remains Message
-Store contract `v1.0.0-rc2`. No Message Store schema migration is required. The
-optional Key-Value Store uses the platform-provisioned `bip_key_value` table
-only when an application uses it. Tested with Quarkus 3.32.2 (Camel 4.18.0) and
+Store schema version 1. No Message Store schema migration is required. The
+optional Key-Value Store uses the `bip_key_value` table, provisioned by the
+database operator, only when an application uses it. Tested with Quarkus 3.32.2 (Camel 4.18.0) and
 Quarkus 3.33.4 (Camel 4.18.4). This is the last 0.3 release; later changes come
 with 0.4.
 
@@ -89,13 +89,13 @@ with 0.4.
   receipt is the earliest outcome this integration recorded for the message.
   Once the expiry has passed, replay is refused as for any expired payload.
   Every history row keeps its own expiry, including a late older attempt, and
-  metadata-only attempts have none. The platform's optional message recovery
-  SQL applies the same cap in the database, so a replay is capped at first
+  metadata-only attempts have none. The optional message recovery SQL, when
+  installed, applies the same cap in the database, so a replay is capped at first
   receipt plus twice the retention with or without it. The database takes the
   retention from the first captured attempt; if the retention setting changed
-  since then, the lower cap applies. The message recovery SQL is not part of
-  the next platform release.
-- A route that replaces the message without the platform headers, such as a
+  since then, the lower cap applies. The database-side recovery protections
+  need separate provisioning; do not assume an adapter upgrade deploys them.
+- A route that replaces the message without the `x-bip-*` headers, such as a
   split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
   records the outcome under a new random message id. The message id,
   correlation, attempt and envelope fall back to the consumed input's values; a
@@ -171,8 +171,8 @@ and iteration its own step key. See the
 
 - Key-Value Store: an integration-scoped API for small JSON cursors and markers,
   with versions, compare-and-set, optional expiry, bounded cleanup and a Camel
-  idempotent repository. It is optional, uses the platform's `bip_key_value`
-  table from draft contract `1.2.0-rc2`, and never creates or migrates tables.
+  idempotent repository. It is optional, uses the `bip_key_value` table
+  provisioned by the database operator, and never creates or migrates tables.
   See [Key-Value Store](docs/key-value-store.md).
 - Activity counters for admitted Kafka records and broker-acknowledged
   publications, through the application's Micrometer registry. Off by default;
@@ -196,13 +196,13 @@ and iteration its own step key. See the
   When a message id reaches a second integration on the same Message Store, the
   two integrations collide. The second integration replaces the first one's
   journal rows, so the message moves to the other integration's view and can no
-  longer be replayed by the first. With the platform's message recovery SQL
+  longer be replayed by the first. With the optional message recovery SQL
   installed, the second integration's journal write is refused instead, and its
   input does not get past that record. A send with the same step id is skipped as
   already delivered. This applies to every 0.3.x release. From 0.3.6 the adapter
   logs a warning, once per pair of integrations and then at most every ten
   minutes with a count, when it journals a message id that another integration
-  already journaled. With the platform's message recovery SQL, or row-level
+  already journaled. With the message recovery SQL, or row-level
   isolation between integrations, that warning does not appear: the signal is
   the refused write itself (`RECOVERY_SCOPE_MISMATCH` or a row-level security
   error) in the second integration's log. Fixed in 0.4, where each integration
@@ -223,9 +223,14 @@ and iteration its own step key. See the
   receiver's host names. Only credential-like values are masked.
 - `auto_redelivery_count` counts Camel's redeliveries. The HTTP client in
   Camel's `http` component repeats a request answered with 503 or 429 once by
-  itself, so a receiver can see more requests than the count says. Setting
-  `camel.component.http.automatic-retries-disabled=true` leaves every retry to
-  the platform's policy.
+  itself, POST included, so a receiver can see more requests than the count
+  says. Before that retry it waits for the receiver's `Retry-After`, with no
+  upper limit, or one second without it. The wait runs on the Kafka consumer
+  thread and counts against `max.poll.interval.ms` (300 seconds by default);
+  see the processing-time budget under [Retry and DLQ](README.md#retry-and-dlq).
+  Setting `camel.component.http.automatic-retries-disabled=true` leaves every
+  retry to the adapter's retry policy. Set it for receivers that send a long
+  `Retry-After` and for routes on `ip-slow-backend`.
 - The HTTP timeout warning reads `to`, `toD`, `enrich` and `wireTap` URIs when
   a route is created. A URI in a `recipientList` or `routingSlip`, or one whose
   scheme is only known at send time, is not checked. See the README's retry
@@ -261,12 +266,12 @@ and iteration its own step key. See the
   step's key: replaying, redoing or resending a message recorded before the
   change sends it once more. Rename only once no such message will be processed
   again. The startup check covers the routes as Camel builds
-  them; the platform's pre-build check reads the source and misses endpoints
-  whose URIs are built elsewhere, such as placeholders and constants. Only in an
+  them, so it also sees endpoints whose URIs are built elsewhere, such as
+  placeholders and constants, which a check of the route source misses. Only in an
   emergency, `basis.message-store.step-ids.emergency-allow-generated=true` starts
   the application anyway and logs a warning for each such send.
-- Add the Camel health bridge (`camel-quarkus-microprofile-health`); the
-  platform template includes it. With SmallRye Health alone, readiness stays
+- Add the Camel health bridge (`camel-quarkus-microprofile-health`). With
+  SmallRye Health alone, readiness stays
   Ready after the Kafka consumer stops. With the bridge, readiness turns
   NotReady during a broker outage or a stopped consumer, and Ready again after
   reconnection. NotReady does not restart a pod: alert on sustained NotReady.
@@ -285,20 +290,23 @@ and iteration its own step key. See the
   `x-bip-correlation-id`. Explicit step ids must also be unique across the
   integrations that can see the same message id.
 - Tools that read DLQ records see `xxxxxx` instead of credential header values.
-- The journal writer works with and without the platform's message recovery
+- The journal writer works with and without the optional message recovery
   SQL. With it installed, the recovery history protection, payload expiry clamp
   and replay refusals apply as before. No grant changes are needed.
 - See [maintenance qualification](docs/maintenance-qualification.md) and
   [delivery audit](docs/delivery-audit.md) for recovery and inspection details
   carried over from 0.3.5.
+- The startup messages about the store schema version and the Key-Value Store's
+  missing-table error are reworded. The `MESSAGE-STORE CONTRACT VERSION
+  UNVERIFIED` prefix is unchanged.
 
 ## 0.3.5 — 2026-10-12
 
 Maven artifact:
 `no.basis.integrationplatform:integration-platform-adapter-camel-quarkus:0.3.5`.
 The source version is `0.3.5-SNAPSHOT`; a snapshot is not this stable release.
-The Kafka recovery baseline remains Message Store contract `v1.0.0-rc2`.
-Publication, platform certification and application rollout are separate gates.
+The Kafka recovery baseline remains Message Store schema version 1.
+Publication, qualification and application rollout are separate gates.
 
 ### Added
 
@@ -318,8 +326,8 @@ Publication, platform certification and application rollout are separate gates.
   input offset; failed durable input recording still prevents offset commit.
 - Audit payloads are always non-replayable. Delivery audit cannot resend
   transformed receiver bytes into the Kafka input, even when those bytes are
-  retained or the platform enables replay.
-- Route selectors are separate from platform-owned `basis.message-store.*`
+  retained or replay is enabled.
+- Route selectors are separate from deployment-owned `basis.message-store.*`
   settings. Startup rejects unknown, wildcard, overlapping or unsafe inherited
   identity/capture/commit selections before processing.
 
@@ -340,9 +348,9 @@ Publication, platform certification and application rollout are separate gates.
 - Existing payload mode, inline size cap and retention still apply. There is no
   historical row backfill. Applications with no adapter need a separate
   integration decision, not an automatic dependency insertion.
-- Dashboard searches must support correlation ids. Operational failure counts
+- Operator searches must support correlation ids. Operational failure counts
   must distinguish delivery audit history from source outcomes; adapter upgrade
-  alone does not change an older dashboard's counting behavior.
+  alone does not change how an older operator view counts them.
 
 See the [configuration reference](docs/configuration.md) for defaults and
 [maintenance qualification](docs/maintenance-qualification.md) for the Kafka
@@ -367,11 +375,11 @@ baseline and release provenance requirements.
 
 - Exclude XSLT transformations from delivered-step tracking so replay repeats
   transformation work instead of treating it as a delivered external effect.
-- Refresh the README and link the public Message Store contract.
+- Refresh the README.
 
 ## 0.3.1
 
 First public release, on Maven Central. Functionally identical to the
-internally certified 0.3.0 (message-store contract v1.0.0-rc2); this release
+internally qualified 0.3.0 (message-store schema version 1); this release
 adds only licensing, publication metadata and packaging. Versions below 0.3.1
-were internal to the Basis platform.
+were internal to Basis.

@@ -92,7 +92,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
 
     @Override
     public RoutePolicy createRoutePolicy(CamelContext camelContext, String routeId, NamedNode route) {
-        // Only a Kafka input has the v1 parking, commit and replay contract.
+        // Only a Kafka input has the adapter's parking, commit and replay behavior.
         // Internal direct/HTTP exchanges may contain transformed receiver data.
         // Every other route still reads a replay's redo list, so none of its sends carries it.
         if (!(route instanceof RouteDefinition definition) || definition.getInput() == null) {
