@@ -4,10 +4,13 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
+import no.basis.integrationplatform.camel.HttpTimeoutOptions;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
+import no.basis.integrationplatform.camel.PublishedCredentialHeaders;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.AsyncProcessor;
 import org.apache.camel.CamelContext;
+import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
 import org.apache.camel.ExchangePropertyKey;
 import org.apache.camel.NamedNode;
@@ -41,6 +44,8 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private final TrafficSignals trafficSignals;
     private final boolean allowGeneratedStepIds;
     private final AtomicLong scopes = new AtomicLong();
+    private final HttpTimeoutOptions httpTimeoutOptions = new HttpTimeoutOptions();
+    private final PublishedCredentialHeaders publishedCredentials = new PublishedCredentialHeaders();
 
     public StepTrackingInterceptStrategy(StepTracker stepTracker) {
         this(stepTracker, null);
@@ -78,6 +83,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             Processor target,
             Processor nextTarget) {
 
+        httpTimeoutOptions.check(context, definition, target);
         // Parking is infrastructure work, not a replay-skippable business step.
         for (NamedNode node = definition; node != null; node = node.getParent()) {
             if (node instanceof RouteDefinition && "bip-confirmed-dead-letter".equals(node.getId())) {
@@ -97,8 +103,12 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             else if (target instanceof SendDynamicProcessor send) trafficSignals.observeDynamicEndpoint(send.getUri());
         }
         AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
-        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, trafficSignals,
-                dynamicScheme(target, endpointSend));
+        boolean dynamicScheme = dynamicScheme(target, endpointSend);
+        Endpoint endpoint = target instanceof SendProcessor send ? send.getEndpoint() : null;
+        boolean mayPublishToKafka = PublishedCredentialHeaders.mayPublishToKafka(
+                endpoint, endpointSend.endpointUri(), dynamicScheme);
+        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, trafficSignals, dynamicScheme,
+                mayPublishToKafka ? endpoint : null, mayPublishToKafka, routeId(definition), publishedCredentials);
     }
 
     /**
@@ -184,12 +194,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 || DefaultStepTracker.isInternal(endpointSend.endpointUri())) {
             return;
         }
-        String routeId = null;
-        for (NamedNode node = definition; node != null && routeId == null; node = node.getParent()) {
-            if (node instanceof RouteDefinition route) {
-                routeId = route.getId();
-            }
-        }
+        String routeId = routeId(definition);
         String endpoint = URISupport.sanitizeUri(endpointSend.endpointUri());
         if (!allowGeneratedStepIds) {
             throw new IllegalStateException("Tracked send to " + endpoint + " in route " + routeId
@@ -201,6 +206,15 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                         + "route is edited and can match another integration's step for the same message id. "
                         + "Give the send an explicit id ({}=true is set)",
                 endpoint, routeId, endpointSend.nodeId(), EMERGENCY_ALLOW_GENERATED_STEP_IDS);
+    }
+
+    private static String routeId(NamedNode definition) {
+        for (NamedNode node = definition; node != null; node = node.getParent()) {
+            if (node instanceof RouteDefinition route) {
+                return route.getId();
+            }
+        }
+        return null;
     }
 
     private EndpointSend endpointSend(NamedNode definition, Processor target) {
@@ -233,19 +247,25 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         private final TrafficSignals trafficSignals;
         private final boolean httpSend;
         private final boolean dynamicScheme;
-
-        private StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker) {
-            this(delegate, endpointSend, stepTracker, null, false);
-        }
+        private final Endpoint endpoint;
+        private final boolean mayPublishToKafka;
+        private final String routeId;
+        private final PublishedCredentialHeaders publishedCredentials;
 
         private StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend,
-                StepTracker stepTracker, TrafficSignals trafficSignals, boolean dynamicScheme) {
+                StepTracker stepTracker, TrafficSignals trafficSignals, boolean dynamicScheme,
+                Endpoint endpoint, boolean mayPublishToKafka, String routeId,
+                PublishedCredentialHeaders publishedCredentials) {
             this.delegate = delegate;
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
             this.trafficSignals = trafficSignals;
             this.httpSend = ForwardedCredentialHeaders.isHttp(endpointSend.endpointUri());
             this.dynamicScheme = dynamicScheme;
+            this.endpoint = endpoint;
+            this.mayPublishToKafka = mayPublishToKafka;
+            this.routeId = routeId;
+            this.publishedCredentials = publishedCredentials;
         }
 
         @Override
@@ -259,8 +279,11 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             var withheld = withholdCredentials(exchange);
             try {
                 boolean returned = false;
-                try { delegate.process(exchange); returned = true; }
-                finally {
+                try {
+                    delegate.process(exchange);
+                    returned = true;
+                    warnAboutPublishedCredentials(exchange);
+                } finally {
                     ForwardedCredentialHeaders.restore(exchange, withheld);
                     afterPublish(trafficSnapshot, exchange, returned && exchange.getException() == null);
                 }
@@ -288,6 +311,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             var trafficSnapshot = beforePublish(exchange);
             var withheld = withholdCredentials(exchange);
             return delegate.process(exchange, doneSync -> {
+                warnAboutPublishedCredentials(exchange);
                 ForwardedCredentialHeaders.restore(exchange, withheld);
                 afterPublish(trafficSnapshot, exchange, exchange.getException() == null);
                 if (exchange.getException() == null) {
@@ -316,6 +340,9 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             var withheld = withholdCredentials(exchange);
             return delegate.processAsync(exchange).whenComplete((result, failure) -> {
                 Exchange completedExchange = result != null ? result : exchange;
+                if (failure == null) {
+                    warnAboutPublishedCredentials(completedExchange);
+                }
                 ForwardedCredentialHeaders.restore(completedExchange, withheld);
                 afterPublish(trafficSnapshot, completedExchange, failure == null && completedExchange.getException() == null);
                 if (failure == null && completedExchange.getException() == null) {
@@ -327,6 +354,13 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                     stepTracker.recordFailed(completedExchange);
                 }
             });
+        }
+
+        /** After the send and before withheld headers return, so the exchange shows what was published. */
+        private void warnAboutPublishedCredentials(Exchange exchange) {
+            if (mayPublishToKafka && exchange.getException() == null) {
+                publishedCredentials.check(exchange, endpoint, routeId, endpointSend.nodeId());
+            }
         }
 
         private java.util.Map<String, Object> withholdCredentials(Exchange exchange) {

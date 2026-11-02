@@ -42,6 +42,8 @@ public class DefaultStepTracker implements StepTracker {
     @Override
     public void beforeSend(Exchange exchange) {
         String endpointUri = exchange.getProperty(Exchange.INTERCEPTED_ENDPOINT, String.class);
+        // Before any send, so that no send carries this attempt's redo list.
+        Set<String> redoSteps = captureRedoSteps(exchange);
         clearCurrentStep(exchange);
         // The journal keeps the endpoint without credentials: a resolved password or
         // token in the URI must never reach the Message Store. Step ids still derive
@@ -61,7 +63,6 @@ public class DefaultStepTracker implements StepTracker {
 
         // Steps listed in x-bip-redo-steps MUST be
         // re-executed even when the durable ledger already has them DELIVERED.
-        Set<String> redoSteps = redoSteps(exchange);
         boolean redoRequested = redoSteps.contains(stepId) || redoSteps.contains(idempotencyKey);
         boolean skip = alreadyDelivered && !redoRequested;
         if (alreadyDelivered && redoRequested) {
@@ -82,19 +83,28 @@ public class DefaultStepTracker implements StepTracker {
         }
     }
 
+    /**
+     * Reads a replay's {@code x-bip-redo-steps} into the exchange once and removes the header.
+     * The list belongs to this integration's replayed attempt: a receiver or a downstream
+     * integration that got it would send its own steps with the same ids again for the same
+     * message id. With the adapter installed, every route reads it when an exchange enters
+     * the route; a tracked send and DLQ parking read it again in case a route restored it.
+     * @param exchange the exchange
+     * @return the step ids to send again in this attempt
+     */
     @SuppressWarnings("unchecked")
-    private Set<String> redoSteps(Exchange exchange) {
+    public static Set<String> captureRedoSteps(Exchange exchange) {
+        Object header = exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS);
         Set<String> cached = exchange.getProperty(PlatformExchangeProperties.REDO_STEPS, Set.class);
         if (cached != null) {
             return cached;
         }
-        Set<String> redoSteps = parseRedoSteps(redoStepsHeaderValue(exchange));
+        Set<String> redoSteps = parseRedoSteps(redoStepsHeaderValue(header));
         exchange.setProperty(PlatformExchangeProperties.REDO_STEPS, redoSteps);
         return redoSteps;
     }
 
-    private String redoStepsHeaderValue(Exchange exchange) {
-        Object value = exchange.getMessage().getHeader(PlatformHeaders.REDO_STEPS);
+    private static String redoStepsHeaderValue(Object value) {
         if (value == null) {
             return null;
         }
@@ -107,17 +117,18 @@ public class DefaultStepTracker implements StepTracker {
     /**
      * {@code x-bip-redo-steps} is a JSON array of step
      * ids. A malformed value is logged as a warning and treated as empty; it must
-     * never fail message processing.
+     * never fail message processing. The warning names the header only: the value
+     * comes from the message, and the parser's error would repeat it.
      */
-    private Set<String> parseRedoSteps(String headerValue) {
+    private static Set<String> parseRedoSteps(String headerValue) {
         if (headerValue == null || headerValue.isBlank()) {
             return Set.of();
         }
         try {
             JsonNode root = REDO_STEPS_READER.readTree(headerValue);
             if (root == null || !root.isArray()) {
-                LOG.warn("Malformed {} header (expected JSON array of step ids, got '{}'); treating as no redo",
-                        PlatformHeaders.REDO_STEPS, headerValue);
+                LOG.warn("Malformed {} header (expected a JSON array of step ids); treating it as no redo",
+                        PlatformHeaders.REDO_STEPS);
                 return Set.of();
             }
             Set<String> redoSteps = new LinkedHashSet<>();
@@ -125,13 +136,13 @@ public class DefaultStepTracker implements StepTracker {
                 if (item.isTextual() && !item.asText().isBlank()) {
                     redoSteps.add(item.asText());
                 } else {
-                    LOG.warn("Ignoring non-string entry '{}' in {} header", item, PlatformHeaders.REDO_STEPS);
+                    LOG.warn("Ignoring an entry of the {} header that is not a step id", PlatformHeaders.REDO_STEPS);
                 }
             }
             return Set.copyOf(redoSteps);
         } catch (Exception e) {
-            LOG.warn("Malformed {} header (expected JSON array of step ids, got '{}'); treating as no redo",
-                    PlatformHeaders.REDO_STEPS, headerValue, e);
+            LOG.warn("Malformed {} header (expected a JSON array of step ids); treating it as no redo",
+                    PlatformHeaders.REDO_STEPS);
             return Set.of();
         }
     }

@@ -238,13 +238,32 @@ timeouts and retries, number of transactions per input, poll batch size and
 HTTP 500 as permanent or automatically resize application memory.
 
 On Camel 4's `http` component, bound a receiver call with `responseTimeout`
-and `connectTimeout`, on the endpoint URI or as `camel.component.http.*`
-settings. `socketTimeout`, a Camel 3 option, does not exist on Camel 4. The
-endpoint does not reject unknown options: it sends them to the receiver as
-query parameters, and the call then waits up to the client's default of three
-minutes. The adapter does not check endpoint options. Camel's own component
-metadata does not help here: it lists the timeouts as component options only,
-although the endpoint accepts them.
+and `connectTimeout`. Camel accepts some timeout options without applying them,
+and the call then waits for the component's timeout, three minutes unless
+configured. Checked on Camel 4.18.0 and 4.18.4:
+
+| Option | Where | What Camel does | Use instead |
+| --- | --- | --- | --- |
+| `socketTimeout` (Camel 3) | any `http`/`https` URI | Sends it to the receiver as a query parameter | `responseTimeout`; on a dynamic send, `httpClient.responseTimeout` |
+| `httpConnection.socketTimeout`, `.responseTimeout`, `.connectTimeout`, `.connectionRequestTimeout` | any `http`/`https` URI | Drops it without an error; only `httpConnection.soTimeout` applies | `responseTimeout`, `connectTimeout`, `connectionRequestTimeout`; on a dynamic send, the `httpClient.` form |
+| `responseTimeout`, `connectTimeout`, `connectionRequestTimeout`, `soTimeout` | dynamic send: a `toD`, an `enrich`, or a `wireTap` whose URI contains `${…}` | Sends it to the receiver as a query parameter | `httpClient.responseTimeout`, `httpClient.connectTimeout`, `httpClient.connectionRequestTimeout`, `httpConnection.soTimeout` |
+
+A dynamic send keeps only the options that Camel's endpoint metadata lists, and
+the metadata lists these four timeouts as component options only, so the rest
+go to the receiver. `allowOptimisedComponents(false)` on a `toD` or `enrich`
+turns that off, at the cost of one endpoint per distinct URI. The `httpClient.`
+forms, `httpConnection.soTimeout` and the component settings
+`camel.component.http.response-timeout`, `connect-timeout`,
+`connection-request-timeout` and `so-timeout` apply to every send. Some forms
+fail on their own: `httpClient.socketTimeout` and `httpClient.soTimeout` when
+Camel creates the endpoint, which is at startup for a `to` and at the first send
+for a dynamic send, and `camel.component.http.socket-timeout` at startup.
+
+From 0.3.6 the adapter logs a warning for each option in the table when it
+creates a route with it in a `to`, `toD`, `enrich` or `wireTap` URI, once per
+route, step and option. The warning names the option, the step and the
+replacement, never the URI or a value. A URI in a `recipientList` or
+`routingSlip`, or one whose scheme is only known at send time, is not checked.
 
 A timeout does not mean the receiver did nothing. A receiver can apply the
 effect after the client gave up, and the message is then retried and parked
@@ -267,8 +286,24 @@ for example with `removeHeaders("*")` and then setting only the headers the
 message needs. Camel copies every request header onto the exchange, and the
 Kafka producer publishes them with the message, including `Authorization`, API
 keys and cookies, unmasked. Anyone who can read the topic can read them. From
-0.3.6 a tracked send through Camel's `http` component does not forward
-credential-like headers that still hold a consumed record's bytes, and logs a
+0.3.6 a Kafka send that published a header with a credential-like name, by the
+masking rule above, logs a warning once per route and header name. The warning
+names the header, never its value, and says how to remove it. What is published
+does not change. The check runs after a successful `to` or `toD`, against the
+endpoint the send used, including a `toD` that chooses its component only when
+it sends. It follows that endpoint's header filter strategy and counts only
+text, byte array, `Long`, `Integer`, `Double` and `Boolean` values, which
+Camel's header serializer writes as they are. An endpoint whose header filter
+strategy or header serializer is an application class, or whose filter holds an
+application collection, is not checked: the adapter does not call application
+code to find out what was published. Nor is a send through a `toD` with
+`cacheSize=-1` to an endpoint that is not yet registered: Camel creates such an
+endpoint for the one send without registering it, so the adapter cannot find it
+afterwards. An endpoint that is already registered is reused and checked. At
+most 100 header names are reported per route; one more line then says that
+further names are not logged. Also from 0.3.6, a tracked send through Camel's
+`http` component does not forward credential-like headers that still hold a
+consumed record's bytes, and logs a
 warning that names the header. A `toD` that chooses its component only when it
 sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver,
 as byte-array text unless they are `x-bip-*` headers.
@@ -279,7 +314,8 @@ as byte-array text unless they are `x-bip-*` headers.
   the current body is parked as-is.
 - all `x-bip-*` envelope headers are preserved, plus two diagnostics headers
   set at parking time: `x-bip-error` (the failure message) and `x-bip-dlq-at`
-  (RFC 3339 timestamp).
+  (RFC 3339 timestamp). From 0.3.6 a replay's `x-bip-redo-steps` is not among
+  them; see [Redo behavior](#redo-behavior).
 - the attempt is recorded with status `DLQ`, and the Kafka offset is committed
   only after the outcome record (and DLQ publish) succeeded.
 
@@ -441,6 +477,20 @@ exactly the listed steps even when the durable ledger already has them
 idempotency key. A malformed header value is logged as a warning and treated as
 empty — it never fails message processing. Redo intentionally repeats an
 external side effect, so external systems still need domain idempotency for it.
+
+From 0.3.6 the list stays inside the integration. When an exchange enters a
+route, the adapter reads `x-bip-redo-steps`, keeps the list for the attempt's
+step tracking and removes the header: a Kafka input with the Message Store
+before the route runs, and every other route through a route policy the adapter
+adds. The route's sends therefore do not carry it, whether through `to`, `toD`,
+`enrich`, `wireTap`, `recipientList` or `routingSlip`. A handler that restores
+the original message, for example with `useOriginalMessage()`, gets the header
+back; the next `to` or `toD` and DLQ parking remove it again. Before, a receiver
+got the list, and a downstream integration that consumed a published record
+with the same message id sent its own steps with the same ids again.
+`x-bip-replay` and `x-bip-attempt` are still forwarded; nothing in the adapter
+acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
+the header only, not its value.
 
 ## Step Tracking
 

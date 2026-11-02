@@ -237,7 +237,8 @@ class InputAuditTest {
             assertInstanceOf(MessageStoreInputAuditRoutePolicy.class, factory.createRoutePolicy(context, "input", new RouteDefinition().from("platform-http:/input")));
             assertDoesNotThrow(() -> factory.validateAuditRoutes(null));
             var off = factory(new ArrayList<>(), "", "postgres-inline", 1000, true);
-            assertNull(off.createRoutePolicy(context, "input", new RouteDefinition().from("platform-http:/input")));
+            assertInstanceOf(RedoStepsRoutePolicy.class,
+                    off.createRoutePolicy(context, "input", new RouteDefinition().from("platform-http:/input")));
             assertInstanceOf(MessageStoreRoutePolicy.class, off.createRoutePolicy(context, "source", new RouteDefinition().from("kafka:source")));
         }
     }

@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.UUID;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.store.MessageStoreSinkException;
 import org.apache.camel.Exchange;
@@ -45,6 +46,8 @@ public final class MessageStoreInputAuditRoutePolicy extends MessageStoreRoutePo
             exchange.setRouteStop(true);
             throw failure;
         }
+        // The inspection below works on a copy; the route's own exchange must not forward a redo list.
+        DefaultStepTracker.captureRedoSteps(exchange);
         String rowId = UUID.randomUUID().toString();
         Exchange capture = exchange.copy();
         String inputId = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);

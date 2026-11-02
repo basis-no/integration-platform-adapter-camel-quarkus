@@ -94,12 +94,13 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
     public RoutePolicy createRoutePolicy(CamelContext camelContext, String routeId, NamedNode route) {
         // Only a Kafka input has the adapter's parking, commit and replay behavior.
         // Internal direct/HTTP exchanges may contain transformed receiver data.
+        // Every other route still reads a replay's redo list, so none of its sends carries it.
         if (!(route instanceof RouteDefinition definition) || definition.getInput() == null) {
-            return null;
+            return new RedoStepsRoutePolicy();
         }
         String uri = definition.getInput().getEndpointUri();
         if (uri == null) {
-            return null;
+            return new RedoStepsRoutePolicy();
         }
         uri = camelContext.resolvePropertyPlaceholders(uri);
         if (inputAuditRoutes.contains(routeId)) {
@@ -118,7 +119,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             return new MessageStoreAuditRoutePolicy(sink, integrationName, payloadPolicy);
         }
         if (!uri.startsWith("kafka:")) {
-            return null;
+            return new RedoStepsRoutePolicy();
         }
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, integrationName, payloadPolicy);
         policy.setTrafficSignals(trafficSignals);
