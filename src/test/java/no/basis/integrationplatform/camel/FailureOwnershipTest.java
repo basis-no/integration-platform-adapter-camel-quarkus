@@ -217,6 +217,20 @@ class FailureOwnershipTest {
     }
 
     @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aFailedStepOutcomeCheckThatTheRouteCatchesSendsNothingAndIsNotCommitted(boolean asyncReceiver) throws Exception {
+        // The check whether an earlier attempt delivered the step fails, so the step is not sent.
+        var result = deliver(asyncReceiver, "lookup-handled", true, true, null);
+
+        assertTrue(result.exchange.isFailed());
+        assertTrue(result.received.isEmpty(), "A step that cannot be checked is not sent");
+        assertTrue(result.parked.isEmpty());
+        assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
+        assertEquals("synthetic step outcome outage", result.rows.getFirst().error());
+        assertEquals(0, result.commits.get());
+    }
+
+    @ParameterizedTest
     @CsvSource({"plain, false", "plain, true", "caught, false", "caught, true",
             "audit, false", "audit, true", "audit-caught, false", "audit-caught, true",
             "rejected, false", "rejected, true", "audit-rejected, false", "audit-rejected, true"})
@@ -372,7 +386,8 @@ class FailureOwnershipTest {
      * writes. The {@code send} and {@code handled} shapes send {@code <Input/>}, the second in a
      * {@code doTry} that catches every failure; {@code split} sends the parts of {@code a,b} with
      * their own ids, and only the second part's write fails, and {@code split-handled} catches
-     * each part's failure in the part. Without {@code adapterParking} the route has no error handler.
+     * each part's failure in the part. {@code lookup-handled} is {@code handled} with a failing
+     * check whether the step was delivered. Without {@code adapterParking} the route has no error handler.
      */
     private Delivery deliver(boolean asyncReceiver, String shape, boolean adapterParking, boolean journalWorks,
             RuntimeException rejection) throws Exception {
@@ -391,7 +406,10 @@ class FailureOwnershipTest {
                     : new ReceiverComponent(receiver));
             context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
                     new DefaultStepTracker(new StepOutcomeStore() {
-                        public boolean wasDelivered(String idempotencyKey) { return false; }
+                        public boolean wasDelivered(String idempotencyKey) {
+                            if (shape.equals("lookup-handled")) throw outage();
+                            return false;
+                        }
                         public void recordDelivered(StepResult step) { write(step); }
                         public void recordFailed(StepResult step) { write(step); }
 
@@ -415,7 +433,7 @@ class FailureOwnershipTest {
                     }, "order-pipeline"));
                     switch (shape) {
                         case "send" -> input.to("receiver:orders").id("deliver-order");
-                        case "handled" -> input.doTry().to("receiver:orders").id("deliver-order")
+                        case "handled", "lookup-handled" -> input.doTry().to("receiver:orders").id("deliver-order")
                                 .doCatch(Exception.class).log("handled by the route").end();
                         case "split" -> input.split(body().tokenize(","))
                                 .setHeader(PlatformHeaders.MESSAGE_ID, simple("message-1-${exchangeProperty.CamelSplitIndex}"))
