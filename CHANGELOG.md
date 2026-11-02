@@ -62,8 +62,8 @@ with 0.4.
   installed, applies the same cap in the database, so a replay is capped at first
   receipt plus twice the retention with or without it. The database takes the
   retention from the first captured attempt; if the retention setting changed
-  since then, the lower cap applies. The adapter does not install the message
-  recovery SQL.
+  since then, the lower cap applies. The database-side recovery protections
+  need separate provisioning; do not assume an adapter upgrade deploys them.
 - A route that replaces the message without the `x-bip-*` headers, such as a
   split with a grouped aggregation strategy or `removeHeaders("*")`, no longer
   records the outcome under a new random message id. The message id,
