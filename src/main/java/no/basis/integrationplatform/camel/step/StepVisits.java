@@ -3,27 +3,32 @@ package no.basis.integrationplatform.camel.step;
 import org.apache.camel.Exchange;
 import org.apache.camel.ExchangePropertyKey;
 
-import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.Set;
 
 /**
- * Which part of one attempt claimed each step key first, so that a skip which loses a part
- * can be told from a normal skip. Split parts, loop iterations and multicast and recipient
+ * Which parts of one attempt claimed each step key, so that a skip which loses a part can
+ * be told from a normal skip. Split parts, loop iterations and multicast and recipient
  * list branches keep the input's message id in 0.3.x, so parts that reach the same send
  * share one step key: the first part is sent and the later ones are skipped as delivered.
  * This only tells the skips apart for the log; it never changes whether a step is sent.
  *
  * <p>One instance is held by reference in an exchange property, so the copies Camel makes
  * for parts share it. A part's path names each enclosing split, loop, multicast or
- * recipient list and the part's index in it. A step that the same part visits again, for
- * example when Camel redelivers a sub-route or a whole split, is a normal skip, and so is
- * the first skip of a key that an earlier attempt delivered.</p>
+ * recipient list, the {@code direct:}, {@code seda:} or {@code vm:} call that started it,
+ * and the part's index in it. A step that the same part visits again, for example when
+ * Camel redelivers a sub-route or a whole split, is a normal skip, and so is the first
+ * skip of a key that an earlier attempt delivered.</p>
  */
 final class StepVisits {
     static final String PROPERTY = "basis.messageStore.stepVisits";
     static final String PATH = "basis.messageStore.stepVisitPath";
     /** The split, loop, multicast or recipient list whose part the exchange is in, until resolved. */
     static final String SCOPE = "basis.messageStore.stepVisitScope";
+    /** The sub-route calls made since the last scope; they become part of a scope's path when one starts. */
+    static final String CALLS = "basis.messageStore.stepVisitCalls";
     /** Set on a skip that repeats another part's step key: the kind of scope the parts differ in. */
     static final String REPEATED_IN = "basis.messageStore.stepRepeatedIn";
 
@@ -31,10 +36,27 @@ final class StepVisits {
     static final String LOOP = "loop";
     static final String MULTICAST = "multicast";
     static final String RECIPIENT_LIST = "recipientList";
+    static final String CALL = "call";
+    /** Keys kept per attempt. A key every part reaches stays; the least recently used beyond this are forgotten. */
+    static final int MAX_KEYS = 10_000;
 
-    /** Per key, the first part that claimed it and the first other part, if any. */
-    private final Map<String, String[]> claimants = new HashMap<>();
-    private final Map<String, String> owners = new HashMap<>();
+    private final Map<String, Claims> keys = new LinkedHashMap<>(16, 0.75f, true) {
+        @Override
+        protected boolean removeEldestEntry(Map.Entry<String, Claims> eldest) {
+            return size() > MAX_KEYS;
+        }
+    };
+
+    /** The first part that claimed a key, the first other one, and the parts that may skip it. */
+    private static final class Claims {
+        private final String first;
+        private String other;
+        private final Set<String> owners = new HashSet<>(2);
+
+        private Claims(String first) {
+            this.first = first;
+        }
+    }
 
     static StepVisits of(Exchange exchange) {
         StepVisits visits = exchange.getProperty(PROPERTY, StepVisits.class);
@@ -83,31 +105,30 @@ final class StepVisits {
      *         part claimed it, so that the delivery came from an earlier attempt
      */
     synchronized String claim(String path, String idempotencyKey, boolean skip) {
-        String[] parts = claimants.computeIfAbsent(idempotencyKey, key -> new String[] {path, null});
-        if (parts[1] == null && !parts[0].equals(path)) {
-            parts[1] = path;
+        Claims claims = keys.computeIfAbsent(idempotencyKey, key -> new Claims(path));
+        if (claims.other == null && !claims.first.equals(path)) {
+            claims.other = path;
         }
-        if (!skip) {
+        if (!skip || claims.owners.contains(path)) {
             return null;
         }
-        String owner = owners.get(idempotencyKey);
-        String other = !parts[0].equals(path) ? parts[0] : parts[1];
-        if (owner == null && other == null) {
-            owners.put(idempotencyKey, path);
+        String other = claims.first.equals(path) ? claims.other : claims.first;
+        if (claims.owners.isEmpty() && other == null) {
+            claims.owners.add(path);
             return null;
         }
-        if (path.equals(owner)) {
-            return null;
-        }
-        return divergence(path, owner != null ? owner : other);
+        return divergence(path, claims.owners.isEmpty() ? other : claims.owners.iterator().next());
     }
 
     /** Records that this part sent the key; called before the outcome becomes visible to other parts. */
     synchronized void delivering(String path, String idempotencyKey) {
-        owners.put(idempotencyKey, path);
+        keys.computeIfAbsent(idempotencyKey, key -> new Claims(path)).owners.add(path);
     }
 
-    /** The kind of the first scope in which two different paths name different parts. */
+    /**
+     * The kind of part in which two different paths first differ. Where they differ by
+     * the sub-route call that started a scope, the scope names the kind.
+     */
     private static String divergence(String path, String other) {
         String[] mine = path.split("/");
         String[] theirs = other.split("/");
@@ -115,7 +136,13 @@ final class StepVisits {
         while (i < mine.length && i < theirs.length && mine[i].equals(theirs[i])) {
             i++;
         }
-        return kind(i < mine.length ? mine[i] : theirs[i]);
+        String[] from = i < mine.length ? mine : theirs;
+        for (int j = i; j < from.length; j++) {
+            if (!CALL.equals(kind(from[j]))) {
+                return kind(from[j]);
+            }
+        }
+        return CALL;
     }
 
     private static String kind(String segment) {

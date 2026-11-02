@@ -116,8 +116,10 @@ publish each part with its own id. See docs/split-step-identity.md
 - The `noop` step store never skips, so every part is sent and nothing is
   logged.
 - Not detected, and still logged at INFO only: one part that reaches the same
-  send twice on its own, a send after an inner loop in an outer loop, and a part
-  sent through a new exchange that copies the input's `x-bip-message-id`.
+  send twice on its own, a send after an inner loop in an outer loop, a part
+  sent through a new exchange that copies the input's `x-bip-message-id`, a
+  scope that a routing slip or dynamic router runs again, and a key last used
+  more than 10,000 step keys earlier in the attempt. See the advisory below.
 
 The safe forms, which send every part:
 

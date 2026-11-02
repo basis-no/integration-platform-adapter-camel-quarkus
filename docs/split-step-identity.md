@@ -65,12 +65,17 @@ part, and contains no message content or header values.
   0.3.5. A Kafka input still commits; a polling route still marks its batch
   processed.
 - The adapter tells parts apart by their position in the enclosing splits,
-  loops, multicasts and recipient lists. A part that meets its own step again is a
-  normal skip at INFO (`Step <id> SKIPPED for message <id>`): Camel repeating a
-  sub-route or a whole split within one attempt, and a redelivered or replayed
-  input whose earlier attempt sent the step. In a redelivered input the first
-  part to reach the step is logged at INFO and each later one at ERROR.
-- With `parallelProcessing`, each part is either sent or logged at ERROR.
+  loops, multicasts and recipient lists, and by the `direct:`, `seda:` or `vm:`
+  call that started each of these. The same splitting sub-route called twice
+  therefore keeps the two calls' parts apart. A part that meets its own step
+  again is a normal skip at INFO (`Step <id> SKIPPED for message <id>`): Camel
+  repeating a sub-route or a whole split within one attempt, and a redelivered
+  or replayed input whose earlier attempt sent the step. In a redelivered input
+  the first part to reach the step is logged at INFO and each later one at
+  ERROR.
+- With `parallelProcessing`, each part is either sent or logged at ERROR. When
+  several parts sent the same key in parallel and Camel repeats the split, each
+  of them skips its own send at INFO.
 - The `noop` step store never skips, so it logs nothing.
 
 Not detected, so these skips are logged at INFO only:
@@ -82,6 +87,14 @@ Not detected, so these skips are logged at INFO only:
   can look like the same iteration.
 - A part sent through a new exchange that copies the input's
   `x-bip-message-id`: the new exchange does not see the other parts' sends.
+- A split, loop, multicast or recipient list that runs again from the same
+  call without a Camel retry, for example through a routing slip or a dynamic
+  router. A part of the later run is compared with the part at the same
+  position in the first run.
+- A step key that the attempt last used more than 10,000 step keys earlier.
+  The adapter keeps the 10,000 most recently used keys per attempt, so that a
+  large split stays bounded in memory. A key that every part reaches stays
+  known.
 
 ## Not affected
 
