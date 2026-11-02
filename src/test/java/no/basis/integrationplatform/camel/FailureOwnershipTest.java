@@ -219,11 +219,13 @@ class FailureOwnershipTest {
 
     @ParameterizedTest
     @CsvSource({"plain, false", "plain, true", "caught, false", "caught, true",
-            "audit, false", "audit, true", "audit-caught, false", "audit-caught, true"})
+            "audit, false", "audit, true", "audit-caught, false", "audit-caught, true",
+            "rejected, false", "rejected, true", "audit-rejected, false", "audit-rejected, true"})
     void aRequestWhoseStepOutcomeWasNotRecordedKeepsTheInputThatPassesItOnFromCommitting(
             String child, boolean asyncReceiver) throws Exception {
         // The input sends a separate request with a ProducerTemplate and passes its failure on.
-        // The request fails also when its own route caught the failure.
+        // The request fails also when its own route caught the failure, and a rejected request
+        // carries the failure also when the receiver's exception refuses suppressed exceptions.
         var result = new Delivery();
         var requests = new ArrayList<MessageAttemptResult>();
         ExecutorService receiverThread = Executors.newSingleThreadExecutor();
@@ -232,7 +234,12 @@ class FailureOwnershipTest {
             var properties = new Properties();
             properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
             context.getPropertiesComponent().setOverrideProperties(properties);
-            Processor receiver = e -> result.received.add(e.getMessage().getBody(String.class));
+            Processor receiver = e -> {
+                result.received.add(e.getMessage().getBody(String.class));
+                if (child.endsWith("rejected")) {
+                    throw new RuntimeException("synthetic receiver rejection", null, false, false) { };
+                }
+            };
             context.addComponent("receiver", asyncReceiver ? new AsyncReceiver(receiverThread, receiver)
                     : new ReceiverComponent(receiver));
             context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(

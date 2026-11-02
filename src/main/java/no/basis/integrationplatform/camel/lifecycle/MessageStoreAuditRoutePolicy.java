@@ -79,6 +79,6 @@ public final class MessageStoreAuditRoutePolicy extends MessageStoreRoutePolicy 
         if (unrecorded != null && exchange.getException() == null) {
             exchange.setException(unrecorded);
         }
-        // Never commit an offset, park a payload, handle a receiver failure, or change its exception.
+        // Never commit an offset, park a payload or handle a receiver failure; an existing exception stays.
     }
 }
