@@ -32,6 +32,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
@@ -167,6 +168,64 @@ class KafkaFailureProgressTest {
             long dlqEnd = admin.listOffsets(Map.of(dlqPartition, OffsetSpec.latest())).partitionResult(dlqPartition)
                     .get(10, TimeUnit.SECONDS).offset();
             assertEquals(1, dlqEnd, "The parked message is one DLQ record");
+        }
+    }
+
+    @Test
+    void aStoppedExchangeThatFailsIsNotCommitted() throws Exception {
+        // Camel skips the adapter's parking for an exchange that its route stopped. The record
+        // is recorded FAILED, not committed, and read again.
+        String input = "input-" + UUID.randomUUID();
+        String dlq = "dlq-" + UUID.randomUUID();
+        String group = "group-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        var client = Map.<String, Object>of("bootstrap.servers", brokers);
+        try (var admin = AdminClient.create(client); var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(input, 1, (short) 1), new NewTopic(dlq, 1, (short) 1)))
+                    .all().get(20, TimeUnit.SECONDS);
+            var outcomes = new CopyOnWriteArrayList<String>();
+            var recorded = new CountDownLatch(1);
+            bindShippedKafkaDefaults(context);
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "kafka:" + dlq + "?brokers=" + brokers);
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(row -> {
+                outcomes.add(row.status().name());
+                recorded.countDown();
+            }, "order-pipeline", "postgres-inline", 100_000, 30, true, "dlq", "auto"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=" + group
+                            + "&autoOffsetReset=earliest&pollTimeoutMs=100")
+                            .routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .process(e -> {
+                                e.setRouteStop(true);
+                                throw new IllegalArgumentException("synthetic receiver rejection");
+                            });
+                }
+            });
+            var producerProperties = new HashMap<String, Object>(client);
+            producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            try (var producer = new KafkaProducer<String, String>(producerProperties)) {
+                producer.send(new ProducerRecord<>(input, "key", "bad")).get(10, TimeUnit.SECONDS);
+            }
+            context.start();
+            assertTrue(recorded.await(30, TimeUnit.SECONDS), "No outcome recorded");
+            // Read again: at least a second attempt before checking that nothing was committed.
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+            while (System.nanoTime() < deadline && outcomes.size() < 2) Thread.sleep(50);
+            context.stop();
+            assertTrue(outcomes.size() >= 2, "The record was read again: " + outcomes);
+            assertTrue(outcomes.stream().allMatch("FAILED"::equals), outcomes.toString());
+            var dlqPartition = new TopicPartition(dlq, 0);
+            long dlqEnd = admin.listOffsets(Map.of(dlqPartition, OffsetSpec.latest())).partitionResult(dlqPartition)
+                    .get(10, TimeUnit.SECONDS).offset();
+            assertEquals(0, dlqEnd);
+            assertNull(admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
+                    .get(5, TimeUnit.SECONDS).get(new TopicPartition(input, 0)), "No offset was committed");
         }
     }
 

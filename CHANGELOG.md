@@ -13,7 +13,8 @@
   `camel.component.kafka.break-on-first-error=true` makes the consumer read
   such a record again before the partition's later records, whose commit
   would otherwise move past it; this also covers a record whose outcome could
-  not be journaled. The partition waits until the DLQ accepts the record, and
+  not be journaled. Camel skips parking for an exchange that its route stopped
+  before it failed; such a message is recorded `FAILED` and not committed. The partition waits until the DLQ accepts the record, and
   each attempt logs at ERROR. A failed offset commit after a recorded outcome
   is reported as such. Same rule as adapter 0.3.6.
   `basis.message-store.dlq-uri` must now name a fixed, non-transactional

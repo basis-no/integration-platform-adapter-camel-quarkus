@@ -48,7 +48,10 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                     + " an empty value or an expression such as ${header.name} is not accepted");
         }
         Endpoint endpoint = context.getEndpoint(uri);
-        if (endpoint instanceof KafkaEndpoint kafka) {
+        if (endpoint instanceof KafkaEndpoint) {
+            // Check and publish through one endpoint of its own, made from the component's
+            // settings now: the registered endpoint may have been created before them.
+            KafkaEndpoint kafka = (KafkaEndpoint) context.getCamelContextExtension().getPrototypeEndpoint(uri);
             var configuration = kafka.getConfiguration();
             Object acks = configuration.getAdditionalProperties()
                     .getOrDefault("acks", configuration.getRequestRequiredAcks());
@@ -64,9 +67,8 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                 throw new IllegalArgumentException("basis.message-store.dlq-uri must not be transactional;"
                         + " its transaction commits only after the input offset");
             }
-            KafkaEndpoint single = (KafkaEndpoint) context.getCamelContextExtension().getPrototypeEndpoint(uri);
-            single.getConfiguration().setUseIterator(false);
-            return single;
+            configuration.setUseIterator(false);
+            return kafka;
         }
         if (endpoint instanceof DirectEndpoint direct) {
             if (!direct.isFailIfNoConsumers()) {

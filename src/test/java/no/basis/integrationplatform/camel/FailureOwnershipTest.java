@@ -129,6 +129,112 @@ class FailureOwnershipTest {
     }
 
     @Test
+    void stoppedExchangeThatFailsIsNotRecordedAsParkedOrCommitted() throws Exception {
+        // Camel skips the adapter's parking for an exchange that its route stopped.
+        Result result = new Result();
+        try (var context = context(result, false)) {
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:input").routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .routePolicy(new MessageStoreRoutePolicy(result.rows::add, "order-pipeline"))
+                            .process(e -> {
+                                e.setRouteStop(true);
+                                throw new IllegalArgumentException("synthetic receiver rejection");
+                            });
+                }
+            });
+            context.start();
+            send(context, result);
+        }
+        assertTrue(result.parked.isEmpty());
+        assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
+        assertEquals(0, result.commits.get());
+        assertEquals("The DLQ parking route did not publish; the message was not parked",
+                result.exchange.getException().getMessage());
+    }
+
+    @Test
+    void parkingThatNeverPublishesIsNotRecordedAsParkedOrCommitted() throws Exception {
+        Result result = new Result();
+        try (var context = context(result, false)) {
+            // Stands in for anything that makes Camel skip the dead-letter route's publisher.
+            context.getCamelContextExtension().addInterceptStrategy((camel, definition, target, next) -> {
+                for (var node = definition; node != null; node = node.getParent()) {
+                    if (node instanceof org.apache.camel.model.RouteDefinition route
+                            && PlatformDeadLetterRoute.ROUTE_ID.equals(route.getId())) {
+                        return exchange -> { };
+                    }
+                }
+                return target;
+            });
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:input").routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .routePolicy(new MessageStoreRoutePolicy(result.rows::add, "order-pipeline"))
+                            .process(e -> {
+                                throw new IllegalArgumentException("synthetic receiver rejection");
+                            });
+                }
+            });
+            context.start();
+            send(context, result);
+        }
+        assertTrue(result.parked.isEmpty());
+        assertEquals(MessageStatus.FAILED, result.rows.getFirst().status());
+        assertEquals(0, result.commits.get());
+        assertEquals("The DLQ parking route did not publish; the message was not parked",
+                result.exchange.getException().getMessage());
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"acks", "transacted"})
+    void componentSettingsAfterTheEndpointWasCreatedAreChecked(String setting) throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "kafka:dlq");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.getEndpoint("kafka:dlq");
+            var kafka = context.getComponent("kafka", org.apache.camel.component.kafka.KafkaComponent.class);
+            changeKafkaSetting(kafka, setting);
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            assertDlqUriRefused(assertThrows(Exception.class, context::start));
+        }
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"acks", "transacted"})
+    void restartingTheDeadLetterRouteChecksTheSettingsAgain(String setting) throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "kafka:dlq");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.start();
+            context.getRouteController().stopRoute(PlatformDeadLetterRoute.ROUTE_ID);
+            changeKafkaSetting(context.getComponent("kafka", org.apache.camel.component.kafka.KafkaComponent.class), setting);
+            assertDlqUriRefused(assertThrows(Exception.class,
+                    () -> context.getRouteController().startRoute(PlatformDeadLetterRoute.ROUTE_ID)));
+        }
+    }
+
+    private static void changeKafkaSetting(org.apache.camel.component.kafka.KafkaComponent kafka, String setting) {
+        if (setting.equals("acks")) {
+            kafka.getConfiguration().setRequestRequiredAcks("0");
+        } else {
+            kafka.getConfiguration().setTransacted(true);
+        }
+    }
+
+    private static void assertDlqUriRefused(Exception thrown) {
+        Throwable cause = thrown;
+        while (cause.getCause() != null && !(cause instanceof IllegalArgumentException)) cause = cause.getCause();
+        assertInstanceOf(IllegalArgumentException.class, cause);
+        assertTrue(cause.getMessage().startsWith("basis.message-store.dlq-uri must"), cause.getMessage());
+    }
+
+    @Test
     void journalFailureDoesNotCommit() throws Exception {
         var outcome = run(false, false, true);
         assertEquals(0, outcome.commits.get());

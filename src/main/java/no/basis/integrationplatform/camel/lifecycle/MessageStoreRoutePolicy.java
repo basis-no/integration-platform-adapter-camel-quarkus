@@ -1,6 +1,7 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
@@ -12,9 +13,11 @@ import no.basis.integrationplatform.camel.payload.PayloadStorageException;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import org.apache.camel.Exchange;
+import org.apache.camel.ExchangePropertyKey;
 import org.apache.camel.Route;
 import org.apache.camel.component.kafka.KafkaConstants;
 import org.apache.camel.component.kafka.consumer.KafkaManualCommit;
+import org.apache.camel.support.EndpointHelper;
 import org.apache.camel.support.RoutePolicySupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -117,6 +120,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     @Override
     public void onExchangeDone(Route route, Exchange exchange) {
+        if (boundaryKind == MessageBoundaryKind.KAFKA && parkingDidNotPublish(exchange)) {
+            // Neither completed nor parked: keep the exchange failed, so that it is recorded
+            // FAILED, not committed, and read again.
+            exchange.setException(new IllegalStateException(
+                    "The DLQ parking route did not publish; the message was not parked"));
+        }
         if (recordingSuppressed(exchange)) {
             LOG.debug("Skipped message-store recording for an ineligible exchange on route {}", route.getRouteId());
             acknowledge(exchange);
@@ -584,6 +593,19 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     private boolean dlqParked(Exchange exchange) {
         return Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
+    }
+
+    /**
+     * Whether the dead-letter channel handed the exchange to the adapter's dead-letter route,
+     * which did not publish it. Camel then treats the failure as handled. It happens to an
+     * exchange that its route stopped before it failed: Camel skips both the adapter's
+     * preparation and the dead-letter route for a stopped exchange.
+     */
+    private static boolean parkingDidNotPublish(Exchange exchange) {
+        String sentTo = exchange.getProperty(ExchangePropertyKey.TO_ENDPOINT, String.class);
+        return sentTo != null && exchange.getException() == null
+                && !Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class))
+                && EndpointHelper.matchEndpoint(exchange.getContext(), sentTo, "direct:" + PlatformDeadLetterRoute.ROUTE_ID);
     }
 
     private boolean recordingSuppressed(Exchange exchange) {

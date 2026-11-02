@@ -108,6 +108,12 @@ recorded `FAILED`, not committed, and read again. If it marks the failure
 handled, the application has taken it over: the message is recorded
 `COMPLETED` and committed, and nothing is parked.
 
+Camel skips the dead letter channel's preparation and the adapter's
+dead-letter route for an exchange that its route stopped
+(`exchange.setRouteStop(true)`) before it failed. The adapter then records
+`FAILED` and does not commit the offset, and the consumer reads the record
+again, so it keeps its partition waiting like a record the DLQ cannot accept.
+
 The historical Kafka DLQ record remains after recovery. Postgres is
 authoritative for current lifecycle state, so a later successful replay changes
 the message to `COMPLETED` while retaining both attempts and replay audit.
