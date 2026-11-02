@@ -287,10 +287,12 @@ text, byte array, `Long`, `Integer`, `Double` and `Boolean` values, which
 Camel's header serializer writes as they are. An endpoint whose header filter
 strategy or header serializer is an application class, or whose filter holds an
 application collection, is not checked: the adapter does not call application
-code to find out what was published. Nor is a `toD` with `cacheSize=-1`, whose
-endpoint Camel does not keep. At most
-100 header names are reported per route; one more line then says that further
-names are not logged. Also from 0.3.6, a tracked send through Camel's
+code to find out what was published. Nor is a send through a `toD` with
+`cacheSize=-1` to an endpoint that is not yet registered: Camel creates such an
+endpoint for the one send without registering it, so the adapter cannot find it
+afterwards. An endpoint that is already registered is reused and checked. At
+most 100 header names are reported per route; one more line then says that
+further names are not logged. Also from 0.3.6, a tracked send through Camel's
 `http` component does not forward credential-like headers that still hold a
 consumed record's bytes, and logs a
 warning that names the header. A `toD` that chooses its component only when it

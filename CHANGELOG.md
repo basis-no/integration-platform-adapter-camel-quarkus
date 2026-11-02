@@ -232,8 +232,9 @@ and iteration its own step key. See the
   section for the full table.
 - The Kafka credential warning does not check an endpoint whose header filter
   strategy or header serializer is an application class, or whose filter holds
-  an application collection, nor a `toD` with `cacheSize=-1`, whose endpoint
-  Camel does not keep. It reports at most 100 header names per route.
+  an application collection, nor a send through a `toD` with `cacheSize=-1` to
+  an endpoint that is not yet registered, which Camel creates for that send
+  only. It reports at most 100 header names per route.
 - A handler that restores the original message, for example with
   `useOriginalMessage()`, gets `x-bip-redo-steps` back until the route's next
   `to` or `toD` or DLQ parking removes it.
