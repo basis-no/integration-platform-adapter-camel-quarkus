@@ -170,8 +170,8 @@ public class DefaultStepTracker implements StepTracker {
                                 + "of the same attempt already sent this step key. In 0.3.x split parts, loop "
                                 + "iterations and multicast and recipient list branches keep the input's "
                                 + PlatformHeaders.MESSAGE_ID + ", so they share one step key. Give each part its own "
-                                + PlatformHeaders.MESSAGE_ID + ", send each part through a new exchange with its own id, "
-                                + "or publish each part with its own id. See docs/split-step-identity.md",
+                                + PlatformHeaders.MESSAGE_ID + " before the send, or publish each part with its own id. "
+                                + "See docs/split-step-identity.md",
                         stepId, part(repeatedIn), exchange.getFromRouteId());
                 return;
             }

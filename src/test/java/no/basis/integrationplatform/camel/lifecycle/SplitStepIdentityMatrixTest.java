@@ -196,8 +196,8 @@ class SplitStepIdentityMatrixTest {
             assertEquals("Step send-part was skipped in a split part of input route orders-in, so this part was not "
                     + "delivered: another part of the same attempt already sent this step key. In 0.3.x split "
                     + "parts, loop iterations and multicast and recipient list branches keep the input's x-bip-message-id, "
-                    + "so they share one step key. Give each part its own x-bip-message-id, send each part through a new "
-                    + "exchange with its own id, or publish each part with its own id. See docs/split-step-identity.md",
+                    + "so they share one step key. Give each part its own x-bip-message-id before the send, or publish "
+                    + "each part with its own id. See docs/split-step-identity.md",
                     LogCapture.text(errors.getFirst()));
             assertTrue(log.records().stream().map(LogCapture::text).noneMatch(text -> text.contains("SKIPPED")),
                     "the skip is not also logged as an earlier attempt's");

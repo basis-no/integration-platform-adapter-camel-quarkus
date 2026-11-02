@@ -632,8 +632,8 @@ Step <step-id> was skipped in a <split part|loop iteration|multicast branch|reci
 of input route <route-id>, so this part was not delivered: another part of the same attempt
 already sent this step key. In 0.3.x split parts, loop iterations and multicast and
 recipient list branches keep the input's x-bip-message-id, so they share one step key. Give
-each part its own x-bip-message-id, send each part through a new exchange with its own id, or
-publish each part with its own id. See docs/split-step-identity.md
+each part its own x-bip-message-id before the send, or publish each part with its own id. See
+docs/split-step-identity.md
 ```
 
 The log message is one line. It names the step, the input route and the kind of
@@ -663,10 +663,17 @@ Safe forms, which send every part:
 
    Prefer a business key from the record over the split index when the input
    can change between replays.
-2. Send each part through a new exchange, for example with a `ProducerTemplate`,
-   with its own `x-bip-message-id`.
-3. Publish each part with its own id, for example as a Kafka record to the
+2. Publish each part with its own id, for example as a Kafka record to the
    integration's own input, and send it from there.
+
+A part sent through a new exchange, for example with a `ProducerTemplate`, is
+not a safe form on its own. Sent straight to the receiver's endpoint, the send
+is not tracked: it has no step key, the receiver gets no `Idempotency-Key`, and
+a replay sends it again. Sent to a route that contains the tracked send, such as a
+`direct:` route, it is tracked under the new exchange's `x-bip-message-id`.
+Without its own id, each send then gets a new random id, so a replay sends it
+again too. In neither case is the part journaled, and the input's journal row
+does not list its send.
 
 If an aggregation strategy returns a part's message, restore the input's id
 after the split so that the input is journaled under its own id. After a route
