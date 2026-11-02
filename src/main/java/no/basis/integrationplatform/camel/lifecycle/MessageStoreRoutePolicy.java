@@ -398,7 +398,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return null;
     }
 
-    // A route or aggregation strategy can replace the message without the platform headers
+    // A route or aggregation strategy can replace the message without the x-bip-* headers
     // (a grouped split, removeHeaders). The outcome still belongs to the consumed input, and a
     // replay stays its own attempt instead of overwriting attempt 1's history row.
     private String messageId(Exchange exchange) {
@@ -438,7 +438,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     }
 
     // Kafka exposes header values as bytes; receivers and the journal need the owned text.
-    // UTF-8 is the contract's envelope encoding, independent of the payload charset.
+    // The x-bip-* headers are UTF-8 text, independent of the payload charset.
     private String ensureMessageId(Exchange exchange) {
         String messageId = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
         if (messageId != null && !messageId.isBlank()) {

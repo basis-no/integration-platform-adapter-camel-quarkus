@@ -62,7 +62,12 @@
   for a malformed list no longer logs its value. Same rule as adapter 0.3.6.
 - Document the HTTP client's own 503/429 retry inside one Camel attempt, the
   Camel 4 HTTP timeout options (`socketTimeout` is not one), and what a replay
-  does after a timed-out call whose effect happened.
+  does after a timed-out call whose effect happened. The client retries once,
+  POST included, after waiting for the receiver's `Retry-After` with no upper
+  limit, or one second without it; the wait counts against
+  `max.poll.interval.ms`. Setting
+  `camel.component.http.automatic-retries-disabled=true` is recommended for
+  receivers that send a long `Retry-After` and for routes on `ip-slow-backend`.
 - A send skipped because another split part, loop iteration or multicast or
   recipient list branch of the same attempt already sent its step key is
   logged at ERROR, once per skipped send, with the step, the input route, the

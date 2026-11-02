@@ -5,8 +5,8 @@ import jakarta.enterprise.inject.Instance;
 import javax.sql.DataSource;
 
 /**
- * Resolves the application's default JDBC DataSource for the Message Store, step
- * outcomes and the Key-Value Store.
+ * Resolves the application's default JDBC DataSource for the Message Store and step
+ * outcomes.
  */
 public final class MessageStoreDataSource {
     private MessageStoreDataSource() {

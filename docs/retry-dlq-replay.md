@@ -15,13 +15,23 @@ Retries use exponential backoff. Automatic redelivery does not increment the
 message attempt; it adds diagnostics to that attempt.
 
 The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
-client inside Camel's `http` component (Apache HttpClient 5) also retries by
-itself, within one Camel attempt: it repeats a request answered with 503 or 429
-once after a short delay. Two 503 answers and then success can therefore record
-one redelivery for three requests; with the default policy, a receiver that
-keeps answering 503 can get eight requests before the message is parked. Set
+client inside Camel's `http` component (Apache HttpClient 5.5 and its default
+retry strategy) also retries by itself, within one Camel attempt: it repeats a
+request answered with 503 or 429 once, POST included. Before that retry it waits
+for the receiver's `Retry-After`, given in seconds or as a date, with no upper
+limit; without `Retry-After` it waits one second. The wait runs on the Kafka
+consumer thread, so it counts against `max.poll.interval.ms` (300 seconds by
+default) together with the route's redeliveries and receiver timeouts. If
+processing takes longer, Kafka removes the consumer from its group and the
+uncommitted record is delivered again.
+
+Two 503 answers and then success can therefore record one redelivery for three
+requests; with the default policy, a receiver that keeps answering 503 can get
+eight requests before the message is parked. Set
 `camel.component.http.automatic-retries-disabled=true` to leave every retry to
-the platform's policy.
+the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
+and for routes on the `ip-slow-backend` configuration, whose own redeliveries
+already use much of the poll interval.
 
 On Camel 4's `http` component, bound a receiver call with `responseTimeout`
 and `connectTimeout`. Camel accepts some timeout options without applying them,

@@ -100,7 +100,7 @@ class MessageStoreRoutePolicyTest {
         org.junit.jupiter.api.Assertions.assertSame(correlation, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID));
     }
 
-    /** A route that drops the platform headers still records the input's identity, attempt and envelope. */
+    /** A route that drops the x-bip-* headers still records the input's identity, attempt and envelope. */
     @Test
     void routeThatDropsHeadersStillRecordsTheInputIdentityAndAttempt() throws Exception {
         RecordingSink sink = new RecordingSink();
