@@ -222,6 +222,32 @@ class PublishedCredentialHeadersTest {
         }
     }
 
+    /**
+     * A toD with cacheSize=-1 creates an endpoint for the send without registering it (Camel's
+     * prototype endpoint), so the check cannot find it afterwards; Camel reuses an endpoint that
+     * is already registered, which is checked.
+     */
+    @Test
+    void aToDWithoutEndpointCacheIsCheckedOnlyThroughARegisteredEndpoint() throws Exception {
+        try (var logs = LogCapture.of(PublishedCredentialHeaders.class);
+             var context = new DefaultCamelContext()) {
+            context.start();
+            var check = new PublishedCredentialHeaders();
+            var prototype = org.apache.camel.support.CamelContextHelper.getMandatoryPrototypeEndpoint(
+                    context, "kafka:prototype?brokers=localhost:1");
+            var registered = context.getEndpoint("kafka:registered?brokers=localhost:1");
+            for (var endpoint : List.of(prototype, registered)) {
+                // What a toD leaves on the exchange after its send.
+                var exchange = exchange(context, "Authorization");
+                exchange.setProperty(org.apache.camel.ExchangePropertyKey.TO_ENDPOINT, endpoint.getEndpointUri());
+                check.check(exchange, null, "orders-" + endpoint.getEndpointBaseUri().substring("kafka://".length()), "publish");
+            }
+            assertNull(context.hasEndpoint(prototype.getEndpointUri()), "Camel did not register the prototype");
+            assertEquals(List.of("orders-registered"), logs.at(Level.WARNING).stream()
+                    .map(w -> LogCapture.text(w).split(" ")[5]).toList(), "Only the registered endpoint is checked");
+        }
+    }
+
     @Test
     void theBoundPerRouteHoldsUnderConcurrentSends() throws Exception {
         try (var logs = LogCapture.of(PublishedCredentialHeaders.class);

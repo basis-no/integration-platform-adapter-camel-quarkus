@@ -46,9 +46,10 @@
   the endpoint the send used, follows its header filter strategy and counts only
   text, byte array, `Long`, `Integer`, `Double` and `Boolean` values. An endpoint
   whose header filter strategy or header serializer is an application class, or
-  whose filter holds an application collection, is not checked, nor is a `toD`
-  with `cacheSize=-1`, whose endpoint Camel does not keep. At most 100 header
-  names are reported per route. Same rule as adapter 0.3.6.
+  whose filter holds an application collection, is not checked, nor is a send
+  through a `toD` with `cacheSize=-1` to an endpoint that is not yet registered,
+  which Camel creates for that send only. At most 100 header names are reported
+  per route. Same rule as adapter 0.3.6.
 - A replay's `x-bip-redo-steps` stays inside the integration. When an exchange
   enters a route, the adapter reads the list, keeps it for the attempt's step
   tracking and removes the header, so no send from the route carries it: `to`,
