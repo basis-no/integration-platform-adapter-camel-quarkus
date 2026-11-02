@@ -46,10 +46,15 @@ adapter never claims replayability without durable bytes.
 
 ## Retention
 
-Replay does not extend the original payload expiry. Cleanup removes inline
-bytes or the S3 object, sets `payload_deleted_at`, and marks the message
-non-replayable while retaining lifecycle audit. Bucket lifecycle rules are a
-safety net for orphaned objects, not the database source of truth.
+With the `postgres` sink, a replay captures an inline payload again and resets
+its expiry, capped at first receipt plus twice the retention. First receipt is
+the earliest outcome this integration recorded for the message. An S3 object
+payload keeps its first expiry together with its object.
+
+Cleanup removes inline bytes or the S3 object, sets `payload_deleted_at`, and
+marks the message non-replayable while retaining lifecycle audit. Bucket
+lifecycle rules are a safety net for orphaned objects, not the database source
+of truth.
 
 ## S3 Configuration
 

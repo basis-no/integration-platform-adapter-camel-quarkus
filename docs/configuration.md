@@ -18,7 +18,7 @@ into integration repositories.
 | `basis.message-store.payload.inline-threshold-bytes` | `BASIS_MESSAGE_STORE_PAYLOAD_INLINE_THRESHOLD_BYTES` | `0..16777216`; default `1048576` | Deployment-owned threshold; do not tune per integration. |
 | `basis.message-store.payload.max-bytes` | `BASIS_MESSAGE_STORE_PAYLOAD_MAX_BYTES` | bytes; unset | Deprecated alias for the inline threshold. The new property wins. |
 | `basis.message-store.payload.object-max-bytes` | `BASIS_MESSAGE_STORE_PAYLOAD_OBJECT_MAX_BYTES` | threshold..`53687091200`; default `10737418240` | Deployment policy limit for object-backed payloads. |
-| `basis.message-store.payload.retention-days` | `BASIS_MESSAGE_STORE_PAYLOAD_RETENTION_DAYS` | integer `>= 0`; default `30` | Deployment retention policy; replay does not extend expiry. |
+| `basis.message-store.payload.retention-days` | `BASIS_MESSAGE_STORE_PAYLOAD_RETENTION_DAYS` | integer `>= 0`; default `30` | Deployment retention policy. With the `postgres` sink, a replay resets an inline payload's expiry, capped at first receipt plus twice the retention; an S3 object payload keeps its first expiry. |
 | `basis.message-store.payload.s3.bucket` | `BASIS_MESSAGE_STORE_PAYLOAD_S3_BUCKET` | bucket; unset | Required for `tiered`; deployment-owned. |
 | `basis.message-store.payload.s3.prefix` | `BASIS_MESSAGE_STORE_PAYLOAD_S3_PREFIX` | key prefix; default `payloads` | Deployment-owned claim-check namespace. |
 | `basis.message-store.payload.s3.part-size-bytes` | `BASIS_MESSAGE_STORE_PAYLOAD_S3_PART_SIZE_BYTES` | integer `>= 5242880`; default `8388608` | Deployment tuning for bounded-memory multipart upload. |
