@@ -127,6 +127,11 @@ with 0.4.
   already failed ends with a new exception whose cause is its own failure. An
   input that passes that failure on is neither parked nor committed either. During a Message Store outage the partition therefore
   waits at that input, as it already does when parking fails.
+- A journal failure for a delivery audit or an input inspection that had
+  already failed no longer attaches itself to the receiver's or source's
+  exception. That exception may be one instance shared by many requests, which
+  then grew with every such failure. The exception is unchanged and Camel logs
+  the journal failure.
 - The DLQ record carries the consumed input, also when the route changed it.
   Before, a route that changed a byte-array input in place changed both the
   parked record and the payload stored for replay. When the payload was not
@@ -195,9 +200,10 @@ a replay sends it again. Sent to a route that contains the tracked send, such as
 `direct:` route, it is tracked under the new exchange's `x-bip-message-id`.
 Without its own id, each send then gets a new random id, so a replay sends it
 again too. The input's journal row does not list the part's send. The part is
-journaled only when it goes to a route selected for delivery audit, as its
-own row that cannot be replayed; delivery audit refuses a request with its
-own `x-bip-message-id`, so a replay sends such a part again.
+journaled only when it goes to a route selected for delivery audit or input
+inspection, as its own row that cannot be replayed. Delivery audit refuses a
+request with its own `x-bip-message-id`, so a replay sends such a part again;
+input inspection keeps the part's own id.
 
 After a route changes to per-part ids, its keys change: replaying a message
 recorded before the change sends its first part once more. 0.4 gives each part

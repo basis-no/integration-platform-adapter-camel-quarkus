@@ -142,6 +142,50 @@ class NewExchangePartTrackingTest {
         assertEquals(4, delivered.size(), delivered.toString());
     }
 
+    @org.junit.jupiter.api.Test
+    void aPartSentToAnInputInspectionRouteIsJournaledUnderItsOwnId() throws Exception {
+        var delivered = Collections.synchronizedSet(new LinkedHashSet<String>());
+        var rows = Collections.synchronizedList(new ArrayList<MessageAttemptResult>());
+        var receiver = new ReceiverComponent();
+        try (var context = new DefaultCamelContext()) {
+            context.addComponent("receiver", receiver);
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
+                    new DefaultStepTracker(new DurableStore(delivered))));
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:input").routeId("orders-in")
+                            .routePolicy(new MessageStoreRoutePolicy(rows::add, "order-pipeline"))
+                            .split(body().tokenize(","))
+                            .process(part -> {
+                                String line = part.getMessage().getBody(String.class);
+                                try (var producer = getContext().createProducerTemplate()) {
+                                    var reply = producer.request("direct:send-line", r -> {
+                                        r.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, INPUT_ID + "-" + line);
+                                        r.getMessage().setBody(line);
+                                    });
+                                    assertNull(reply.getException());
+                                }
+                            })
+                            .end();
+                    from("direct:send-line").routeId("line-sender")
+                            .routePolicy(new MessageStoreInputAuditRoutePolicy(rows::add, "order-pipeline",
+                                    PayloadCapturePolicy.defaultPolicy()))
+                            .to("receiver:lines").id("send-line");
+                }
+            });
+            context.start();
+            consume(context, 1);
+            consume(context, 2);
+        }
+
+        var requestRows = rows.stream().filter(row -> row.routeId().equals("line-sender")).toList();
+        // Each request is inspected, and the part keeps its own id, so the replay skips the delivered parts.
+        assertEquals(4, requestRows.size());
+        assertTrue(requestRows.stream().noneMatch(MessageAttemptResult::replayable), requestRows.toString());
+        assertEquals(Set.of("message-1-a:send-line", "message-1-b:send-line"), delivered);
+        assertEquals(2, receiver.received().size());
+    }
+
     private static void consume(DefaultCamelContext context, int attempt) {
         try (var producer = context.createProducerTemplate()) {
             var result = producer.send("direct:input", e -> {

@@ -66,9 +66,9 @@ public final class MessageStoreAuditRoutePolicy extends MessageStoreRoutePolicy 
             sink.record(result(route, exchange));
         } catch (Exception failure) {
             var storeFailure = new MessageStoreSinkException("Failed to record delivery audit", failure);
-            if (exchange.getException() != null) {
-                exchange.getException().addSuppressed(storeFailure);
-            } else {
+            // A receiver's exception stays unchanged: it may be one instance shared by many requests.
+            // Camel logs the failure thrown here.
+            if (exchange.getException() == null) {
                 exchange.setException(storeFailure);
             }
             throw storeFailure;

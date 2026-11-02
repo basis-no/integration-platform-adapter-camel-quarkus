@@ -216,7 +216,7 @@ class InputAuditTest {
                     assertNotNull(reply.getException());
                     if (sourceFails) {
                         assertSame(rejection, reply.getException());
-                        assertEquals(1, rejection.getSuppressed().length);
+                        assertEquals(0, rejection.getSuppressed().length, "A source's exception may be shared");
                     }
                 }
             }

@@ -133,10 +133,10 @@ Not detected, so these skips are logged at INFO only:
   tracked under the new exchange's `x-bip-message-id`. Without its own id, each
   send then gets a new random id, so a replay sends it again too. The input's
   journal row does not list the part's send. The part is journaled only when it
-  goes to a route selected for delivery audit, as its own row that cannot be
-  replayed; delivery audit refuses a request with its own `x-bip-message-id`,
-  so a replay sends such a part again. `NewExchangePartTrackingTest` pins these
-  cases.
+  goes to a route selected for delivery audit or input inspection, as its own
+  row that cannot be replayed. Delivery audit refuses a request with its own
+  `x-bip-message-id`, so a replay sends such a part again; input inspection
+  keeps the part's own id. `NewExchangePartTrackingTest` pins these cases.
 - Do not depend on `parallelProcessing` to avoid the skip.
 - Switching the integration to the `noop` store also avoids the skip. It
   removes replay protection for every step, so a replay repeats delivered side
