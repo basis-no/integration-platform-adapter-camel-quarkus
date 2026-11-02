@@ -79,18 +79,25 @@ offset. A replay's `x-bip-redo-steps` is not carried; see [Redo Steps](#redo-ste
 
 The message counts as parked only after the DLQ endpoint accepted the record; a
 Kafka producer with Camel's default `requestRequiredAcks=all` returns once the
-broker acknowledged it. The publish runs in the
-adapter's `bip-confirmed-dead-letter` route. If it fails, the adapter records
-`FAILED`, does not commit the offset and leaves the exchange failed. With the
-adapter's default `camel.component.kafka.break-on-first-error=true`, the
-consumer then reads the record again before the partition's later records, so
-the partition waits until the DLQ accepts the record. Each attempt logs at
-ERROR. The same applies when an application's own `onException` keeps a
-failure from reaching the adapter's dead letter channel: the message is
-recorded `FAILED`, not committed, and read again. A record that the DLQ endpoint
-can never accept, for example one above the DLQ topic's size limit, keeps its
-partition waiting until an operator fixes the DLQ or moves the consumer group
-past it.
+broker acknowledged it. The publish runs in the adapter's
+`bip-confirmed-dead-letter` route. If it fails, the adapter records `FAILED`,
+does not commit the offset and leaves the exchange failed. With the adapter's
+default `camel.component.kafka.break-on-first-error=true`, the consumer then
+reads the record again before the partition's later records, so the partition
+waits until the DLQ accepts the record. Each attempt logs at ERROR. A record
+that the DLQ endpoint can never accept, for example one above the DLQ topic's
+size limit, keeps its partition waiting until an operator fixes the DLQ or
+moves the consumer group past it.
+
+`basis.message-store.dlq-uri` must name one fixed endpoint. An expression such
+as `${header.name}` fails startup, because it can evaluate to no endpoint at
+all.
+
+An application's own `onException` changes this. If it leaves a failure
+unhandled (`handled(false)`), the adapter does not park it: the message is
+recorded `FAILED`, not committed, and read again. If it marks the failure
+handled, the application has taken it over: the message is recorded
+`COMPLETED` and committed, and nothing is parked.
 
 The historical Kafka DLQ record remains after recovery. Postgres is
 authoritative for current lifecycle state, so a later successful replay changes

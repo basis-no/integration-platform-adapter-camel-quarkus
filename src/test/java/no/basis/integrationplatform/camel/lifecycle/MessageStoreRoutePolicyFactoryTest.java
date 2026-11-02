@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.ingress.IngressNormalizationConfig;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
@@ -129,6 +130,17 @@ class MessageStoreRoutePolicyFactoryTest {
                 () -> factory.validateConfiguredNormalizationRoutes(null));
 
         assertTrue(thrown.getMessage().contains("missing-route"));
+    }
+
+    @Test
+    void theDeadLetterRouteIsNotABoundaryEvenWithAllRoutesSelected() throws Exception {
+        try (var context = new org.apache.camel.impl.DefaultCamelContext()) {
+            context.addRoutePolicyFactory(factory("all", true, "dlq"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.start();
+            assertTrue(context.getRoute(PlatformDeadLetterRoute.ROUTE_ID).getRoutePolicyList().isEmpty());
+        }
     }
 
     private MessageStoreRoutePolicyFactory factory(String boundaryRoutes, boolean replayEnabled, String failureMode) {

@@ -6,6 +6,7 @@ import jakarta.inject.Inject;
 import io.quarkus.runtime.StartupEvent;
 import no.basis.integrationplatform.camel.MessageFailureMode;
 import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.ingress.IngressNormalizationConfig;
 import no.basis.integrationplatform.camel.ingress.IngressReplicaSafety;
@@ -147,6 +148,10 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
 
     @Override
     public RoutePolicy createRoutePolicy(CamelContext camelContext, String routeId, NamedNode route) {
+        if (PlatformDeadLetterRoute.ROUTE_ID.equals(routeId)) {
+            // The adapter's own parking route is not a message boundary, also with boundary-routes=all.
+            return null;
+        }
         if (ingressNormalizationConfig.includes(routeId)) {
             validateIngressNormalizationRoute(routeId, route);
             seenNormalizationRoutes.add(routeId);

@@ -5,8 +5,8 @@
 - A Kafka input is committed only after it completed or the DLQ endpoint
   accepted its record. Before, a failed DLQ publish was recorded as `DLQ` and
   the offset committed, so the message was acknowledged without being parked;
-  the same happened when an application's `onException` kept a failure from
-  reaching the adapter's dead letter channel. The DLQ publish now runs in the
+  the same happened when an application's `onException` left a failure
+  unhandled, so the adapter did not park it. The DLQ publish now runs in the
   adapter's `bip-confirmed-dead-letter` route, and the message counts as parked
   only after it. Otherwise the adapter records `FAILED`, does not commit the
   offset and leaves the exchange failed. The new default
@@ -16,6 +16,9 @@
   not be journaled. The partition waits until the DLQ accepts the record, and
   each attempt logs at ERROR. A failed offset commit after a recorded outcome
   is reported as such. Same rule as adapter 0.3.6.
+  `basis.message-store.dlq-uri` must name one fixed endpoint: an expression
+  such as `${header.name}` now fails startup. The adapter now depends on
+  `camel-quarkus-direct`.
   Upgrade: keep `break-on-first-error=true`. A test that adds
   `PlatformRouteConfiguration` to a hand-built `CamelContext` must also add
   `PlatformDeadLetterRoute`; Quarkus applications get both.

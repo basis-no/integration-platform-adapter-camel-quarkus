@@ -22,6 +22,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
@@ -66,6 +67,54 @@ class FailureOwnershipTest {
     }
 
     @Test
+    void applicationHandlerThatHandlesTheFailureCompletesTheMessage() throws Exception {
+        Result result = new Result();
+        try (var context = context(result, false)) {
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    onException(Exception.class).handled(true).process(e -> { });
+                    from("direct:input").routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .routePolicy(new MessageStoreRoutePolicy(result.rows::add, "order-pipeline"))
+                            .process(e -> {
+                                throw new IllegalArgumentException("synthetic receiver rejection");
+                            });
+                }
+            });
+            context.start();
+            send(context, result);
+        }
+        assertTrue(result.parked.isEmpty());
+        assertEquals(MessageStatus.COMPLETED, result.rows.getFirst().status());
+        assertEquals(1, result.commits.get());
+    }
+
+    @Test
+    void dlqUriThatIsAnExpressionFailsStartup() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "${header.missingDlqUri}");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            Exception thrown = assertThrows(Exception.class, () -> context.addRoutes(new PlatformDeadLetterRoute()));
+            Throwable cause = thrown;
+            while (cause.getCause() != null && !(cause instanceof IllegalArgumentException)) cause = cause.getCause();
+            assertTrue(cause.getMessage().startsWith("basis.message-store.dlq-uri must name one fixed endpoint"),
+                    cause.getMessage());
+        }
+    }
+
+    @Test
+    void dlqUriThatSendsNowhereIsNotParkedOrCommitted() throws Exception {
+        // Accepted when the route was configured, an expression by the time it runs.
+        var outcome = run(false, false, false, "${header.missingDlqUri}");
+        assertTrue(outcome.parked.isEmpty());
+        assertEquals(0, outcome.commits.get());
+        assertEquals(MessageStatus.FAILED, outcome.rows.getFirst().status());
+        assertNotNull(outcome.exchange.getException());
+        assertEquals("basis.message-store.dlq-uri resolved to no endpoint; the message was not parked",
+                outcome.exchange.getException().getMessage());
+    }
+
+    @Test
     void journalFailureDoesNotCommit() throws Exception {
         var outcome = run(false, false, true);
         assertEquals(0, outcome.commits.get());
@@ -104,6 +153,11 @@ class FailureOwnershipTest {
     }
 
     private Result run(boolean appHandler, boolean dlqFailure, boolean journalFailure) throws Exception {
+        return run(appHandler, dlqFailure, journalFailure, null);
+    }
+
+    private Result run(boolean appHandler, boolean dlqFailure, boolean journalFailure, String dlqUriAtStart)
+            throws Exception {
         Result result = new Result();
         try (var context = context(result, dlqFailure)) {
             context.addRoutes(new RouteBuilder() {
@@ -125,6 +179,11 @@ class FailureOwnershipTest {
                             });
                 }
             });
+            if (dlqUriAtStart != null) {
+                var properties = new Properties();
+                properties.setProperty("basis.message-store.dlq-uri", dlqUriAtStart);
+                context.getPropertiesComponent().setOverrideProperties(properties);
+            }
             context.start();
             send(context, result);
         }
