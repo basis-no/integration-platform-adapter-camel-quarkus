@@ -8,39 +8,52 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 /** How one attempt's record tells a lost part's skip from a normal one, and how it stays bounded. */
 class StepVisitsTest {
     @Test
-    void aSkipIsARepeatOnlyWhenAnotherPartClaimedTheKeyFirst() {
+    void aSkipIsARepeatOnlyWhenAPartAtAnotherPositionSentTheKeyInThisAttempt() {
         StepVisits visits = new StepVisits();
-        assertNull(visits.claim("/split.1#0", "m:send", false));
-        visits.delivering("/split.1#0", "m:send");
-        assertEquals(StepVisits.SPLIT, visits.claim("/split.1#1", "m:send", true));
-        assertNull(visits.claim("/split.1#0", "m:send", true), "the part that sent the key skips its own send");
-        // An earlier attempt's delivery: the first part to skip it owns the skip.
-        assertNull(visits.claim("/split.1#0", "m:other", true));
-        assertEquals(StepVisits.SPLIT, visits.claim("/split.1#1", "m:other", true));
+        assertNull(visits.repeatedIn("/split.1#0", "m:send"), "an earlier attempt's delivery");
+        assertNull(visits.repeatedIn("/split.1#1", "m:send"), "an earlier attempt's delivery");
+        visits.sent("/split.1#0", "m:line");
+        assertEquals(StepVisits.SPLIT, visits.repeatedIn("/split.1#1", "m:line"));
+        assertNull(visits.repeatedIn("/split.1#0", "m:line"), "the part that sent the key skips its own send");
+        assertEquals(StepVisits.LOOP, visits.repeatedIn("/split.1#0/loop.2#1", "m:line"), "a loop inside the sending part");
+        assertNull(visits.repeatedIn("", "m:line"), "the input itself, outside any part");
+        visits.sent("/split.1#2/multicast.3#0", "m:branch");
+        assertNull(visits.repeatedIn("/split.1#2", "m:branch"), "one of this part's own branches sent it");
+        assertEquals(StepVisits.MULTICAST, visits.repeatedIn("/split.1#2/multicast.3#1", "m:branch"));
     }
 
     @Test
-    void theScopeNamesTheKindWhereTwoCallsOfOneSplitDiffer() {
+    void partsThatSentInParallelEachSkipTheirOwnSend() {
         StepVisits visits = new StepVisits();
-        visits.claim("/call.1#/split.3#0", "m:send", false);
-        visits.delivering("/call.1#/split.3#0", "m:send");
-        assertEquals(StepVisits.SPLIT, visits.claim("/call.2#/split.3#0", "m:send", true));
-        assertEquals(StepVisits.LOOP, visits.claim("/loop.4#1", "m:send", true));
+        visits.sent("/split.1#0", "m:send");
+        visits.sent("/split.1#1", "m:send");
+        assertNull(visits.repeatedIn("/split.1#0", "m:send"));
+        assertNull(visits.repeatedIn("/split.1#1", "m:send"));
+        assertEquals(StepVisits.SPLIT, visits.repeatedIn("/split.1#2", "m:send"));
     }
 
     @Test
-    void aKeyThatEveryPartReachesStaysWhileOthersAreForgottenBeyondTheLimit() {
+    void anUnknownLoopIterationIsNeverARepeat() {
         StepVisits visits = new StepVisits();
-        visits.claim("/split.1#0", "m:shared", false);
-        visits.delivering("/split.1#0", "m:shared");
-        visits.claim("/split.1#0", "m:first-own", false);
-        for (int i = 1; i <= StepVisits.MAX_KEYS; i++) {
-            assertEquals(StepVisits.SPLIT, visits.claim("/split.1#" + i, "m:shared", true));
-            visits.claim("/split.1#" + i, "m:own-" + i, false);
+        visits.sent("/loop.2#0", "m:send");
+        assertNull(visits.repeatedIn("/loop.2#?", "m:send"));
+        visits.sent("/loop.2#?", "m:other");
+        assertNull(visits.repeatedIn("/loop.2#1", "m:other"), "a key sent from an unknown iteration is not checked");
+    }
+
+    @Test
+    void forgottenKeysAndKeysSentByManyPartsAreNotChecked() {
+        StepVisits visits = new StepVisits();
+        visits.sent("/split.1#0", "m:old");
+        for (int i = 0; i < StepVisits.MAX_KEYS; i++) {
+            visits.sent("/split.1#0", "m:own-" + i);
         }
-        // The shared key is still known; the oldest per-part key was forgotten, so a skip
-        // of it by another part now looks like an earlier attempt's delivery.
-        assertEquals(StepVisits.SPLIT, visits.claim("/split.1#x", "m:shared", true));
-        assertNull(visits.claim("/split.1#y", "m:first-own", true));
+        assertNull(visits.repeatedIn("/split.1#1", "m:old"));
+
+        StepVisits crowded = new StepVisits();
+        for (int i = 0; i <= StepVisits.MAX_SENDERS; i++) {
+            crowded.sent("/split.1#" + i, "m:send");
+        }
+        assertNull(crowded.repeatedIn("/split.1#" + (StepVisits.MAX_SENDERS + 1), "m:send"));
     }
 }

@@ -50,9 +50,10 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 /**
  * Split parts, loop iterations and multicast and recipient list branches keep the input's
  * message id and so share a step key: a later part is skipped as already delivered
- * without being sent. Each such skip is logged at ERROR; whether a part is sent, the input's
- * outcome, parking and the commit are unchanged. A skip of a step that an earlier attempt
- * sent, or that the same part sent before Camel repeated it, stays INFO.
+ * without being sent. Such a skip is logged at ERROR when a part at another position sent
+ * the key in this attempt; whether a part is sent, the input's outcome, parking and the
+ * commit are unchanged. A skip of a step that an earlier attempt sent, or that the same
+ * part sent before Camel repeated it, stays INFO.
  */
 @Timeout(60)
 class RepeatedStepDetectionTest {
@@ -108,17 +109,16 @@ class RepeatedStepDetectionTest {
     }
 
     @Test
-    void aRedeliveredSplitSkipsItsFirstPartAtInfoAndTheNextAtError() throws Exception {
-        // An earlier attempt sent part a. In this attempt the first part's skip is normal; the
-        // second part shares the key, so it is not delivered either.
+    void aRedeliveredSplitWhoseEarlierAttemptSentTheKeySkipsEveryPartAtInfo() throws Exception {
+        // The adapter cannot tell which part's data the earlier attempt sent.
         outcomes.put("message-1:send-line", "DELIVERED");
         start(store, route -> route.split(body().tokenize(",")).to("vendor:lines").id("send-line").end());
 
         sendKafka("a,b");
 
         assertEquals(List.of(), received);
-        assertEquals(1, infoSkips());
-        assertEquals(List.of("split part"), errorScopes());
+        assertEquals(2, infoSkips());
+        assertEquals(List.of(), errorScopes());
         assertEquals(MessageStatus.COMPLETED, rows.getFirst().status());
     }
 
@@ -170,11 +170,11 @@ class RepeatedStepDetectionTest {
     }
 
     @Test
-    void aSplittingSubRouteCalledTwiceTellsTheSecondCallsPartsApart() throws Exception {
-        // Each call runs the same split, so the second call's first part has the same
-        // position as the first call's; the call it came from tells them apart.
+    void aSplittingSubRouteCalledAgainComparesThatRunsPartsWithEachOther() throws Exception {
+        // The second call's first part is not compared with the first call's parts; its
+        // second part repeats the key within its own run.
         start(store, route -> route.to("direct:lines").id("first-batch")
-                .setBody(constant("c")).to("direct:lines").id("second-batch"));
+                .setBody(constant("c,d")).to("direct:lines").id("second-batch"));
         context.addRoutes(new RouteBuilder() {
             public void configure() {
                 from("direct:lines").split(body().tokenize(",")).to("vendor:lines").id("send-line").end();
@@ -185,8 +185,47 @@ class RepeatedStepDetectionTest {
 
         assertEquals(List.of("lines:a"), received);
         assertEquals(List.of("split part", "split part"), errorScopes());
-        assertEquals(0, infoSkips());
+        assertEquals(1, infoSkips());
         assertEquals(MessageStatus.COMPLETED, rows.getFirst().status());
+    }
+
+    @Test
+    void aCatchThatRunsTheSameSplitAgainSkipsTheSentPartAtInfo() throws Exception {
+        start(store, route -> route.doTry().to("direct:lines").id("try-lines")
+                .doCatch(IllegalStateException.class).to("direct:lines").id("catch-lines").end());
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:lines").errorHandler(noErrorHandler())
+                        .split(body().tokenize(",")).to("vendor:lines").id("send-line").end()
+                        .to("vendor:flaky").id("send-flaky");
+            }
+        });
+        flakyFailures.set(1);
+
+        sendKafka("a");
+
+        assertEquals(List.of("lines:a", "flaky:a", "flaky:a"), received);
+        assertEquals(List.of(), errorScopes());
+        assertEquals(1, infoSkips());
+        assertEquals(MessageStatus.COMPLETED, rows.getFirst().status());
+    }
+
+    @Test
+    void aSendAfterAnInnerLoopInTheSameIterationIsNotARepeat() throws Exception {
+        // The inner loop leaves its own index on the exchange, so the outer iteration is no
+        // longer known: the second visit is the same part reaching the send again.
+        start(store, route -> route.loop(1).to("direct:send").loop(2).log("inner").end().to("direct:send").end());
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:send").to("vendor:lines").id("send-line");
+            }
+        });
+
+        sendKafka("a");
+
+        assertEquals(List.of("lines:a"), received);
+        assertEquals(List.of(), errorScopes());
+        assertEquals(1, infoSkips());
     }
 
     @ParameterizedTest(name = "{0}")
@@ -201,7 +240,8 @@ class RepeatedStepDetectionTest {
             "multicast-in-split | a,b | lines:a                 | multicast branch,split part,split part | 0",
             "per-part-id      | a,b,c | lines:a,lines:b,lines:c |                                   | 0",
             // Not detected: one part reaching the same send twice, and an outer loop's
-            // repeat after an inner loop, which leaves its own index on the exchange.
+            // repeat after an inner loop, which leaves its own index on the exchange, so
+            // the outer iteration is no longer known.
             "same-part-twice  | a     | lines:a                 |                                   | 1",
             "nested-loop      | a     | lines:a                 |                                   | 1",
     })

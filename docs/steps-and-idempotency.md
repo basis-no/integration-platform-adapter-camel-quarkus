@@ -108,43 +108,52 @@ that reach the same side-effect send share one key. With
 Each later part's send is skipped as already delivered, and that part's data
 does not reach the receiver. The input still completes.
 
-Each such skip is logged at ERROR, once per skipped send:
+In the attempt that sends the first part, each such skip is logged at ERROR,
+once per skipped send:
 
 ```text
 Step <step-id> was skipped in a <split part|loop iteration|multicast branch|recipient list branch>
 of input route <route-id>, so this part was not delivered: another part of the same attempt
-already sent or skipped this step key. Split parts, loop iterations and multicast and recipient
-list branches keep the input's x-bip-message-id, so they share one step key. Give each part its
-own x-bip-message-id, send each part through a new exchange with its own id, or publish each
-part with its own id. See docs/steps-and-idempotency.md#splitting-before-a-side-effect-send
+already sent this step key. Split parts, loop iterations and multicast and recipient list
+branches keep the input's x-bip-message-id, so they share one step key. Give each part its own
+x-bip-message-id, send each part through a new exchange with its own id, or publish each part
+with its own id. See docs/steps-and-idempotency.md#splitting-before-a-side-effect-send
 ```
 
 The message is one line. It names the step, the input route and the kind of
 part, and contains no message content or header values. Only the log changes:
 the skip, the input's outcome, retries, the configured failure mode and commits
-are as before. The adapter tells parts apart by their position in the enclosing
-splits, loops, multicasts and recipient lists, and by the `direct:`, `seda:` or
-`vm:` call that started each of these, so the same splitting sub-route called
-twice keeps the two calls' parts apart. A skip of a step that an earlier
-attempt sent, after a redelivery or a replay, stays at INFO, and so does a part
-that meets its own delivered send again when Camel repeats a sub-route or a
-whole split within one attempt. With `parallelProcessing()`, each part is
-either sent or logged at ERROR; parts that sent the same key in parallel each
-skip their own send at INFO when Camel repeats the split. The `noop` store, and sends that are not
-classified as side effects, never skip, so every part is sent and nothing is
-logged.
+are as before. A part's position is its index in each enclosing split, loop,
+multicast and recipient list. The line is written only when a part at another
+position sent the key in this attempt, and neither this part nor one of its own
+parts did. Every other skip stays at INFO. That includes every part of a
+redelivered or replayed input whose earlier attempt sent the key, because the
+adapter cannot tell which part's data that attempt sent, and a part that meets
+its own delivered send again when Camel repeats a sub-route or a whole split.
+With `parallelProcessing()`, each part is either sent or logged at ERROR. A
+branch or part whose data equals the sent part's is still logged at ERROR: its
+own send did not happen. The `noop` store, and sends that are not classified as
+side effects, never skip, so every part is sent and nothing is logged.
 
-Not detected, so these skips are logged at INFO only: one part that reaches the
-same send twice on its own, for example by calling one `direct:` sub-route
-twice; a send that follows an inner loop in an outer loop, because Camel leaves
-the inner loop's `CamelLoopIndex` on the exchange; a part sent through a new
-exchange that copies the input's `x-bip-message-id`; a split, loop, multicast
-or recipient list that runs again from the same call without a Camel retry,
-for example through a routing slip or a dynamic router, whose later parts are
-compared with the first run's parts at the same positions; and a step key that
-the attempt last used more than 10,000 step keys earlier. The adapter keeps the
-10,000 most recently used keys per attempt, so a large split stays bounded in
-memory; a key that every part reaches stays known.
+Not detected, so these skips are logged at INFO only:
+
+- The input itself outside any part, and one part that reaches the same send
+  twice on its own, for example by calling one `direct:` sub-route twice or
+  after one of its own branches sent it.
+- A split, loop, multicast or recipient list that runs again in the same
+  attempt, for example a sub-route called a second time (also through `toD`),
+  a `doCatch` that repeats the call, or a Camel retry. A part of the later run
+  at a position that sent the key in the earlier run is taken to be that part;
+  later positions are logged at ERROR.
+- A send in an outer loop after a nested scope changed `CamelLoopIndex`, such
+  as an inner loop: the outer iteration is no longer known for the rest of that
+  loop. A key sent from such an iteration is not checked either.
+- A part sent through a new exchange that copies the input's
+  `x-bip-message-id`: the new exchange does not see the other parts' sends.
+- A key the attempt has not used for more than 10,000 other step keys, and a
+  key sent from more than 16 positions in one attempt. The record keeps at most
+  10,000 keys and 16 positions per key, so it stays bounded in memory; a key
+  that every part reaches stays known.
 
 Safe forms, which send every part:
 

@@ -33,7 +33,8 @@
   recipient list branch of the same attempt already sent its step key is
   logged at ERROR, once per skipped send, with the step, the input route, the
   kind of part and the safe forms, and no message content or header values.
-  Only the log changes; a skip of an earlier attempt's delivery stays at INFO.
+  Only the log changes. The line is written only when that is certain; every
+  other skip, including a skip of an earlier attempt's delivery, stays at INFO.
   See
   [Steps and idempotency](docs/steps-and-idempotency.md#splitting-before-a-side-effect-send).
   Same rule as adapter 0.3.6.

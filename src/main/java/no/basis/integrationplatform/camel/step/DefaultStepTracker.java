@@ -160,9 +160,9 @@ public class DefaultStepTracker implements StepTracker {
         exchange.getMessage().setHeader(PlatformHeaders.IDEMPOTENCY_KEY, idempotencyKey);
         exchange.getMessage().setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, idempotencyKey);
         exchange.setProperty(PlatformExchangeProperties.INJECTED_IDEMPOTENCY_KEY, idempotencyKey);
-        // Another part of this attempt with the same message id may have claimed the key first.
-        // This only changes how a skip is logged.
-        String repeatedIn = StepVisits.of(exchange).claim(StepVisits.path(exchange), idempotencyKey, skip);
+        // Another part of this attempt with the same message id may have sent the key. This
+        // only changes how the skip is logged.
+        String repeatedIn = skip ? StepVisits.of(exchange).repeatedIn(StepVisits.path(exchange), idempotencyKey) : null;
         if (repeatedIn != null) {
             exchange.setProperty(StepVisits.REPEATED_IN, repeatedIn);
         }
@@ -229,7 +229,7 @@ public class DefaultStepTracker implements StepTracker {
         }
         StepResult step = StepResult.delivered(currentStepId(exchange), currentIdempotencyKey(exchange), currentEndpointUri(exchange));
         steps(exchange).add(step);
-        StepVisits.of(exchange).delivering(StepVisits.path(exchange), step.idempotencyKey());
+        StepVisits.of(exchange).sent(StepVisits.path(exchange), step.idempotencyKey());
         if (currentStepRole(exchange) == StepRole.OUTPUT_SIDE_EFFECT) {
             String messageId = ensureMessageId(exchange);
             StepOutputCheckpoint checkpoint = requiredCheckpointService(step.step())
@@ -261,7 +261,7 @@ public class DefaultStepTracker implements StepTracker {
             if (repeatedIn != null) {
                 // Names the route, step and scope only: no message content and no header values.
                 LOG.error("Step {} was skipped in a {} of input route {}, so this part was not delivered: another part "
-                                + "of the same attempt already sent or skipped this step key. Split parts, loop "
+                                + "of the same attempt already sent this step key. Split parts, loop "
                                 + "iterations and multicast and recipient list branches keep the input's "
                                 + PlatformHeaders.MESSAGE_ID + ", so they share one step key. Give each part its own "
                                 + PlatformHeaders.MESSAGE_ID + ", send each part through a new exchange with its own id, "
