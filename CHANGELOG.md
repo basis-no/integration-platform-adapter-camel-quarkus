@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- A replay resets an inline payload's expiry, capped at first receipt plus twice
+  the retention, instead of keeping the first expiry. First receipt is the
+  earliest outcome this integration recorded for the message. Object payloads
+  keep their first expiry together with their object. Same rule as adapter 0.3.6.
 - Separate mutable `X.Y.Z-SNAPSHOT` remote-acceptance builds from immutable
   final `vX.Y.Z` Maven Central releases.
 - Avoid a null-method classification failure for ordinary Camel HTTP producers,
