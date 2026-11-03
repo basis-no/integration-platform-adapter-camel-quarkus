@@ -42,7 +42,7 @@ internal failure propagation, not connectivity to a live environment.
 
 ## Application compatibility and limits
 
-The unreleased candidate preserves a UTF-8 Kafka correlation ID as a text header
+From 0.3.6 the adapter preserves a UTF-8 Kafka correlation ID as a text header
 before downstream components forward it. The envelope is decoded with UTF-8,
 independently of the exchange or body charset. Verify the exact broker header bytes,
 journal correlation and receiver's HTTP header together; a typed journal read

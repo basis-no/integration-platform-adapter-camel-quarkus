@@ -4,20 +4,21 @@ This synthetic fixture keeps the Message Store and an existing business cursor i
 separate logical databases. It boots on a base Message Store without a
 Key-Value Store table, reads and updates the existing cursor, and asserts that
 unused optional KV starts no sweeper. The same fixture can run with adapter
-0.3.5 or the 0.3.6 candidate using `-Dadapter.version=...`; do not change business
-logic between the two runs. A passing candidate does not migrate application data.
+0.3.5 or 0.3.6 using `-Dadapter.version=...`; do not change business
+logic between the two runs. A passing run does not migrate application data.
 The fixture supplies a synthetic loopback Kafka bootstrap value for the adapter's
 required CDI configuration; it starts no Kafka route or broker. Its HTTP listener
 also binds to loopback on an ephemeral port.
 
 Use a freshly cached pinned PostgreSQL 17 image and a unique UUID run ID. One
 loopback server is capped at256MiB memory/swap,1CPU/64PIDs and stops on partial
-startup. With Docker available and the selected adapter installed locally:
+startup. With Docker available and the selected adapter version available to
+Maven (installed locally or published):
 
 ```sh
 run_id="$(uuidgen)"
 ./mvnw -f integration-tests/application-data-smoke/pom.xml \
-  -Dadapter.version=0.3.6-SNAPSHOT -Dbip.test.run-id="$run_id" verify
+  -Dadapter.version=0.3.6 -Dbip.test.run-id="$run_id" verify
 ```
 
 Runtime and baseline results remain separate until executed against the exact
@@ -28,7 +29,7 @@ artifacts. The fixture uses no customer data, remote JDBC URL or live environmen
 `RestrictedLoginWriterIT` reuses this module's JDBC and Testcontainers dependencies.
 It is plain JUnit and requires an explicit Surefire selector; the ordinary
 continuity command above does not run it. Run the unchanged fixture separately
-with the packaged 0.3.5 adapter and the packaged 0.3.6-SNAPSHOT candidate. The
+with the packaged 0.3.5 and 0.3.6 adapters. The
 existing continuity fixture must also pass separately for each version; recovery
 results do not establish application-database or optional KV compatibility.
 

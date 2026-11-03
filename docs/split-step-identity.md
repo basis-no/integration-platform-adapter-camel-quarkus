@@ -1,7 +1,7 @@
 # Advisory: repeated sends that share one step identity
 
 Status: known limitation in every 0.3.x release. Behaviour was checked against
-the 0.3.1, 0.3.3, 0.3.4 and 0.3.5 tags and the 0.3.6 candidate, with the same
+the 0.3.1, 0.3.3, 0.3.4 and 0.3.5 tags and the 0.3.6 source, with the same
 result on each. 0.3.6 logs lost parts at ERROR where it can tell them apart and
 changes nothing else (see
 [From 0.3.6: an ERROR for each skipped part](#from-036-an-error-for-each-skipped-part)).

@@ -5,11 +5,10 @@ integration in its environment's Message Store: polling cursors, markers such
 as "a full re-sync already ran", keys of input already seen, and small buffers.
 It is not a place for payloads, secrets, or business records.
 
-**Local 0.3.6 candidate; not published.** This implements the Key-Value Store
-operations below. Single-active leases are not implemented or qualified. It
-needs a Message Store provisioned with `bip_key_value`. Against an older
-Message Store the adapter starts and runs as before, and only Key-Value Store
-calls fail.
+**New in 0.3.6.** The adapter implements the Key-Value Store operations below.
+Single-active leases are not implemented. It needs a Message Store provisioned
+with `bip_key_value`. Against an older Message Store the adapter starts and runs
+as before, and only Key-Value Store calls fail.
 
 ## Operations
 
@@ -31,8 +30,8 @@ while the row remains. An expired row is invisible; rewriting it before the
 sweep continues that row's version. Once the sweep or an explicit delete removes
 it, recreation starts at 1 again. A version read before deletion may therefore
 match the new row, allowing a stale compare-and-set to succeed. These numbers
-are not lease or fencing tokens. This candidate behavior is recorded explicitly
-while the version semantics await human review.
+are not lease or fencing tokens. This is a known limitation of 0.3.6; see the
+[changelog](../CHANGELOG.md).
 
 A `ttl` sets expiry from database time; `put` and `compareAndSet` without one
 clear any expiry. Keep durable cursor keys without a TTL and do not delete them
@@ -74,8 +73,8 @@ Compare-and-set protects the stored cursor; it does not lock the preceding
 fetch or publish. Several pollers can perform those effects before one wins the
 write. Retain a qualified polling lock or use a tested stop-before-start process,
 and make publication safe to repeat with a stable source message identity.
-A crash after publish and before the cursor update may repeat publication. This
-candidate adds no leases or transaction across state and message outcomes.
+A crash after publish and before the cursor update may repeat publication. The
+Key-Value Store adds no leases or transaction across state and message outcomes.
 
 ## Deduplicating Input
 
@@ -158,7 +157,7 @@ Rows belong to one environment and do not move with image promotion. Rollback
 after new state writes must reconcile the latest state before an older
 application resumes; changing the adapter pin alone does not move data back.
 
-## Candidate qualification fixtures
+## Qualification fixtures
 
 The ordinary maintenance smoke includes a lazy-CDI check with its datasource
 inactive. A separate `integration-tests/key-value-smoke` fixture boots Quarkus
@@ -171,9 +170,9 @@ for exact container ownership. Memory and swap are both bounded to 256 MiB,
 with one CPU and 64 PIDs. Partial startup and schema failures stop the owned
 database and preserve the first failure. Image preparation needs its own
 resource window.
-These fixtures exercise candidate API behavior and runtime wiring. They do not
+These fixtures exercise the API behavior and runtime wiring. They do not
 qualify unimplemented Key-Value Store features or least-privileged database permissions. With Docker
-available and the pinned image cached, install the candidate locally, then run
+available and the pinned image cached, install the adapter build under test locally, then run
 `./mvnw -f integration-tests/maintenance-smoke/pom.xml verify` and
 the PostgreSQL fixture with an explicit unique run ID, for example:
 
