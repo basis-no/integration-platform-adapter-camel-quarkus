@@ -19,6 +19,12 @@ rules the agents follow; human contributors follow the same rules.
 
 ## Pull requests
 
+- Every problem or feature has an issue before its pull request. Link it in
+  the pull request with `Closes #N`, or `Refs #N` when the pull request does
+  only part of it, and say briefly how the change resolves it. GitHub closes
+  an issue from a keyword only when the pull request merges into the default
+  branch; when a pull request targets a release branch, close its issue by
+  hand once the work is done. Automated dependency updates need no issue.
 - One topic per pull request. Stack pull requests only when one really depends
   on another.
 - Pull requests are squash-merged, and the pull-request title becomes the

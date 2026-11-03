@@ -31,6 +31,16 @@ values or default, and ownership guidance. `DocumentationCoverageTest` enforces
 property coverage and local Markdown links; the Maven build enforces warning-free
 public Javadocs.
 
+## Issues and pull requests
+
+Every problem or feature has an issue before its pull request. A pull request
+links the issues it addresses with `Closes #N`, or `Refs #N` when it does only
+part of one, and says briefly how it resolves them. A keyword closes an issue
+only when the pull request merges into the default branch; close the issue of a
+release-branch pull request by hand once its work is done. Write issues under
+the same public repository boundary as everything else here. Automated
+dependency updates need no issue. See `CONTRIBUTING.md`.
+
 ## Public repository boundary
 
 Use provider-neutral examples. Do not add customer names, repositories,
