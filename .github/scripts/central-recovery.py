@@ -2,6 +2,8 @@
 """Resume one reviewed Central deployment without a second upload."""
 import argparse
 import base64
+import errno
+import fcntl
 import hashlib
 import json
 import os
@@ -11,6 +13,20 @@ import urllib.request
 import uuid
 
 BASE = 'https://central.sonatype.com/api/v1/publisher'
+# Errors meaning "this file system cannot do a full flush", not "the flush failed".
+UNSUPPORTED = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.ENOTTY}
+
+
+def sync(descriptor):
+    """Flush to stable storage; on macOS fsync alone leaves data in the drive cache."""
+    if hasattr(fcntl, 'F_FULLFSYNC'):
+        try:
+            fcntl.fcntl(descriptor, fcntl.F_FULLFSYNC)
+            return
+        except OSError as error:
+            if error.errno not in UNSUPPORTED:
+                raise  # A storage failure: never continue as if the state were durable.
+    os.fsync(descriptor)
 
 
 def save(path, state):
@@ -19,8 +35,14 @@ def save(path, state):
         json.dump(state, handle, indent=2)
         handle.write('\n')
         handle.flush()
-        os.fsync(handle.fileno())
+        sync(handle.fileno())
     os.replace(temporary, path)
+    # The rename survives a crash only once its directory is synced; network calls rely on it.
+    directory = os.open(path.parent, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0))
+    try:
+        sync(directory)
+    finally:
+        os.close(directory)
 
 
 def request(endpoint, body=b'', content_type='application/json'):

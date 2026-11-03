@@ -13,7 +13,7 @@ NS = {'p': 'http://maven.apache.org/POM/4.0.0'}
 
 
 def selection(mode, version, commit, signer, candidate_run='', state_run='', bundle_hash='', attempt='1'):
-    if mode not in ('inspect', 'upload', 'resume', 'publish'):
+    if mode not in ('inspect', 'upload', 'resume', 'publish', 'readback'):
         raise ValueError('Unknown candidate action')
     if not re.fullmatch(r'\d+\.\d+\.\d+', version):
         raise ValueError('Explicit stable numeric candidate version required')
@@ -24,6 +24,11 @@ def selection(mode, version, commit, signer, candidate_run='', state_run='', bun
     if mode == 'inspect':
         if candidate_run or state_run or bundle_hash:
             raise ValueError('Inspect builds new candidate evidence; recovery inputs must be empty')
+    elif mode == 'readback':
+        # Post-publication readback: unsigned candidate run plus offline signed entries digest.
+        if (state_run or not re.fullmatch(r'[1-9][0-9]*', candidate_run)
+                or not re.fullmatch(r'[a-f0-9]{64}', bundle_hash)):
+            raise ValueError('Readback requires the candidate run and signed entries SHA-256 only')
     else:
         if not re.fullmatch(r'[1-9][0-9]*', candidate_run) or not re.fullmatch(r'[a-f0-9]{64}', bundle_hash):
             raise ValueError('Existing candidate run and reviewed bundle hash required')
@@ -83,8 +88,10 @@ def provenance(path, version, commit, workflow_head, output, effective_pom):
         handle.write('\n')
 
 
-def unsigned(path, version, commit, output):
+def unsigned(path, version, commit, output, run):
     """Copy only opaque payloads; never sign or execute them in this collector."""
+    if not re.fullmatch(r'[1-9][0-9]*', run):
+        raise ValueError('Exact candidate workflow run ID required')
     record = json.loads((output / 'provenance.json').read_text())
     if record['source_commit'] != commit or record['version'] != version:
         raise ValueError('Unsigned candidate identity mismatch')
@@ -110,7 +117,7 @@ def unsigned(path, version, commit, output):
     for source, name in zip(sources, names):
         shutil.copyfile(source, destination / name)
         hashes[name] = hashlib.sha256(source.read_bytes()).hexdigest()
-    receipt = {'source_commit': commit, 'version': version,
+    receipt = {'source_commit': commit, 'version': version, 'candidate_run': run,
                'qualification': 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE', 'payload_sha256': hashes}
     (output / 'unsigned.json').write_text(json.dumps(receipt, indent=2) + '\n')
 
@@ -142,6 +149,7 @@ def main():
     parser.add_argument('--attempt', default='1')
     parser.add_argument('--path', type=Path, default=Path('candidate'))
     parser.add_argument('--workflow-head', default='')
+    parser.add_argument('--workflow-run', default='')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--effective-pom', type=Path)
     args = parser.parse_args()
@@ -156,7 +164,7 @@ def main():
     elif args.action == 'unsigned':
         if not args.output:
             parser.error('Unsigned collection requires an output directory')
-        unsigned(args.path, args.version, args.commit, args.output)
+        unsigned(args.path, args.version, args.commit, args.output, args.workflow_run)
     elif args.action == 'artifact':
         print(json.dumps(check_artifact(args.path, args.version, args.commit, args.signer, args.bundle_hash)))
 

@@ -386,6 +386,16 @@ and iteration its own step key. See the
   missing-table error are reworded. The `MESSAGE-STORE CONTRACT VERSION
   UNVERIFIED` prefix is unchanged.
 
+### Release process
+
+- Final releases are signed with an offline signer on the release manager's
+  workstation and uploaded from there. CI holds no publishing credentials: it
+  builds and keeps the unsigned candidate, and after publication compares the
+  public artifacts with it. A snapshot of a reviewed commit is published,
+  unsigned, from the release manager's workstation; the 0.3.6 acceptance
+  snapshots were published this way. Existing published artifacts are
+  unchanged.
+
 ## 0.3.5 — 2026-10-12
 
 Maven artifact:
