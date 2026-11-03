@@ -1,18 +1,17 @@
 # Basis Camel Quarkus Adapter
 
-Shared Camel Quarkus adapter for Basis integration platform message handling.
+Shared Camel Quarkus adapter for message-store auditing, Kafka recovery and
+controlled replay.
 
-Implements message-store contract v1.0.0-rc2.
-The contract applies the platform-wide
-BIP naming (ADR-002): Kafka topics `bip.*` (`bip.<integration>.in`,
-`bip.message.dlq`, `bip.message.status`), Postgres tables `bip_*`
-(`bip_message_log`, `bip_message_attempt`, `bip_message_replay_audit`,
-`bip_step_outcome`, `bip_contract`), and envelope headers `x-bip-*`.
-Environment variables (`BASIS_MESSAGE_STORE_*`) and config keys
-(`basis.message-store.*`) keep their prefixes; only values that name topics,
-tables, or headers use the `bip` names.
+The adapter uses message-store schema version 1. Its identifiers use a `bip`
+prefix: Kafka topics `bip.*` (`bip.<integration>.in`, `bip.message.dlq`,
+`bip.message.status`), Postgres tables `bip_*` (`bip_message_log`,
+`bip_message_attempt`, `bip_message_replay_audit`, `bip_step_outcome`,
+`bip_contract`), and envelope headers `x-bip-*`. Environment variables
+(`BASIS_MESSAGE_STORE_*`) and config keys (`basis.message-store.*`) keep their
+prefixes; only values that name topics, tables, or headers use the `bip` names.
 
-The adapter keeps platform mechanics out of business routes where possible:
+The adapter keeps message-store mechanics out of business routes where possible:
 
 - standard `x-bip-*` envelope headers
 - message attempt/status collection
@@ -20,7 +19,7 @@ The adapter keeps platform mechanics out of business routes where possible:
 - retry/DLQ route configuration defaults
 - Kafka manual offset commit after the message outcome is safely recorded
 - a small `MessageStoreSink` boundary so persistence can be direct Postgres now
-  or lifecycle events/central message-store service later
+  or lifecycle events for a separate consumer later
 
 This library is a Camel/Quarkus runtime adapter. It is self-contained: the
 tables, topics and headers it reads and writes are documented in this README,
@@ -37,8 +36,8 @@ preparation does not authorize publication. See [Releasing](docs/releasing.md).
 ## 0.3.5 maintenance line
 
 This maintenance line retains the 0.3.4 replay and failure-ownership safeguards.
-Its runtime source passed the contract-v1
-cross-runtime suite and isolated runtime acceptance. See
+Its runtime source passed cross-runtime tests against
+the .NET adapter and isolated runtime acceptance. See
 [0.3.4 qualification](docs/maintenance-qualification.md) and
 [0.3.5 inspection qualification](docs/delivery-audit.md#qualification-and-rollout)
 for source provenance, scope and limits. Qualification does not deploy or automatically
@@ -57,8 +56,8 @@ selected stable version.
 The stable `0.3.5` package retains the 0.3.4 Kafka replay and failure-ownership safeguards.
 It adds opt-in recording of independent outbound requests on exact `direct:`
 route ids and non-replayable inspection of selected non-Kafka inputs. These
-optional selectors do not change the platform
-certified baseline or automatically enable inspection. See
+optional selectors do not change the default
+behavior or automatically enable inspection. See
 [delivery audit configuration](docs/delivery-audit.md) and the
 [non-Kafka input inspection](docs/input-audit.md) reference and the
 [maintenance configuration reference](docs/configuration.md).
@@ -75,7 +74,7 @@ Stable release coordinates (verify the tag publication completed before upgradin
 </dependency>
 ```
 
-## V1 Semantics
+## Processing Semantics
 
 The unreleased 0.3.6 candidate converts the owned `x-bip-correlation-id` from
 Kafka's byte-array header representation to text before downstream processing.
@@ -95,7 +94,7 @@ at-least-once processing
 
 It does not promise global exactly-once effects across Kafka, Postgres, and
 external systems. With a durable `StepOutcomeStore`, the adapter can do better
-than plain at-least-once for platform-managed replays: steps already recorded as
+than plain at-least-once for adapter-managed replays: steps already recorded as
 delivered can be skipped before repeating the endpoint send. That protects
 against duplicate side effects the adapter has already observed and stored.
 
@@ -112,25 +111,44 @@ outcome before requesting replay when acknowledgement is missing.
 
 ## Message Status Semantics
 
-V1 records terminal route outcomes only. Normal Camel retry/redelivery failures
+The adapter records terminal route outcomes only. Normal Camel retry/redelivery failures
 are not written as separate `FAILED` attempts; if a retry later succeeds, the
 adapter records one `COMPLETED` outcome with Camel redelivery diagnostics.
 
-Platform `attempt` is reserved for manual replay/resend attempts. Camel automatic
+The message `attempt` is reserved for manual replay/resend attempts. Camel automatic
 redeliveries do not increment `attempt`; they are captured with:
 
 - `auto_redelivered`
 - `auto_redelivery_count`
 - `auto_redelivery_max`
 
+The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
+client inside Camel's `http` component (Apache HttpClient 5.5 and its default
+retry strategy) also retries by itself, within one Camel attempt: it repeats a
+request answered with 503 or 429 once, POST included. Before that retry it waits
+for the receiver's `Retry-After`, given in seconds or as a date, with no upper
+limit; without `Retry-After` it waits one second. The wait runs on the Kafka
+consumer thread, so it counts against `max.poll.interval.ms` (300 seconds by
+default) like the rest of the processing-time budget described under
+[Retry and DLQ](#retry-and-dlq). If processing takes longer, Kafka removes the
+consumer from its group and the uncommitted record is delivered again.
+
+Two 503 answers and then success can therefore record one redelivery for three
+requests; with the default policy, a receiver that keeps answering 503 can get
+eight requests before the message is parked. Set
+`camel.component.http.automatic-retries-disabled=true` to leave every retry to
+the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
+and for routes on the `ip-slow-backend` configuration, whose own redeliveries
+already use much of the poll interval.
+
 - `COMPLETED`: route processing finished and the outcome was safely recorded.
-- `DLQ`: retries were exhausted and the message was parked for operator/platform action.
+- `DLQ`: retries were exhausted and the message was parked for operator action.
 - `FAILED`: a failed exchange that was not successfully parked as DLQ.
-- `RECEIVED`: reserved for platform capture, not emitted by the Camel adapter terminal-status flow in V1.
+- `RECEIVED`: reserved for a future capture layer, not emitted by the Camel adapter terminal-status flow.
 
 ## Runtime Behavior
 
-Adding this dependency to a Camel Quarkus integration installs the platform
+Adding this dependency to a Camel Quarkus integration installs the message-store
 behavior through CDI:
 
 - `MessageStoreRoutePolicyFactory` applies `MessageStoreRoutePolicy` only to Kafka input routes.
@@ -159,7 +177,15 @@ camel.component.kafka.poll-on-error=RECONNECT
 
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
 processing completed or DLQ publication was confirmed. An unparked `FAILED`
-outcome, failed journal write or failed commit leaves the exchange failed.
+outcome, failed journal write or failed commit leaves the exchange failed. A
+step outcome that cannot be checked or recorded fails the send's exchange after
+Camel's retries; the input is then recorded as `FAILED` and neither parked nor
+committed, also when the route catches the failure or it happens in a split
+part. A separate request, such as one sent with a `ProducerTemplate`, fails in
+the same case but does not hold back the input that sent it: an input that
+passes the request's failure on is retried, parked and committed like any
+failed input, and a replay repeats the request's send. Work that ends after the
+input completed, such as a `wireTap`, cannot hold the input back either.
 `break-on-first-error` prevents a later record in the batch from advancing past
 that unresolved input. Applications must not override these safety defaults.
 This can intentionally block processing during a durability outage; it is not a
@@ -191,13 +217,15 @@ named variant:
 All variants use `basis.message-store.dlq-uri`, defaulting to
 `kafka:bip.message.dlq`. When the dead letter channel parks a message, the
 adapter marks the exchange only **after the DLQ send succeeds**, so the terminal
-status becomes `DLQ`. The internal parking route bypasses business-step tracking;
+status becomes `DLQ`. A send that returns without an error counts as success, so
+`dlq-uri` must be a fixed URI of a durable endpoint (see the configuration
+reference below). The internal parking route bypasses business-step tracking;
 parking must never be skipped because of a previously delivered business step.
 An internal request without a managed Kafka input propagates its failure back
 to its caller rather than parking transformed receiver bytes independently.
 
 A competing application `onException` can bypass this recovery handler. Do not
-install a catch-all recovery policy alongside the platform handler. Nested
+install a catch-all recovery policy alongside the adapter's handler. Nested
 request routes should use `ip-no-retry` when the input route owns retry, to avoid
 multiplying attempts. Splits that belong to the same input must share the unit
 of work so failure reaches the input's terminal outcome.
@@ -206,7 +234,10 @@ Known split limitations in 0.3.x: split parts keep the input's message id, and
 a send node has one step id, so all parts share one idempotency key. With
 `basis.message-store.step-outcome-store=postgres`, only the first part sent
 through a node is delivered; later parts are `SKIPPED`, also in the first
-attempt. Without `stopOnException()`, each failed part is parked separately and
+attempt. From 0.3.6 such a skip is logged at ERROR in the attempt that sends
+the first part; see
+[Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
+Without `stopOnException()`, each failed part is parked separately and
 the input still records `COMPLETED`; with it, the first failure parks the input
 once and records `DLQ`. Per-part identity is not part of 0.3.x; 0.4 adds it. See the
 [split step identity advisory](docs/split-step-identity.md) for the exact
@@ -217,7 +248,43 @@ timeouts and retries, number of transactions per input, poll batch size and
 `max.poll.interval.ms` must fit together. This patch does not classify every
 HTTP 500 as permanent or automatically resize application memory.
 
-The DLQ record follows contract section 8. It also carries the other message
+On Camel 4's `http` component, bound a receiver call with `responseTimeout`
+and `connectTimeout`. Camel accepts some timeout options without applying them,
+and the call then waits for the component's timeout, three minutes unless
+configured. Checked on Camel 4.18.0 and 4.18.4:
+
+| Option | Where | What Camel does | Use instead |
+| --- | --- | --- | --- |
+| `socketTimeout` (Camel 3) | any `http`/`https` URI | Sends it to the receiver as a query parameter | `responseTimeout`; on a dynamic send, `httpClient.responseTimeout` |
+| `httpConnection.socketTimeout`, `.responseTimeout`, `.connectTimeout`, `.connectionRequestTimeout` | any `http`/`https` URI | Drops it without an error; only `httpConnection.soTimeout` applies | `responseTimeout`, `connectTimeout`, `connectionRequestTimeout`; on a dynamic send, the `httpClient.` form |
+| `responseTimeout`, `connectTimeout`, `connectionRequestTimeout`, `soTimeout` | dynamic send: a `toD`, an `enrich`, or a `wireTap` whose URI contains `${…}` | Sends it to the receiver as a query parameter | `httpClient.responseTimeout`, `httpClient.connectTimeout`, `httpClient.connectionRequestTimeout`, `httpConnection.soTimeout` |
+
+A dynamic send keeps only the options that Camel's endpoint metadata lists, and
+the metadata lists these four timeouts as component options only, so the rest
+go to the receiver. `allowOptimisedComponents(false)` on a `toD` or `enrich`
+turns that off, at the cost of one endpoint per distinct URI. The `httpClient.`
+forms, `httpConnection.soTimeout` and the component settings
+`camel.component.http.response-timeout`, `connect-timeout`,
+`connection-request-timeout` and `so-timeout` apply to every send. Some forms
+fail on their own: `httpClient.socketTimeout` and `httpClient.soTimeout` when
+Camel creates the endpoint, which is at startup for a `to` and at the first send
+for a dynamic send, and `camel.component.http.socket-timeout` at startup.
+
+From 0.3.6 the adapter logs a warning for each option in the table when it
+creates a route with it in a `to`, `toD`, `enrich` or `wireTap` URI, once per
+route, step and option. The warning names the option, the step and the
+replacement, never the URI or a value. A URI in a `recipientList` or
+`routingSlip`, or one whose scheme is only known at send time, is not checked.
+
+A timeout does not mean the receiver did nothing. A receiver can apply the
+effect after the client gave up, and the message is then retried and parked
+although the effect happened. The step is recorded `FAILED`, so a replay sends
+it again, with the same `Idempotency-Key` (`<message-id>:<step-id>`) as every
+earlier try. Only a receiver that deduplicates on that key avoids a second
+effect. Republishing the parked record under a new message id changes the key,
+so even such a receiver applies it again.
+
+The DLQ record has the shape listed below. It also carries the other message
 headers present at failure, because the Kafka producer forwards them. From 0.3.6
 the values of credential-like headers are masked as `xxxxxx`: `Authorization`,
 `Cookie`, `Set-Cookie`, `WWW-Authenticate`, and names containing secret, token,
@@ -225,19 +292,50 @@ password, credential, session, signature or auth, or ending in `-key` or `_key`.
 names stay visible. Remove any other receiver header you do not want on the
 shared DLQ before the failing step.
 
+An HTTP intake that publishes to Kafka must remove the caller's headers first,
+for example with `removeHeaders("*")` and then setting only the headers the
+message needs. Camel copies every request header onto the exchange, and the
+Kafka producer publishes them with the message, including `Authorization`, API
+keys and cookies, unmasked. Anyone who can read the topic can read them. From
+0.3.6 a Kafka send that published a header with a credential-like name, by the
+masking rule above, logs a warning once per route and header name. The warning
+names the header, never its value, and says how to remove it. What is published
+does not change. The check runs after a successful `to` or `toD`, against the
+endpoint the send used, including a `toD` that chooses its component only when
+it sends. It follows that endpoint's header filter strategy and counts only
+text, byte array, `Long`, `Integer`, `Double` and `Boolean` values, which
+Camel's header serializer writes as they are. An endpoint whose header filter
+strategy or header serializer is an application class, or whose filter holds an
+application collection, is not checked: the adapter does not call application
+code to find out what was published. Nor is a send through a `toD` with
+`cacheSize=-1` to an endpoint that is not yet registered: Camel creates such an
+endpoint for the one send without registering it, so the adapter cannot find it
+afterwards. An endpoint that is already registered is reused and checked. At
+most 100 header names are reported per route; one more line then says that
+further names are not logged. Also from 0.3.6, a tracked send through Camel's
+`http` component does not forward credential-like headers that still hold a
+consumed record's bytes, and logs a
+warning that names the header. A `toD` that chooses its component only when it
+sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver,
+as byte-array text unless they are `x-bip-*` headers.
+
 - the body is the **original consumed payload**, restored from the payload
-  captured at route start — not a mid-transformation body. When the payload
-  could not be captured (`metadata_only` mode or an uncapturable body type),
-  the current body is parked as-is.
+  captured at route start — not a mid-transformation body, and not a byte array
+  the route changed in place. The adapter keeps one copy of a `byte[]` input:
+  the inline replay copy, or, when the payload is not stored for replay
+  (`metadata_only` mode, replay disabled or above the size cap), a copy kept
+  only for parking. A `String` input is not copied. When the body type cannot be
+  captured, the current body is parked as-is.
 - all `x-bip-*` envelope headers are preserved, plus two diagnostics headers
   set at parking time: `x-bip-error` (the failure message) and `x-bip-dlq-at`
-  (RFC 3339 timestamp).
+  (RFC 3339 timestamp). From 0.3.6 a replay's `x-bip-redo-steps` is not among
+  them; see [Redo behavior](#redo-behavior).
 - the attempt is recorded with status `DLQ`, and the Kafka offset is committed
   only after the outcome record (and DLQ publish) succeeded.
 
-## Dashboard Read Model
+## Read Model
 
-The direct Postgres sink writes two dashboard-facing tables:
+The direct Postgres sink writes two tables for operator views:
 
 - `bip_message_log`: one current row per message, intended for list/search views.
 - `bip_message_attempt`: one row per attempt, intended for message detail/history views.
@@ -288,7 +386,7 @@ where message_id = ?
 order by attempt;
 ```
 
-`steps_json` is deliberately JSONB for now. If dashboard usage needs richer
+`steps_json` is deliberately JSONB for now. If operator views need richer
 step filtering or aggregation, it can move to a dedicated step table without
 changing business routes.
 
@@ -312,7 +410,7 @@ order by requested_at desc;
 
 ## Payload Storage
 
-V1 stores replay-eligible input payloads inline in Postgres by default:
+The adapter stores replay-eligible input payloads inline in Postgres by default:
 
 - `payload_storage = 'postgres_inline'`
 - `payload_size_bytes` records the original incoming body size when the adapter
@@ -320,8 +418,8 @@ V1 stores replay-eligible input payloads inline in Postgres by default:
 - `payload_bytes` stores the original incoming body for `String` and `byte[]`
   messages when it is within the configured cap.
 - `payload_expires_at` is set from the payload retention policy.
-- `replayable` is true when the platform currently has the payload and policy
-  allows manual replay.
+- `replayable` is true when the Message Store currently has the payload and
+  policy allows manual replay.
 
 The adapter deliberately does not consume stream-like or unknown body types just
 to capture payload bytes. Those messages fall back to:
@@ -332,7 +430,7 @@ to capture payload bytes. Those messages fall back to:
 
 Payload retention is separate from metadata retention. A future cleanup job can
 clear `payload_bytes`, set `payload_deleted_at`, flip `replayable` to false, and
-keep the dashboard/audit metadata in place.
+keep the audit metadata in place.
 
 Payload storage captures the incoming body at route start. It currently stores
 `String`, `byte[]`, and `null` bodies. Stream-like or unknown body types are not
@@ -340,12 +438,12 @@ consumed by the adapter just to make replay possible.
 
 ## Manual Replay
 
-V1 includes `MessageReplayService`, backed by Postgres payload storage and Kafka
+The adapter includes `MessageReplayService`, backed by Postgres payload storage and Kafka
 republish. It loads a replayable row from `bip_message_log`, validates that
 payload bytes are still available, writes an `bip_message_replay_audit` row, and
 publishes the stored payload back to the integration input topic.
 
-The adapter also exposes the dashboard/agent runtime admin contract:
+The adapter also exposes an admin endpoint that an operator's tool can call:
 
 ```http
 POST /admin/messages/{messageId}/resend
@@ -372,7 +470,7 @@ Replay publishes with:
 - `x-bip-attempt=<last_attempt + 1>`
 - `x-bip-redo-steps=<JSON array of step ids>` when redo steps are supplied,
   e.g. `["sftp-upload","webhook-notify"]` — the same JSON array stored in the
-  `redo_steps` audit column (contract DECISION D1)
+  `redo_steps` audit column
 
 By default, the input topic is derived from
 `basis.message-store.replay.input-topic-pattern`, default `bip.%s.in`, where `%s`
@@ -386,13 +484,27 @@ Replay does not bypass idempotency by default. If
 with the same `<message-id>:<step-id>` idempotency key are skipped and recorded
 as `SKIPPED` on the replay attempt.
 
-`x-bip-redo-steps` is the explicit operator override (contract section 9): the
+`x-bip-redo-steps` is the explicit operator override: the
 step tracker parses the header as a JSON array of step ids and re-executes
 exactly the listed steps even when the durable ledger already has them
 `DELIVERED`. A step matches when the list contains its step id or its full
 idempotency key. A malformed header value is logged as a warning and treated as
 empty — it never fails message processing. Redo intentionally repeats an
 external side effect, so external systems still need domain idempotency for it.
+
+From 0.3.6 the list stays inside the integration. When an exchange enters a
+route, the adapter reads `x-bip-redo-steps`, keeps the list for the attempt's
+step tracking and removes the header: a Kafka input with the Message Store
+before the route runs, and every other route through a route policy the adapter
+adds. The route's sends therefore do not carry it, whether through `to`, `toD`,
+`enrich`, `wireTap`, `recipientList` or `routingSlip`. A handler that restores
+the original message, for example with `useOriginalMessage()`, gets the header
+back; the next `to` or `toD` and DLQ parking remove it again. Before, a receiver
+got the list, and a downstream integration that consumed a published record
+with the same message id sent its own steps with the same ids again.
+`x-bip-replay` and `x-bip-attempt` are still forwarded; nothing in the adapter
+acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
+the header only, not its value.
 
 ## Step Tracking
 
@@ -418,9 +530,9 @@ wire taps and the adapter's own dead letter route are not checked.
 escape hatch only: the application then starts and logs a warning for each such
 send. Use it to restore service while the ids are added, not as a setting.
 
-The startup check covers the routes as Camel builds them; the platform's
-pre-build check reads the source and misses endpoints whose URIs are built
-elsewhere, such as placeholders and constants.
+The startup check covers the routes as Camel builds them, so it also sees
+endpoints whose URIs are built elsewhere, such as placeholders and constants,
+which a check of the route source misses.
 
 ### Upgrading from generated step ids
 
@@ -478,7 +590,7 @@ integrations that can see the same message id.
 
 If no node id is available at all, the adapter derives a fallback key from route
 and endpoint metadata. Fallback keys are acceptable for audit, but explicit ids
-are better for dashboard display and future partial replay.
+are better for operator display and future partial replay.
 
 Internal Camel endpoints such as `direct:`, `log:`, `bean:`, `mock:`, `seda:`,
 `timer:`, and `micrometer:` are ignored. External sends get:
@@ -491,7 +603,9 @@ message attempt. `SKIPPED` means the configured `StepOutcomeStore` says the same
 idempotency key was already delivered, so the endpoint send was not repeated.
 From 0.3.6 each skip is logged at INFO with the step, message id and masked
 endpoint, and the logging sink counts delivered, skipped and failed steps
-separately. A route log placed after a send cannot tell by itself whether the send
+separately. A skip that loses a split part, loop iteration or branch is logged
+at ERROR instead; see
+[Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x). A route log placed after a send cannot tell by itself whether the send
 happened. Directly after the send, the exchange property
 `basis.messageStore.stepAlreadyDelivered`
 (`PlatformExchangeProperties.STEP_ALREADY_DELIVERED`) is `true` only when that
@@ -508,13 +622,85 @@ send has no stable Camel node id. This masks the endpoint field, not arbitrary
 exception messages or application logs. Existing rows, logs and backups are not
 rewritten; review their access and retention separately.
 
+### Splitting before a tracked send in 0.3.x
+
+A step key is `<x-bip-message-id>:<step-id>`. Split parts, loop iterations and
+multicast and recipient list branches keep the input's message id, so parts
+that reach the same tracked send share one key. With
+`basis.message-store.step-outcome-store=postgres`, only the first part is sent.
+Each later part's send is skipped as already delivered, and that part's data
+does not reach the receiver. The input still completes: a Kafka offset is
+committed, and a polling route goes on to mark its batch processed. This is the
+same in every 0.3.x release.
+
+From 0.3.6, in the attempt that sends the first part, each such skip is logged
+at ERROR, once per skipped send:
+
+```text
+Step <step-id> was skipped in a <split part|loop iteration|multicast branch|recipient list branch>
+of input route <route-id>, so this part was not delivered: another part of the same attempt
+already sent this step key. In 0.3.x split parts, loop iterations and multicast and
+recipient list branches keep the input's x-bip-message-id, so they share one step key. Give
+each part its own x-bip-message-id before the send, or publish each part with its own id. See
+docs/split-step-identity.md
+```
+
+The log message is one line. It names the step, the input route and the kind of
+part, and contains no message content or header values. Only the log changes:
+the skip, the input's outcome, retries, parking and commits are as before. The
+line is written only when it is certain: a part at another position in the
+enclosing splits, loops, multicasts and recipient lists sent the key in this
+attempt, and this part did not. Every other skip stays at INFO
+(`Step <step-id> SKIPPED for message <id>`). That includes every part of a
+redelivered or replayed input whose earlier attempt sent the key, because the
+adapter cannot tell which part's data that attempt sent. It also includes a part
+that meets its own delivered send again when Camel repeats a sub-route or a
+whole split. The `noop` step store never skips, so every part is sent and
+nothing is logged.
+
+Safe forms, which send every part:
+
+1. Give each part its own `x-bip-message-id` before the send, derived from its
+   record so that a replay keeps the same key:
+
+   ```java
+   .split(body().tokenize("\n"))
+       .setHeader("x-bip-message-id", simple("${header.x-bip-message-id}-${exchangeProperty.CamelSplitIndex}"))
+       .to("https://receiver.example/lines").id("post-line")
+   .end()
+   ```
+
+   Prefer a business key from the record over the split index when the input
+   can change between replays.
+2. Publish each part with its own id, for example as a Kafka record to the
+   integration's own input, and send it from there.
+
+A part sent through a new exchange, for example with a `ProducerTemplate`, is
+not a safe form on its own. Sent straight to the receiver's endpoint, the send
+is not tracked: it has no step key, the receiver gets no `Idempotency-Key`, and
+a replay sends it again. Sent to a route that contains the tracked send, such as a
+`direct:` route, it is tracked under the new exchange's `x-bip-message-id`.
+Without its own id, each send then gets a new random id, so a replay sends it
+again too. The input's journal row does not list the part's send. The part is
+journaled only when it goes to a route selected for delivery audit or input
+inspection, as its own row that cannot be replayed. Delivery audit refuses a
+request with its own `x-bip-message-id`, so a replay sends such a part again;
+input inspection keeps the part's own id.
+
+If an aggregation strategy returns a part's message, restore the input's id
+after the split so that the input is journaled under its own id. After a route
+moves to per-part ids, its keys change: a replay of a message recorded before
+the change sends its first part once more. 0.4 gives each part and iteration
+its own step key. The [split step identity advisory](docs/split-step-identity.md)
+has the exact conditions and the cases the ERROR line does not catch.
+
 ## Key-Value Store
 
 The combined local `0.3.6-SNAPSHOT` candidate adds
 [`KeyValueStore`](docs/key-value-store.md) for small integration-scoped JSON
-cursors and markers in the platform-provisioned `bip_key_value` table of draft
-contract `1.2.0-rc2`. It keeps the full maintenance baseline and adds no leases
-or Trusted Message Store service. It is not a published or certified pin.
+cursors and markers in the `bip_key_value` table, which the database operator
+provisions in the Message Store. It keeps the full maintenance baseline and adds
+no leases or separate store service. It is not a published release.
 Calls have their own transactions; they are not atomic with delivery or polling.
 The feature is lazy and has no effect when unused. Calls fail explicitly if the
 table is unavailable; no schema or metadata is created at startup.
@@ -530,11 +716,11 @@ The message outcome sink is selected with `basis.message-store.sink`:
 
 `postgres` requires a configured Quarkus JDBC datasource and the message-store
 schema to exist. `kafka` requires `kafka.bootstrap.servers` and is only complete
-when a central message-store/status service consumes `bip.message.status` and
-writes the canonical Postgres read model. Without that service, the Kafka sink
-only publishes status events; nothing records them to Postgres.
+when a separate service consumes `bip.message.status` and writes the Postgres
+read model. Without such a service, the Kafka sink only publishes status
+events; nothing records them to Postgres.
 
-For V1 manual replay with this adapter, use the `postgres` sink. The `kafka`
+For manual replay with this adapter, use the `postgres` sink. The `kafka`
 sink is status-event output only; it does not store payload bytes by itself.
 
 The step outcome store is selected with `basis.message-store.step-outcome-store`:
@@ -553,14 +739,14 @@ They are test/local schema resources, not an integration-owned migration
 strategy. In production, whoever operates the database provisions the schema
 outside the integration pods.
 
-### Contract version startup gate
+### Schema version startup gate
 
-Per contract section 10, when `basis.message-store.sink=postgres` and a JDBC
+When `basis.message-store.sink=postgres` and a JDBC
 datasource is available, the adapter reads
 `select max(contract_major) from bip_contract` at startup:
 
 - table missing (or empty): a loud warning is logged and startup continues,
-  assuming contract major 1 (v1.0 rollout rule).
+  assuming store schema version (contract major) 1.
 - `max(contract_major) != 1`: startup fails with an error naming the found and
   expected major, instead of silently writing a mismatched schema shape.
 
@@ -594,7 +780,7 @@ Configuration reference:
 | `basis.message-store.step-ids.emergency-allow-generated` | `true`, `false` | `false` | Emergency escape hatch: start even though a tracked send has no explicit id, with a warning for each. See [step tracking](#step-tracking). |
 | `basis.message-store.payload.mode` | `postgres-inline`, `metadata-only` | `postgres-inline` | Selects whether safely capturable payloads are stored inline for replay. |
 | `basis.message-store.status-topic` | Kafka topic name | `bip.message.status` | Used only when `basis.message-store.sink=kafka`. |
-| `basis.message-store.dlq-uri` | Camel endpoint URI | `kafka:bip.message.dlq` | Target used by the shared dead letter channel. |
+| `basis.message-store.dlq-uri` | Camel endpoint URI | `kafka:bip.message.dlq` | Target used by the shared dead letter channel. Use a fixed URI of a durable, non-transactional endpoint that fails when it cannot store the record: a send that returns without an error counts as parked. A custom parking route must not stop, filter or drop the record. |
 | `basis.message-store.payload.max-bytes` | integer bytes, `>= 0` | `1048576` | Payloads above this cap become `metadata_only`. |
 | `basis.message-store.payload.retention-days` | integer days, `>= 0` | `30` | Used to set `payload_expires_at`. Cleanup is a separate future job. |
 | `basis.message-store.replay.enabled` | `true`, `false` | `true` | If false, payloads are metadata-only and replay is disabled by policy. |
@@ -602,12 +788,12 @@ Configuration reference:
 | `camel.component.kafka.auto-commit-enable` | `true`, `false` | `false` | Must stay false for adapter-managed commit. |
 | `camel.component.kafka.allow-manual-commit` | `true`, `false` | `true` | Must stay true for adapter-managed commit. |
 
-Direct Postgres V1 mode for platform-managed integrations:
+Direct Postgres production mode:
 
 The adapter JAR defaults to `log` and `noop` so adding the dependency does not
-force every local/test integration to have Postgres available. Customer-facing
-Camel Quarkus integrations should get the production defaults from the platform
-template, not from the adapter library itself.
+force every local/test integration to have Postgres available. Production
+Camel Quarkus integrations should get the production defaults from their
+deployment configuration, not from the adapter library itself.
 
 ```properties
 basis.message-store.sink=postgres
@@ -617,8 +803,8 @@ basis.message-store.replay.enabled=true
 basis.message-store.replay.input-topic-pattern=bip.%s.in
 ```
 
-These settings belong in the platform's Camel Quarkus integration template
-for V1 unless an integration has a deliberate reason to opt out.
+These settings belong in every production integration's deployment
+configuration unless an integration has a deliberate reason to opt out.
 
 Tests and local smoke routes can override `basis.message-store.dlq-uri` to a
 non-Kafka endpoint, for example `direct:test-dlq`, when no Kafka broker is
@@ -626,45 +812,38 @@ available.
 
 ## Status
 
-- Direct Postgres mode is the v1 production path. Platform templates set the
-  production defaults and pin the adapter version; generated integrations do
-  not carry their own resend or DLQ plumbing.
-- The adapter is certified against message-store contract v1.0.0-rc2: the
-  cross-runtime certification suite runs this adapter and the .NET adapter
-  (`Basis.IntegrationPlatform.MessageStore` on NuGet.org) against real Kafka
-  and Postgres and diffs the resulting database state across runtimes.
-- The message-store schema is provisioned platform-side from the canonical
-  contract DDL; the SQL files shipped in this JAR are local/test resources
+- Direct Postgres mode is the production path. The deployment sets the
+  production defaults and the integration's build pins the adapter version;
+  integrations do not carry their own resend or DLQ plumbing.
+- The .NET adapter (`Basis.IntegrationPlatform.MessageStore` on NuGet.org)
+  implements the same message-store tables, topics and headers.
+- The message-store schema is provisioned by the database operator, outside
+  the integration; the SQL files shipped in this JAR are local/test resources
   only.
-- The Kafka status-event sink exists for the target hybrid model but is not
-  the v1 production path: nothing records `bip.message.status` events to
-  Postgres until a central message-store service consumes them.
+- The Kafka status-event sink is not the production path: nothing records
+  `bip.message.status` events to Postgres until a separate service consumes
+  them.
 
-## V2 Direction
+## Future Direction
 
-V2 is an evolution of the contract, not a rewrite of business routes.
+Possible later work, not part of 0.3.x and not a rewrite of business routes:
 
-Likely V2 work:
-
-- A per-cluster platform message-store service that captures messages at the
-  Kafka boundary (real `RECEIVED`/in-flight visibility) and becomes the single
+- A separate message-store service that captures messages at the Kafka
+  boundary (real `RECEIVED`/in-flight visibility) and becomes the single
   journal writer.
 - Move from adapter-direct Postgres persistence to status/lifecycle events
   once that service owns persistence. The existing `MessageStoreSink`
   boundary is the switch point — migration is a per-integration sink flip.
-- Split `steps_json` into dedicated relational tables only if dashboard query
+- Split `steps_json` into dedicated relational tables only if operator query
   needs justify that change.
 - Consider external payload storage for large/sensitive payloads instead of
   inline Postgres bytes.
 
-## License and support
+## License
 
-Apache-2.0. The adapter is developed as part of the Basis integration
-platform; production use is supported for platform customers through their
-platform agreement. Issues and pull requests from other users are welcome and
-handled best-effort.
+Apache-2.0. Issues and pull requests are welcome and handled best-effort.
 
-## Authenticated platform broker
+## Authenticated Kafka broker
 
 Version 0.3.3 adds one operator-owned security configuration for Camel Kafka
 consumption/DLQ and the direct Kafka status/replay producers. It retains the
@@ -672,13 +851,13 @@ consumption/DLQ and the direct Kafka status/replay producers. It retains the
 
 Set `basis.message-store.kafka.security-protocol=SASL_SSL`,
 `basis.message-store.kafka.sasl-mechanism=SCRAM-SHA-512` and the secret
-`basis.message-store.kafka.sasl-jaas-config`. The platform supplies the broker
+`basis.message-store.kafka.sasl-jaas-config`. The deployment supplies the broker
 CA through `basis.message-store.kafka.ssl-truststore-location`; select `PEM`
 with `basis.message-store.kafka.ssl-truststore-type` for a PEM certificate.
 Hostname verification stays enabled. Missing SASL credentials fail startup.
 Default plaintext behavior remains for environments that have not opted in.
 
-The adapter's PostgreSQL datasource belongs only to the platform Message Store.
+The adapter's PostgreSQL datasource belongs only to the adapter's Message Store.
 Application state must use its separately approved database and a named Quarkus
 datasource with its own credentials, migrations, limits and recovery policy.
 Never create business tables in the adapter's default database.
@@ -693,11 +872,11 @@ other topics, removed routes and internal request routes are rejected. This
 also blocks unsafe rows created before the upgrade, without deleting history.
 The integration's `app.name` must match its stored integration identity.
 
-Existing dashboard rows may still advertise replayability from old capture
+Existing message rows may still advertise replayability from old capture
 metadata; the server-side check is authoritative and returns a refusal. The
 patch does not rewrite historical rows or remove records already published to
 Kafka. Safe input replay still retains message identity, increments the manual
-attempt and preserves the existing redo-step contract. Request acceptance is
+attempt and preserves the existing redo-step behavior. Request acceptance is
 not proof of delivery or of successful offset commit.
 
 The [application database continuity fixture](integration-tests/application-data-smoke/README.md)

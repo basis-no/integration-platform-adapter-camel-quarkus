@@ -3,23 +3,38 @@ package no.basis.integrationplatform.camel.step;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
+import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
+import no.basis.integrationplatform.camel.HttpTimeoutOptions;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
+import no.basis.integrationplatform.camel.PublishedCredentialHeaders;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.AsyncProcessor;
 import org.apache.camel.CamelContext;
+import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
+import org.apache.camel.ExchangePropertyKey;
 import org.apache.camel.NamedNode;
 import org.apache.camel.Processor;
+import org.apache.camel.model.LoopDefinition;
+import org.apache.camel.model.MulticastDefinition;
 import org.apache.camel.model.ProcessorDefinition;
+import org.apache.camel.model.RecipientListDefinition;
 import org.apache.camel.model.RouteDefinition;
+import org.apache.camel.model.SplitDefinition;
 import org.apache.camel.processor.SendDynamicProcessor;
 import org.apache.camel.processor.SendProcessor;
 import org.apache.camel.spi.InterceptStrategy;
+import org.apache.camel.support.AsyncCallbackToCompletableFutureAdapter;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
+import org.apache.camel.support.PluginHelper;
+import org.apache.camel.support.processor.DelegateAsyncProcessor;
 import org.apache.camel.util.URISupport;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+
+import java.util.Objects;
+import java.util.concurrent.atomic.AtomicLong;
 
 @ApplicationScoped
 public class StepTrackingInterceptStrategy implements InterceptStrategy {
@@ -30,6 +45,9 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private final StepTracker stepTracker;
     private final TrafficSignals trafficSignals;
     private final boolean allowGeneratedStepIds;
+    private final AtomicLong scopes = new AtomicLong();
+    private final HttpTimeoutOptions httpTimeoutOptions = new HttpTimeoutOptions();
+    private final PublishedCredentialHeaders publishedCredentials = new PublishedCredentialHeaders();
 
     public StepTrackingInterceptStrategy(StepTracker stepTracker) {
         this(stepTracker, null);
@@ -67,6 +85,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             Processor target,
             Processor nextTarget) {
 
+        httpTimeoutOptions.check(context, definition, target);
         // Parking is infrastructure work, not a replay-skippable business step.
         for (NamedNode node = definition; node != null; node = node.getParent()) {
             if (node instanceof RouteDefinition && "bip-confirmed-dead-letter".equals(node.getId())) {
@@ -75,7 +94,9 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         }
         EndpointSend endpointSend = endpointSend(definition, target);
         if (endpointSend == null) {
-            return target;
+            String kind = scopeKind(definition);
+            return kind == null ? target
+                    : new PartsScope(AsyncProcessorConverterHelper.convert(target), StepVisits.marker(kind, scopes.incrementAndGet()));
         }
 
         checkStepId(definition, endpointSend);
@@ -84,7 +105,89 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             else if (target instanceof SendDynamicProcessor send) trafficSignals.observeDynamicEndpoint(send.getUri());
         }
         AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
-        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, trafficSignals);
+        boolean dynamicScheme = dynamicScheme(target, endpointSend);
+        Endpoint endpoint = target instanceof SendProcessor send ? send.getEndpoint() : null;
+        boolean mayPublishToKafka = PublishedCredentialHeaders.mayPublishToKafka(
+                endpoint, endpointSend.endpointUri(), dynamicScheme);
+        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, trafficSignals, dynamicScheme,
+                mayPublishToKafka ? endpoint : null, mayPublishToKafka, routeId(definition), publishedCredentials);
+    }
+
+    /**
+     * Whether a {@code toD} chooses its component only when it sends, such as
+     * {@code ${header.receiverUrl}} or {@code language:header:receiverUrl}. Its expression is
+     * not evaluated here: an expression may change on each evaluation, and Camel evaluates
+     * it once for the send.
+     */
+    private static boolean dynamicScheme(Processor target, EndpointSend endpointSend) {
+        if (!(target instanceof SendDynamicProcessor) || endpointSend.endpointUri() == null) {
+            return false;
+        }
+        String uri = endpointSend.endpointUri().trim();
+        int colon = uri.indexOf(':');
+        String scheme = colon < 0 ? uri : uri.substring(0, colon);
+        return scheme.contains("$") || scheme.contains("{") || scheme.equalsIgnoreCase("language");
+    }
+
+    /** The kind of a node whose parts Camel runs as copies of the exchange, or as iterations of it. */
+    private static String scopeKind(NamedNode definition) {
+        if (definition instanceof SplitDefinition) return StepVisits.SPLIT;
+        if (definition instanceof LoopDefinition) return StepVisits.LOOP;
+        if (definition instanceof MulticastDefinition) return StepVisits.MULTICAST;
+        if (definition instanceof RecipientListDefinition<?>) return StepVisits.RECIPIENT_LIST;
+        return null;
+    }
+
+    /**
+     * Shares one record of the attempt's step visits with the parts of a split, loop,
+     * multicast or recipient list, and marks the exchange so that each part gets its own
+     * position. Camel may copy a part's properties back afterwards, so the
+     * caller's own record and path are restored. When the scope changed Camel's loop index
+     * inside an enclosing loop, that loop's iteration is no longer known. Only these adapter
+     * properties change: the parts, the outcome and the error handling are Camel's.
+     */
+    private static final class PartsScope extends DelegateAsyncProcessor {
+        private final String marker;
+
+        private PartsScope(AsyncProcessor processor, String marker) {
+            super(processor);
+            this.marker = marker;
+        }
+
+        @Override
+        public boolean process(Exchange exchange, AsyncCallback callback) {
+            StepVisits visits = StepVisits.of(exchange);
+            String parent = StepVisits.path(exchange);
+            String path = exchange.getProperty(StepVisits.PATH, String.class);
+            String enclosing = exchange.getProperty(StepVisits.SCOPE, String.class);
+            String unknown = exchange.getProperty(StepVisits.LOOP_UNKNOWN, String.class);
+            Object loopIndex = exchange.getProperty(ExchangePropertyKey.LOOP_INDEX);
+            exchange.setProperty(StepVisits.PATH, parent);
+            exchange.setProperty(StepVisits.SCOPE, marker);
+            return super.process(exchange, doneSync -> {
+                try {
+                    exchange.setProperty(StepVisits.PROPERTY, visits);
+                    restore(exchange, StepVisits.PATH, path);
+                    restore(exchange, StepVisits.SCOPE, enclosing);
+                    restore(exchange, StepVisits.LOOP_UNKNOWN, unknown);
+                    if (StepVisits.isLoop(enclosing) && !Objects.equals(loopIndex, exchange.getProperty(ExchangePropertyKey.LOOP_INDEX))) {
+                        exchange.setProperty(StepVisits.LOOP_UNKNOWN, enclosing);
+                    }
+                } catch (Throwable failure) {
+                    markFailed(exchange, failure);
+                } finally {
+                    callback.done(doneSync);
+                }
+            });
+        }
+
+        private static void restore(Exchange exchange, String name, String value) {
+            if (value == null) {
+                exchange.removeProperty(name);
+            } else {
+                exchange.setProperty(name, value);
+            }
+        }
     }
 
     /**
@@ -98,12 +201,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 || DefaultStepTracker.isInternal(endpointSend.endpointUri())) {
             return;
         }
-        String routeId = null;
-        for (NamedNode node = definition; node != null && routeId == null; node = node.getParent()) {
-            if (node instanceof RouteDefinition route) {
-                routeId = route.getId();
-            }
-        }
+        String routeId = routeId(definition);
         String endpoint = URISupport.sanitizeUri(endpointSend.endpointUri());
         if (!allowGeneratedStepIds) {
             throw new IllegalStateException("Tracked send to " + endpoint + " in route " + routeId
@@ -115,6 +213,15 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                         + "route is edited and can match another integration's step for the same message id. "
                         + "Give the send an explicit id ({}=true is set)",
                 endpoint, routeId, endpointSend.nodeId(), EMERGENCY_ALLOW_GENERATED_STEP_IDS);
+    }
+
+    private static String routeId(NamedNode definition) {
+        for (NamedNode node = definition; node != null; node = node.getParent()) {
+            if (node instanceof RouteDefinition route) {
+                return route.getId();
+            }
+        }
+        return null;
     }
 
     private EndpointSend endpointSend(NamedNode definition, Processor target) {
@@ -140,67 +247,122 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private record EndpointSend(String endpointUri, String nodeId) {
     }
 
+    private record Send(TrafficSignals.PublishSnapshot trafficSnapshot, java.util.Map<String, Object> withheld) {
+    }
+
+    /** Fails the exchange. An exchange that already failed keeps its exception unchanged, since it may be shared. */
+    private static void markFailed(Exchange exchange, Throwable failure) {
+        Exception current = exchange.getException();
+        if (current == null) {
+            exchange.setException(failure);
+        } else if (current != failure) {
+            LOG.warn("Completing a send of exchange {} failed after the send itself had failed",
+                    exchange.getExchangeId(), failure);
+        }
+    }
+
     private static class StepTrackingProcessor implements AsyncProcessor {
         private final AsyncProcessor delegate;
         private final EndpointSend endpointSend;
         private final StepTracker stepTracker;
         private final TrafficSignals trafficSignals;
-
-        private StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker) {
-            this(delegate, endpointSend, stepTracker, null);
-        }
+        private final boolean httpSend;
+        private final boolean dynamicScheme;
+        private final Endpoint endpoint;
+        private final boolean mayPublishToKafka;
+        private final String routeId;
+        private final PublishedCredentialHeaders publishedCredentials;
 
         private StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend,
-                StepTracker stepTracker, TrafficSignals trafficSignals) {
+                StepTracker stepTracker, TrafficSignals trafficSignals, boolean dynamicScheme,
+                Endpoint endpoint, boolean mayPublishToKafka, String routeId,
+                PublishedCredentialHeaders publishedCredentials) {
             this.delegate = delegate;
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
             this.trafficSignals = trafficSignals;
+            this.httpSend = ForwardedCredentialHeaders.isHttp(endpointSend.endpointUri());
+            this.dynamicScheme = dynamicScheme;
+            this.endpoint = endpoint;
+            this.mayPublishToKafka = mayPublishToKafka;
+            this.routeId = routeId;
+            this.publishedCredentials = publishedCredentials;
         }
 
+        /** Completes through {@link #process(Exchange, AsyncCallback)} and waits, with any failure on the exchange. */
         @Override
         public void process(Exchange exchange) throws Exception {
-            stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
-            if (alreadyDelivered(exchange)) {
-                stepTracker.recordSkipped(exchange);
-                return;
-            }
-            var trafficSnapshot = beforePublish(exchange);
-            try {
-                boolean returned = false;
-                try { delegate.process(exchange); returned = true; }
-                finally { afterPublish(trafficSnapshot, exchange, returned && exchange.getException() == null); }
-                if (exchange.getException() == null) {
-                    stepTracker.recordDelivered(exchange);
-                } else {
-                    stepTracker.recordFailed(exchange);
-                }
-            } catch (Exception e) {
-                exchange.setProperty(Exchange.EXCEPTION_CAUGHT, e);
-                stepTracker.recordFailed(exchange);
-                throw e;
-            }
+            PluginHelper.getAsyncProcessorAwaitManager(exchange.getContext()).process(this, exchange);
         }
 
+        /**
+         * Calls {@code callback} exactly once. A step outcome that cannot be checked or
+         * recorded, for example during a Message Store outage, fails the exchange and keeps
+         * the input from being parked or committed (see {@link StepOutcomeFailure}). A failed
+         * send keeps its own exception unchanged.
+         */
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
-            stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
-            if (alreadyDelivered(exchange)) {
-                stepTracker.recordSkipped(exchange);
+            Send send;
+            try {
+                send = prepare(exchange);
+            } catch (Throwable failure) {
+                markFailed(exchange, failure);
+                callback.done(true);
+                return true;
+            }
+            if (send == null) {
                 callback.done(true);
                 return true;
             }
 
-            var trafficSnapshot = beforePublish(exchange);
             return delegate.process(exchange, doneSync -> {
-                afterPublish(trafficSnapshot, exchange, exchange.getException() == null);
-                if (exchange.getException() == null) {
-                    stepTracker.recordDelivered(exchange);
-                } else {
-                    stepTracker.recordFailed(exchange);
+                try {
+                    completed(exchange, send);
+                } finally {
+                    callback.done(doneSync);
                 }
-                callback.done(doneSync);
             });
+        }
+
+        /** Prepares the send, or returns {@code null} when an earlier attempt delivered this step. */
+        private Send prepare(Exchange exchange) {
+            stepOutcome(exchange, () -> stepTracker.beforeSend(exchangeWithInterceptProperties(exchange)));
+            if (alreadyDelivered(exchange)) {
+                stepTracker.recordSkipped(exchange);
+                return null;
+            }
+            return new Send(beforePublish(exchange), withholdCredentials(exchange));
+        }
+
+        /** Records the send's outcome. Never throws: a failure fails the exchange. */
+        private void completed(Exchange exchange, Send send) {
+            try {
+                warnAboutPublishedCredentials(exchange);
+                ForwardedCredentialHeaders.restore(exchange, send.withheld());
+                afterPublish(send.trafficSnapshot(), exchange, exchange.getException() == null);
+            } catch (Throwable failure) {
+                markFailed(exchange, failure);
+            }
+            try {
+                if (exchange.getException() == null) {
+                    stepOutcome(exchange, () -> stepTracker.recordDelivered(exchange));
+                } else {
+                    stepOutcome(exchange, () -> stepTracker.recordFailed(exchange));
+                }
+            } catch (Throwable failure) {
+                markFailed(exchange, failure);
+            }
+        }
+
+        /** Checks or records a step outcome; a failure also keeps the input from being parked or committed. */
+        private static void stepOutcome(Exchange exchange, Runnable work) {
+            try {
+                work.run();
+            } catch (RuntimeException | Error failure) {
+                StepOutcomeFailure.record(exchange, failure);
+                throw failure;
+            }
         }
 
         private Exchange exchangeWithInterceptProperties(Exchange exchange) {
@@ -209,26 +371,25 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return exchange;
         }
 
+        /** Completes through {@link #process(Exchange, AsyncCallback)}, with any failure on the exchange. */
         @Override
         public java.util.concurrent.CompletableFuture<Exchange> processAsync(Exchange exchange) {
-            stepTracker.beforeSend(exchangeWithInterceptProperties(exchange));
-            if (alreadyDelivered(exchange)) {
-                stepTracker.recordSkipped(exchange);
-                return java.util.concurrent.CompletableFuture.completedFuture(exchange);
+            var callback = new AsyncCallbackToCompletableFutureAdapter<>(exchange);
+            process(exchange, callback);
+            return callback.getFuture();
+        }
+
+        /** After the send and before withheld headers return, so the exchange shows what was published. */
+        private void warnAboutPublishedCredentials(Exchange exchange) {
+            if (mayPublishToKafka && exchange.getException() == null) {
+                publishedCredentials.check(exchange, endpoint, routeId, endpointSend.nodeId());
             }
-            var trafficSnapshot = beforePublish(exchange);
-            return delegate.processAsync(exchange).whenComplete((result, failure) -> {
-                Exchange completedExchange = result != null ? result : exchange;
-                afterPublish(trafficSnapshot, completedExchange, failure == null && completedExchange.getException() == null);
-                if (failure == null && completedExchange.getException() == null) {
-                    stepTracker.recordDelivered(completedExchange);
-                } else {
-                    if (failure != null) {
-                        completedExchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
-                    }
-                    stepTracker.recordFailed(completedExchange);
-                }
-            });
+        }
+
+        private java.util.Map<String, Object> withholdCredentials(Exchange exchange) {
+            // A send that picks its component at send time may be http, so it is treated as one.
+            return httpSend || dynamicScheme
+                    ? ForwardedCredentialHeaders.withhold(exchange, endpointSend.nodeId()) : java.util.Map.of();
         }
 
         private TrafficSignals.PublishSnapshot beforePublish(Exchange exchange) {

@@ -37,8 +37,9 @@ def fixture_pom(source):
     compiler = next(p for p in original.findall('./' + tag('build') + '/' + tag('plugins') + '/' + tag('plugin'))
                     if p.findtext(tag('artifactId')) == 'maven-compiler-plugin')
     plugins.append(copy.deepcopy(compiler))
-    base_javadoc = next(p for p in original.findall('./' + tag('build') + '/' + tag('plugins') + '/' + tag('plugin'))
-                       if p.findtext(tag('artifactId')) == 'maven-javadoc-plugin')
+    # The 0.3 POM declares the Javadoc plugin, with its version, only in the release profile.
+    base_javadoc = next((p for p in original.findall('./' + tag('build') + '/' + tag('plugins') + '/' + tag('plugin'))
+                        if p.findtext(tag('artifactId')) == 'maven-javadoc-plugin'), None)
     release = next(p for p in original.findall('./' + tag('profiles') + '/' + tag('profile'))
                    if p.findtext(tag('id')) == 'release')
     selected = [p for p in release.findall('./' + tag('build') + '/' + tag('plugins') + '/' + tag('plugin'))
@@ -46,7 +47,8 @@ def fixture_pom(source):
     assert {p.findtext(tag('artifactId')) for p in selected} == PLUGIN_IDS
     for p in selected:
         child = copy.deepcopy(p)
-        if p.findtext(tag('artifactId')) == 'maven-javadoc-plugin':
+        if (p.findtext(tag('artifactId')) == 'maven-javadoc-plugin' and child.find(tag('version')) is None
+                and base_javadoc is not None and base_javadoc.find(tag('version')) is not None):
             child.insert(1, copy.deepcopy(base_javadoc.find(tag('version'))))
             child.append(copy.deepcopy(base_javadoc.find(tag('configuration'))))
         plugins.append(child)

@@ -53,7 +53,7 @@ values are not a newly supported envelope representation.
 - Upgrade code, dependency and recovery ownership together. An application
   catch-all can still leave an input unparked; refusing to commit it is safer
   than claiming that it was handled, but can keep the partition blocked.
-- Internal request processors must retain the input's platform message identity
+- Internal request processors must retain the input's message identity
   and attempt headers when copying a receiver response.
 - Internal failures propagate with their original exception type and message;
   the unmanaged-input parking guard must not obscure receiver diagnostics.
@@ -67,13 +67,14 @@ values are not a newly supported envelope representation.
   outcome before replay. Receiver business acknowledgement remains an acceptance gate.
 - No blanket HTTP 500 policy, poll-timeout guarantee, memory tuning, queue
   cleanup or DLQ dismissal feature is included.
-- Replay refusal does not retroactively remove the old dashboard resend button.
+- Replay refusal does not retroactively remove a resend option that an
+  operator tool already shows.
 - Concurrent resend serialization remains outside this maintenance patch.
 
 ## Before publication and deployment
 
-Review the candidate, choose released coordinates, run CI and refresh the
-compatibility handbook/release snapshot. Carry the parking/replay regression
+Review the candidate, choose released coordinates, run CI and update the
+changelog and release notes. Carry the parking/replay regression
 requirements into the next adapter line without overwriting its active work.
 Publish and activate only under separate authorization. Inspect the application's
 effective error handlers, broker defaults, bounded receiver timeouts and poll
@@ -121,13 +122,13 @@ create a stable release tag or activate any integration.
    validation application's inputs, group and DLQ from business traffic. A later
    rebuild of the same snapshot coordinate can resolve a newer artifact; the
    already-built image does not change.
-7. Complete controlled runtime acceptance and the applicable contract gate before
-   publishing the stable patch release. Customer application rollout remains a
+7. Complete controlled runtime acceptance and the applicable cross-runtime tests
+   before publishing the stable patch release. Customer application rollout remains a
    separate action and should pin that final release, not this snapshot.
 
 See [Sonatype snapshot documentation](https://central.sonatype.org/publish/publish-portal-snapshots/)
 for namespace enablement, consumption and retention. Snapshot availability alone
-does not certify behavior. No test requires or authorizes access to a customer
+does not qualify behavior. No test requires or authorizes access to a customer
 receiver or resetting an existing consumer group's position.
 
 The [isolated acceptance fixture](../integration-tests/maintenance-smoke/README.md)
@@ -141,11 +142,11 @@ Published acceptance artifact: `0.3.4-20261001.065729-2`.
 Later qualification-document changes do not change the tested runtime source.
 
 - Exact-source CI passed the adapter suite, Quarkus startup fixture and API docs.
-- Contract `1.0.0-rc2`: Camel passed S1–S22 (22/22) against real local Kafka and
-  PostgreSQL. Released .NET `0.3.1`, source
+- Cross-runtime scenarios for store schema version 1: Camel passed 22/22
+  against real local Kafka and PostgreSQL. Released .NET `0.3.1`, source
   `318c72a6ce4c0c5bbaf6635341b9b06854c64f02`, passed 22/22 in the same run.
   Cross-runtime comparison found no differences after documented normalization.
-- Harness source tree: `21f233b015d5e0ef890c2046b510ecc08ab5b0a7`.
+- Test harness source tree: `21f233b015d5e0ef890c2046b510ecc08ab5b0a7`.
 - Isolated deployed-runtime acceptance passed input success/failure/success,
   original rejected payload retention, restart without a repeated failed attempt,
   and one manual resend completing the same message as attempt 2. Attempt 1
@@ -154,9 +155,9 @@ Later qualification-document changes do not change the tested runtime source.
 - Local packaged-artifact acceptance additionally refused a historical internal
   request replay before audit or publication.
 
-The contract suite retains its documented runtime differences. S14 checks
-survival and subsequent progress for malformed transport metadata; it does not
-require identical parking. In this run Camel created no lifecycle/DLQ row for
+The cross-runtime tests retain their documented runtime differences. The
+malformed transport metadata scenario checks survival and subsequent progress;
+it does not require identical parking. In this run Camel created no lifecycle/DLQ row for
 that poison input, while .NET completed it. Do not describe qualification as a
 promise that every malformed record appears in DLQ. Concurrent resend ordering
 is also outside this patch's guarantees. The schema-upgrade regression passed,
@@ -183,16 +184,16 @@ available headroom. Disabling Ryuk for a local run requires explicit external
 cleanup ownership; it is not permission to leave resources behind.
 These tests cover transient poll/durability failures and PostgreSQL ordering.
 They do not establish real ACL recovery, idle-versus-dead consumer readiness,
-booted runtime behavior or contract certification.
+booted runtime behavior or cross-runtime parity.
 
 
 ## Actual ACL recovery and readiness composition
 
 The standalone [Kafka recovery fixture](../integration-tests/kafka-recovery-smoke/README.md)
-passed the SmallRye-only baseline and optional upstream bridge profile on
-Quarkus 3.32.2/Camel Quarkus 3.32.0/Camel 4.18.0. It proves real scoped ACL recovery,
-source identity and offset, plus healthy-idle versus stopped-auth readiness.
-Its in-memory sink is not PostgreSQL durability evidence.
+has a SmallRye-only baseline profile and an optional upstream bridge profile. It
+checks real scoped ACL recovery, source identity and offset, plus healthy-idle
+versus stopped-auth readiness. Its in-memory sink does not cover PostgreSQL
+durability.
 
 The adapter library does not add or implement this bridge. An application using
 SmallRye health can add the upstream extension under its own Camel Quarkus BOM:
@@ -204,13 +205,13 @@ SmallRye health can add the upstream extension under its own Camel Quarkus BOM:
 </dependency>
 ```
 
-Qualify that application's actual BOM and route lifecycle. The baseline stayed
-HTTP Ready 200 after polling stopped; with the bridge the fixture returned idle HTTP 200
-and three consecutive route-attributed dead-poller HTTP 503 responses over a finite
-window of at least two seconds, while unrelated consumers remained healthy.
-Denial/reconnect responses fluctuated before the observed HTTP 503; this is not a
-continuous-DOWN guarantee during permission recovery. A different template BOM
-is not qualified by this fixture. No custom health framework, automatic adapter
+Qualify that application's actual BOM and route lifecycle. Without the bridge,
+readiness stays Ready after polling stops. With it, an idle consumer is Ready,
+and a stopped poller turns readiness NotReady (HTTP 503) for that route while
+unrelated consumers stay healthy. While permissions are denied and the consumer
+reconnects, readiness can alternate before it settles on NotReady; it is not
+continuously DOWN during permission recovery. A different application BOM is not
+covered by this fixture. No custom health framework, automatic adapter
 dependency/default, existing application rewrite or release is implied.
 
 RECONNECT does not provide general recovery from permanently invalid credentials

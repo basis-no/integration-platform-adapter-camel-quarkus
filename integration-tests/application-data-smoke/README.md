@@ -1,8 +1,8 @@
 # Existing application database continuity
 
 This synthetic fixture keeps the Message Store and an existing business cursor in
-separate logical databases. It boots on the base Message Store contract without
-a Key-Value Store table, reads and updates the existing cursor, and asserts that
+separate logical databases. It boots on a base Message Store without a
+Key-Value Store table, reads and updates the existing cursor, and asserts that
 unused optional KV starts no sweeper. The same fixture can run with adapter
 0.3.5 or the 0.3.6 candidate using `-Dadapter.version=...`; do not change business
 logic between the two runs. A passing candidate does not migrate application data.
@@ -21,7 +21,7 @@ run_id="$(uuidgen)"
 ```
 
 Runtime and baseline results remain separate until executed against the exact
-artifacts. The fixture uses no customer data, remote JDBC URL or live platform.
+artifacts. The fixture uses no customer data, remote JDBC URL or live environment.
 
 ## Restricted LOGIN recovery writer matrix
 
@@ -39,10 +39,11 @@ Prepare these inputs before the supervised run:
   embedded version and shared writer/replay/step code origin; `target/classes`
   does not qualify. Record the source commit, build recipe and dependency closure
   separately, especially for a mutable snapshot coordinate.
-- The platform-owned `002_adapter_v1_message_store.sql`,
-  `011_message_recovery.sql` and `012_message_recovery_grants.psql` from one
-  reviewed revision in a supplied directory, with independently recorded SHA-256
-  values. The fixture never downloads or replaces provisioning SQL.
+- The baseline message-store schema, the recovery protections and the runtime
+  grants from one reviewed provisioning revision, in a supplied directory under
+  the file names that the `bip.test.sha256.*` keys in the command below name,
+  with independently recorded SHA-256 values. The fixture never downloads or
+  replaces provisioning SQL.
 - A local executable `psql` and its SHA-256, plus the already cached PostgreSQL
   17 image pinned in the fixture. No image download is allowed by the fixture.
 - A fresh UUID, a local engine and an outer execution budget/cleanup owner.

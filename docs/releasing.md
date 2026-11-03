@@ -16,7 +16,7 @@ are never rebuilt or replaced.
 ## Acceptance with locally built artifacts
 
 1. Keep the POM on the next intended version, for example `0.4.0-SNAPSHOT`.
-2. Finish local unit, Testcontainers, documentation, and contract checks.
+2. Finish local unit, Testcontainers, documentation, and schema compatibility checks.
 3. Install the adapter into the local Maven repository of the machine that
    builds the validation integration:
 
@@ -68,19 +68,20 @@ Follow the [release-manager runbook](release-packaging.md#release-manager-runboo
 
 Resume by the saved deployment state; never rebuild, re-sign or start a second
 upload to repair a failed publication stage. The tools reject release-candidate,
-milestone, snapshot and malformed versions. Afterward, update integration
-templates and contract certification pins to the final version. A later defect
-is fixed in a new patch release such as `0.4.1`; published Central artifacts are
-never replaced.
+milestone, snapshot and malformed versions. Afterward, integrations can pin the final version. A later defect is fixed in a
+new patch release such as `0.4.1`; published Central artifacts are never
+replaced.
 
 ## Release checklist
 
 - Adapter tests and strict Javadocs pass.
 - The release workstation signed the reviewed unsigned candidate offline and
   `signing.json` names the reviewed `main` commit and expected signer.
-- Contract certification and schema upgrade regression pass.
+- Schema upgrade regression passes, and shared message-store changes are
+  compatible with the .NET adapter.
 - Validation integration passes the documented acceptance campaign.
-- Required platform schema and configuration changes are deployed first.
+- Required message-store schema and deployment configuration changes are
+  deployed first.
 - Documentation and changelog describe the shipped behavior.
 - The final tag points to the accepted commit and has not been used before.
 
@@ -97,7 +98,7 @@ Verify the actual Central artifacts and GitHub Release body before marking the
 release complete. A failed release-page step does not authorize another Maven
 upload: repair the page from the existing tag and its reviewed notes. Existing
 release bodies are compared, never overwritten automatically. Creating a release
-page does not establish platform certification or customer deployment.
+page does not establish acceptance or any deployment.
 
 Historical backfills must use an existing tag (`gh release create --verify-tag`),
 reviewed historical notes and `--latest=false`; never create a replacement tag,

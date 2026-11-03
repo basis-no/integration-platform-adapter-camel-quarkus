@@ -18,10 +18,13 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.util.List;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -61,6 +64,45 @@ class MessageStoreRoutePolicyTest {
                 "Downstream components must see text, not the Kafka byte-array object");
         policy.onExchangeDone(route("synthetic-input"), exchange);
         assertEquals(correlation, sink.result.correlationId());
+    }
+
+    @Test
+    void keepsEveryKafkaEnvelopeHeaderAsTextForDownstreamHeaders() {
+        // A receiver keyed on x-bip-message-id got "[55, 101, ...]" when the id stayed a byte array.
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
+        Exchange exchange = exchange();
+        java.nio.charset.Charset utf8 = java.nio.charset.StandardCharsets.UTF_8;
+        byte[] unowned = {0, 1, 2};
+        exchange.setProperty(Exchange.CHARSET_NAME, "ISO-8859-1");
+        exchange.getMessage().setHeader(KafkaConstants.TOPIC, "synthetic-input");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "7e5a-ø".getBytes(utf8));
+        exchange.getMessage().setHeader(PlatformHeaders.ATTEMPT, "2".getBytes(utf8));
+        exchange.getMessage().setHeader(PlatformHeaders.SOURCE_SYSTEM, "lager-ø".getBytes(utf8));
+        exchange.getMessage().setHeader(PlatformHeaders.REPLAY, "true".getBytes(utf8));
+        exchange.getMessage().setHeader("X-Binary-Context", unowned);
+
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+
+        assertEquals("7e5a-ø", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+        assertEquals("2", exchange.getMessage().getHeader(PlatformHeaders.ATTEMPT));
+        assertEquals("lager-ø", exchange.getMessage().getHeader(PlatformHeaders.SOURCE_SYSTEM));
+        assertEquals("true", exchange.getMessage().getHeader(PlatformHeaders.REPLAY));
+        org.junit.jupiter.api.Assertions.assertSame(unowned, exchange.getMessage().getHeader("X-Binary-Context"));
+        policy.onExchangeDone(route("synthetic-input"), exchange);
+        assertEquals("7e5a-ø", sink.result.messageId());
+        assertEquals(2, sink.result.attempt());
+        assertEquals("lager-ø", sink.result.sourceSystem());
+    }
+
+    @Test
+    void leavesEnvelopeBytesOfNonKafkaExchangesUntouched() {
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(result -> {}, "adapter-test");
+        Exchange exchange = exchange();
+        byte[] id = "direct-id".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, id);
+        policy.onExchangeBegin(route("synthetic-input"), exchange);
+        org.junit.jupiter.api.Assertions.assertSame(id, exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
     }
 
     @org.junit.jupiter.params.ParameterizedTest
@@ -158,7 +200,7 @@ class MessageStoreRoutePolicyTest {
 
     @Test
     void recordsRedeliveryDiagnosticsFromCapturedPropertiesWhenHeadersWereStripped() {
-        // Contract §5: on the DLQ path Camel's error handler removes the
+        // On the DLQ path Camel's error handler removes the
         // redelivery headers before dead-letter delivery; the diagnostics
         // captured into exchange properties during redelivery must win.
         RecordingSink sink = new RecordingSink();
@@ -201,6 +243,52 @@ class MessageStoreRoutePolicyTest {
         assertEquals(null, sink.result.payloadBytes());
         assertFalse(sink.result.replayable());
         assertEquals("payload exceeds max inline size", sink.result.replayDisabledReason());
+    }
+
+    @Test
+    void keepsOneCopyOfAByteArrayInputForReplayAndParking() {
+        Exchange exchange = kafkaInput("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        new MessageStoreRoutePolicy(new RecordingSink(), "adapter-test")
+                .onExchangeBegin(route("order-pipeline"), exchange);
+
+        byte[] captured = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
+        assertNotSame(exchange.getMessage().getBody(), captured);
+        assertArrayEquals(exchange.getMessage().getBody(byte[].class), captured);
+        assertNull(exchange.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD),
+                "Parking uses the replay copy");
+    }
+
+    @Test
+    void keepsAParkingCopyOnlyWhenReplayStorageDoesNotKeepTheInputAndTheInputCanBeParked() {
+        var policy = new MessageStoreRoutePolicy(new RecordingSink(), "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.METADATA_ONLY, 1000, java.time.Duration.ofDays(30), true));
+        Exchange bytes = kafkaInput("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        Exchange text = kafkaInput("ORIGINAL");
+        Exchange empty = kafkaInput(null);
+        Exchange internal = exchange();
+        internal.getMessage().setBody("ORIGINAL".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+
+        for (Exchange exchange : List.of(bytes, text, empty, internal)) {
+            policy.onExchangeBegin(route("order-pipeline"), exchange);
+            assertNull(exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES));
+        }
+
+        byte[] parked = bytes.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD, byte[].class);
+        assertNotSame(bytes.getMessage().getBody(), parked);
+        assertArrayEquals(bytes.getMessage().getBody(byte[].class), parked);
+        assertSame(text.getMessage().getBody(), text.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD),
+                "A String cannot change, so it is not copied");
+        assertArrayEquals(new byte[0], empty.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD, byte[].class));
+        assertNull(internal.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD),
+                "An input without a Kafka commit is never parked");
+    }
+
+    private Exchange kafkaInput(Object body) {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> { });
+        exchange.getMessage().setBody(body);
+        return exchange;
     }
 
     @Test
@@ -288,14 +376,14 @@ class MessageStoreRoutePolicyTest {
         // When the policy records the terminal attempt result.
         policy.onExchangeDone(route("order-pipeline"), exchange);
 
-        // Then dashboard/status consumers see the parked state, not just a generic failure.
+        // Then read-model/status consumers see the parked state, not just a generic failure.
         assertEquals(MessageStatus.DLQ, sink.result.status());
         assertEquals("poison message", sink.result.error());
     }
 
     @Test
     void createsMessageIdWhenMissingAtExchangeBegin() {
-        // Given a route starts with no platform message id on the exchange.
+        // Given a route starts with no message id on the exchange.
         RecordingSink sink = new RecordingSink();
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, "adapter-test");
         Exchange exchange = exchange();

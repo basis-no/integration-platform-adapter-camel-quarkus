@@ -49,7 +49,7 @@ class ContractVersionStartupGateTest {
 
     @Test
     void warnsAndContinuesWhenContractTableIsAbsent() {
-        // Contract §10 v1.0 rollout rule: absent bip_contract ⇒ assume major 1, warn loudly.
+        // Absent bip_contract ⇒ assume store schema version (contract major) 1, warn loudly.
         ContractVersionStartupGate gate = new ContractVersionStartupGate("postgres", () -> dataSource);
 
         assertDoesNotThrow(gate::verify);
@@ -74,7 +74,7 @@ class ContractVersionStartupGateTest {
 
     @Test
     void failsStartupWhenProvisionedContractMajorDiffers() throws Exception {
-        // Certification S19: bip_contract.contract_major=2 provisioned ⇒ adapter refuses to start.
+        // bip_contract.contract_major=2 provisioned ⇒ adapter refuses to start.
         createContractTable();
         execute("insert into bip_contract (contract_major, contract_version) values (1, '1.0.0-rc2')");
         execute("insert into bip_contract (contract_major, contract_version) values (2, '2.0.0')");
@@ -112,7 +112,7 @@ class ContractVersionStartupGateTest {
 
     @Test
     void failsFastWhenAllRetryAttemptsAreExhausted() {
-        // Certification S19b: transient grace, then startup failure - fail fast
+        // Transient grace, then startup failure - fail fast
         // over masked errors (safe under rolling updates).
         DataSource alwaysDown = failingThenDelegating(Integer.MAX_VALUE, dataSource);
         ContractVersionStartupGate gate = new ContractVersionStartupGate("postgres", () -> alwaysDown, 3, 5L);

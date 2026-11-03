@@ -336,7 +336,10 @@ a tag; the release owner supplies those decisions under actual approval.
 
 ## Synthetic runner qualification
 
-The Test workflow has a separate bounded packaging qualification job. It uses
+On `main`, the Test workflow runs this as a separate bounded packaging
+qualification job. On the 0.3 line no workflow runs it; run
+`python3 .github/scripts/qualify-release-packaging.py --evidence <dir>` by hand
+before a release. It uses
 Java 21, the checked-in Maven wrapper and the source POM's exact compiler,
 source, Javadoc and GPG plugin configuration to build a small synthetic Java
 artifact. It excludes the publisher plugin and uses only the reserved test

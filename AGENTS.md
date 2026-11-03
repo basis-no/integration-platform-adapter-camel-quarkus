@@ -2,6 +2,12 @@
 
 Preserve source acknowledgement, durable recovery and public repository boundaries.
 
+The adapter is generic open source. Describe its behavior in its own terms and
+do not refer to a particular product, service, dashboard, or documentation set
+that uses it. Existing identifiers such as the Maven coordinates, packages,
+`x-bip-*` headers and `bip_*` tables keep their names; refer to them as this
+adapter's identifiers.
+
 ## Release notes and completion
 
 Every stable version requires a dated, reviewed section in `CHANGELOG.md` and a

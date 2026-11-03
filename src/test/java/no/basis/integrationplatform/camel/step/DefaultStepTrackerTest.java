@@ -137,7 +137,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void producesSameIdempotencyKeyForSameMessageAndStepAcrossRedelivery() {
-        // Given Camel processes the same platform message and external step again after a retry/redelivery.
+        // Given Camel processes the same message and external step again after a retry/redelivery.
         Exchange firstAttempt = exchange("https://vendor.example.com/callback", "notify-vendor");
         firstAttempt.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
         Exchange secondAttempt = exchange("https://vendor.example.com/callback", "notify-vendor");
@@ -156,7 +156,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void producesDifferentIdempotencyKeysForDifferentStepsInSameMessage() {
-        // Given one platform message performs two different external side-effect steps.
+        // Given one message performs two different external side-effect steps.
         Exchange sftpStep = exchange("sftp:vendor/orders", "deliver-file");
         sftpStep.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
         Exchange webhookStep = exchange("https://vendor.example.com/callback", "notify-vendor");
@@ -173,7 +173,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void generatesMessageIdWhenMissing() {
-        // Given a message that has not yet been wrapped in the platform envelope.
+        // Given a message that has not yet been wrapped in the x-bip-* envelope.
         Exchange exchange = exchange("sftp:vendor/orders", "deliver-file");
 
         // When the adapter sees the first external send.
@@ -196,7 +196,7 @@ class DefaultStepTrackerTest {
         tracker.beforeSend(exchange);
         tracker.recordDelivered(exchange);
 
-        // Then the original send may continue, but no platform step is recorded.
+        // Then the original send may continue, but no step is recorded.
         assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
         assertNull(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
         assertNull(exchange.getProperty(PlatformExchangeProperties.STEPS));
@@ -265,7 +265,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void redoStepsHeaderForcesReexecutionOfDeliveredStep() {
-        // Given the ledger says delivered, but the replay carries an explicit redo request (contract §9, D1).
+        // Given the ledger says delivered, but the replay carries an explicit redo request.
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
@@ -324,7 +324,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void malformedRedoStepsHeaderIsTreatedAsEmptyAndDoesNotFailProcessing() {
-        // Given a hand-crafted, non-JSON redo header (contract §3, D1: warn + treat as empty).
+        // Given a hand-crafted, non-JSON redo header (warn + treat as empty).
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
