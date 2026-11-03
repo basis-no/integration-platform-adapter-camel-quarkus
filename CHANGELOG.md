@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.6 — 2026-11-03
+## 0.3.6 — 2026-11-04
 
 Maintenance release on the 0.3 line. The Kafka recovery baseline remains Message
 Store schema version 1. No Message Store schema migration is required. The
@@ -407,6 +407,11 @@ and iteration its own step key. See the
   public artifacts with it. A snapshot of a reviewed commit is published,
   unsigned, from the release manager's workstation; the 0.3.6 acceptance
   snapshots were published this way. Existing published artifacts are
+  unchanged.
+- 0.3.6 and later releases are signed with a new release key, primary
+  fingerprint `43133136DA830375E5970B501E0487B13768F40C`, published on
+  keys.openpgp.org and keyserver.ubuntu.com. The key that signed earlier
+  releases signs no further releases; their published signatures are
   unchanged.
 
 ## 0.3.5 — 2026-10-12
