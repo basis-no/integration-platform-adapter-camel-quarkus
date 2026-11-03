@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.3.6 — Unreleased
+## 0.3.6 — 2026-11-03
 
 Maintenance release on the 0.3 line. The Kafka recovery baseline remains Message
 Store schema version 1. No Message Store schema migration is required. The
@@ -261,6 +261,19 @@ and iteration its own step key. See the
   the [split step identity advisory](docs/split-step-identity.md). This applies
   to every 0.3.x release. Fixed in 0.4, which gives each part and iteration its
   own step key.
+- A processor that calls `exchange.setRouteStop(true)` and then throws is
+  recorded `COMPLETED` and committed, and nothing is parked: Camel skips the
+  dead letter channel for a stopped exchange. An ordinary `stop()` in a split
+  part or multicast branch is not affected.
+- When a split part fails and is parked, its DLQ record holds the whole
+  consumed input, and the input itself is journaled `COMPLETED` and committed.
+  Nothing is lost, but the journal shows `COMPLETED`, and two failing parts give
+  two DLQ records of the same input.
+- During a Message Store outage, a split or multicast input whose earlier part
+  was already parked can be consumed again, because a later part's step outcome
+  could not be recorded, and parked again. An outage can therefore add DLQ
+  copies of the same input. Nothing is lost; a replay skips the parts that the
+  step store records as delivered.
 - The Message Store is keyed by message id alone. A Kafka input adopts an
   incoming `x-bip-message-id`, and Camel's Kafka producer forwards it by default.
   When a message id reaches a second integration on the same Message Store, the
