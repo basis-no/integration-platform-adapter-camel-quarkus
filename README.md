@@ -27,11 +27,11 @@ and the schema it expects ships in `src/main/resources/db/message-store/`.
 
 See the [changelog](CHANGELOG.md) for candidate changes, upgrade actions and
 limitations. [Release tooling](docs/release-packaging.md) builds unsigned candidates
-without production credentials. Final releases are signed and uploaded offline
-by the release manager from reviewed tooling; the production key never exists in
-GitHub. Snapshot publication is suspended. A tag never rebuilds or uploads a
-release. Final notes need an approved date and exact artifact provenance; source
-preparation does not authorize publication. See [Releasing](docs/releasing.md).
+without production credentials. Final releases are signed with the offline
+signer and uploaded by the release manager from reviewed tooling; CI holds no
+publishing credentials. A tag never rebuilds or uploads a release. Final notes
+need an approved date and exact artifact provenance; source preparation does not
+authorize publication. See [Releasing](docs/releasing.md).
 
 ## 0.3.5 maintenance line
 
@@ -46,8 +46,10 @@ version from its release tag. The published stable package is `0.3.5`; the
 maintenance source POM remains `0.3.5-SNAPSHOT` for development. Select the stable
 package explicitly when upgrading an integration.
 
-For acceptance, use locally built `X.Y.Z-SNAPSHOT` artifacts; snapshot
-publication is suspended. See [Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts).
+For acceptance, use a locally built `X.Y.Z-SNAPSHOT` or a snapshot of a reviewed
+commit published from the release manager's workstation. See
+[Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts) and
+[published snapshots](docs/releasing.md#published-snapshots).
 Snapshots are test artifacts; production integrations keep an explicitly
 selected stable version.
 

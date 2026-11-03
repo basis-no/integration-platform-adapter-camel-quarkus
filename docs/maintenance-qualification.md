@@ -84,12 +84,11 @@ parking and consumer progress; record the exact image and adapter versions.
 
 ## Snapshot publication
 
-Suspended. Every Central upload requires the offline signer, so
-`publish-snapshot.yml` refuses to run, and no Central token or signing secret
-may be configured in the repository. Use locally built artifacts for acceptance
-([Releasing](releasing.md#acceptance-with-locally-built-artifacts)). The steps
-below are kept for reference only, until an approved signing boundary covers
-snapshots.
+CI holds no publishing credentials. A snapshot of a reviewed commit is
+published, unsigned, from the release manager's workstation with their own
+Central token (see the [snapshot lane](release-packaging.md#snapshot-lane)); the
+0.3.6 acceptance snapshots were published this way. Final releases are signed
+with the offline signer.
 
 The maintenance line uses the same snapshot publishing mechanism as development;
 snapshot support is not restricted to the highest version. `0.3.4-SNAPSHOT` and
@@ -97,15 +96,13 @@ snapshot support is not restricted to the highest version. `0.3.4-SNAPSHOT` and
 create a stable release tag or activate any integration.
 
 1. Complete local checks and CI for the exact candidate commit. Review changes
-   and obtain publication authorization before running the workflow.
-2. Ensure the Sonatype namespace has snapshots enabled and the repository's
-   existing Central token and signing secrets are configured. Never copy these
-   secrets into source or operator commands.
-3. Dispatch **Publish Maven SNAPSHOT** (`publish-snapshot.yml`) on the reviewed
-   branch/ref. Check that the run's `head_sha` is the reviewed commit. The workflow
-   tests and publishes the POM's `-SNAPSHOT` version; it rejects stable versions.
+   and obtain publication authorization before publishing.
+2. Ensure the Sonatype namespace has snapshots enabled.
+3. Publish the POM's `-SNAPSHOT` version from a clean checkout of the reviewed
+   commit on the release workstation, as the
+   [snapshot lane](release-packaging.md#snapshot-lane) describes.
 4. Verify the published timestamped snapshot from Sonatype metadata and record
-   the workflow URL, source commit, resolved version and downloaded artifact hash.
+   the source commit, resolved version and downloaded artifact hash.
 5. The synthetic validation application's POM must explicitly enable consumption:
 
    ```xml

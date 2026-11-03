@@ -388,11 +388,13 @@ and iteration its own step key. See the
 
 ### Release process
 
-- Releases are signed offline by the release manager. The production signing
-  key and the Maven Central token never exist in GitHub or CI; CI only builds
-  and keeps the unsigned candidate, and reads back the public artifacts after
-  publication. Snapshot publication stays suspended; acceptance uses locally
-  built artifacts. Existing published artifacts are unchanged.
+- Final releases are signed with an offline signer on the release manager's
+  workstation and uploaded from there. CI holds no publishing credentials: it
+  builds and keeps the unsigned candidate, and after publication compares the
+  public artifacts with it. A snapshot of a reviewed commit is published,
+  unsigned, from the release manager's workstation; the 0.3.6 acceptance
+  snapshots were published this way. Existing published artifacts are
+  unchanged.
 
 ## 0.3.5 — 2026-10-12
 
