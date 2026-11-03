@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded, offline fixtures for packaging and recovery guards."""
+import errno
 import hashlib
 import importlib.util
 import io
@@ -402,6 +403,21 @@ class Fixtures(unittest.TestCase):
                 recovery.recover(self.path, self.receipt, self.state, allow_upload=True,
                                  call=lambda *args: self.fail('Network called before the intent was durable'))
 
+    def test_full_flush_falls_back_only_when_unsupported(self):
+        descriptor = os.open(self.root, os.O_RDONLY)
+        self.addCleanup(os.close, descriptor)
+        for code, falls_back in ((errno.ENOTSUP, True), (errno.EINVAL, True), (errno.EIO, False)):
+            with patch.object(recovery.fcntl, 'F_FULLFSYNC', 51, create=True), \
+                    patch.object(recovery.fcntl, 'fcntl', side_effect=OSError(code, 'flush')), \
+                    patch.object(recovery.os, 'fsync') as fsync:
+                if falls_back:
+                    recovery.sync(descriptor)
+                    fsync.assert_called_once_with(descriptor)
+                else:
+                    with self.assertRaises(OSError):
+                        recovery.sync(descriptor)
+                    fsync.assert_not_called()  # A failed full flush is never papered over by fsync.
+
     def test_ambiguous_publish_never_repeated(self):
         self.saved(publish_attempted=True)
         with self.assertRaises(ValueError):
@@ -663,6 +679,15 @@ class OfflineSigner(unittest.TestCase):
             result = signer.verify_candidate(self.candidate, VERSION, self.COMMIT, self.RUN, self.pom)
         # Read through the inventoried directory, not the link that replaced it.
         self.assertEqual(result['payloads'], self.payloads)
+
+    def test_directory_descriptor_closed_when_its_check_fails(self):
+        def descriptors():
+            return set(os.listdir('/proc/self/fd' if os.path.isdir('/proc/self/fd') else '/dev/fd'))
+        before = descriptors()
+        with patch.object(signer.os, 'fstat', side_effect=OSError(errno.EIO, 'stat')):
+            with self.assertRaises(OSError):
+                signer.open_directory(self.candidate)
+        self.assertEqual(descriptors(), before)
 
     def test_file_swapped_for_a_fifo_after_inventory_is_refused_without_waiting(self):
         original = signer.inventory

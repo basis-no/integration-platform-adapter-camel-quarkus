@@ -76,9 +76,12 @@ def open_directory(name, parent=None):
         descriptor = os.open(name, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | NOFOLLOW, dir_fd=parent)
     except OSError as error:
         raise ValueError('Candidate directory must be a real directory: ' + os.path.basename(str(name))) from error
-    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+    try:
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise ValueError('Candidate directory must be a real directory: ' + os.path.basename(str(name)))
+    except BaseException:
         os.close(descriptor)
-        raise ValueError('Candidate directory must be a real directory: ' + os.path.basename(str(name)))
+        raise
     return descriptor
 
 

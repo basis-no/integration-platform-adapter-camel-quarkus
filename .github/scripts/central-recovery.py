@@ -2,6 +2,7 @@
 """Resume one reviewed Central deployment without a second upload."""
 import argparse
 import base64
+import errno
 import fcntl
 import hashlib
 import json
@@ -12,6 +13,8 @@ import urllib.request
 import uuid
 
 BASE = 'https://central.sonatype.com/api/v1/publisher'
+# Errors meaning "this file system cannot do a full flush", not "the flush failed".
+UNSUPPORTED = {errno.ENOTSUP, errno.EOPNOTSUPP, errno.EINVAL, errno.ENOTTY}
 
 
 def sync(descriptor):
@@ -20,8 +23,9 @@ def sync(descriptor):
         try:
             fcntl.fcntl(descriptor, fcntl.F_FULLFSYNC)
             return
-        except OSError:
-            pass  # Not supported by this file system; fsync below still fails closed.
+        except OSError as error:
+            if error.errno not in UNSUPPORTED:
+                raise  # A storage failure: never continue as if the state were durable.
     os.fsync(descriptor)
 
 
