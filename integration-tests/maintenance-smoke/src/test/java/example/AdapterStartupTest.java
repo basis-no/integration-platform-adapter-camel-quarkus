@@ -1,11 +1,14 @@
 package example;
 
 import io.quarkus.test.junit.QuarkusTest;
+import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.keyvalue.KeyValueStore;
 import no.basis.integrationplatform.camel.lifecycle.MessageStoreRoutePolicy;
 import org.apache.camel.CamelContext;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.component.kafka.KafkaEndpoint;
+import org.apache.camel.component.kafka.PollOnError;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -13,6 +16,7 @@ import static org.junit.jupiter.api.Assertions.*;
 class AdapterStartupTest {
     @Inject CamelContext context;
     @Inject ProducerTemplate producer;
+    @Inject Instance<KeyValueStore> keyValues;
 
     @Test
     void discoversAdapterAndAttachesPolicyOnlyToKafkaInput() {
@@ -23,11 +27,22 @@ class AdapterStartupTest {
     }
 
     @Test
+    void discoversKeyValueStoreWithoutStartingItsInactiveDataSource() {
+        assertTrue(keyValues.isResolvable());
+        // ApplicationScoped proxy creation must not invoke the producer or open JDBC.
+        assertNotNull(keyValues.get());
+        assertTrue(Thread.getAllStackTraces().keySet().stream()
+                .noneMatch(thread -> thread.isAlive() && thread.getName().equals("bip-key-value-sweep")));
+    }
+
+    @Test
     void dependencyDefaultsPreserveManualCommitAndStopOnError() {
         var endpoint = (KafkaEndpoint) context.getRoute("source").getEndpoint();
         assertFalse(endpoint.getConfiguration().isAutoCommitEnable());
         assertTrue(endpoint.getConfiguration().isAllowManualCommit());
         assertTrue(endpoint.getConfiguration().isBreakOnFirstError());
+        // A poll failure reconnects instead of stopping the consumer or skipping an offset.
+        assertEquals(PollOnError.RECONNECT, endpoint.getConfiguration().getPollOnError());
     }
 
     @Test

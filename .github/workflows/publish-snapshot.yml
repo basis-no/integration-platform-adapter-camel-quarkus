@@ -1,50 +1,22 @@
-name: Publish Maven SNAPSHOT
+name: Snapshot publication (not from CI)
 
-# Manually publishes the current pom's X.Y.Z-SNAPSHOT version to Sonatype's
-# separate snapshot repository. It does not create a Git tag or a Maven Central
-# release version.
-
+# CI holds no publishing credentials. A snapshot of a reviewed commit is
+# published, unsigned, from the release manager's workstation, and final
+# releases are signed with the offline signer. See
+# docs/release-packaging.md#snapshot-lane. Never add signing or publisher
+# credentials to a workflow.
 on:
   workflow_dispatch:
 
-concurrency:
-  group: publish-camel-adapter-snapshot
-  cancel-in-progress: false
+permissions:
+  contents: read
 
 jobs:
-  publish:
-    if: github.server_url == 'https://github.com'
+  refuse:
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
+    timeout-minutes: 1
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Validate matching version changelog
-        run: python3 scripts/check_changelog.py
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-          server-id: central
-          server-username: CENTRAL_TOKEN_USERNAME
-          server-password: CENTRAL_TOKEN_PASSWORD
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          gpg-passphrase: GPG_PASSPHRASE
-
-      - name: Verify snapshot version
+      - name: Refuse; CI holds no publishing credentials
         run: |
-          version="$(./mvnw --quiet --non-recursive help:evaluate -Dexpression=project.version -DforceStdout)"
-          case "$version" in
-            *-SNAPSHOT) echo "Publishing $version from $GITHUB_SHA" ;;
-            *) echo "Refusing to snapshot-publish non-SNAPSHOT version: $version" >&2; exit 1 ;;
-          esac
-
-      - name: Test and publish snapshot
-        run: ./mvnw --batch-mode --no-transfer-progress -Prelease deploy
-        env:
-          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+          echo "CI does not publish snapshots. See docs/release-packaging.md#snapshot-lane." >&2
+          exit 1

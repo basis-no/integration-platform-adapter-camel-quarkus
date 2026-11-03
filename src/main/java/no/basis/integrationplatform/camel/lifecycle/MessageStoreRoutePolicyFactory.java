@@ -8,6 +8,7 @@ import java.util.LinkedHashSet;
 import java.util.Optional;
 import java.util.Set;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
+import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.CamelContext;
 import org.apache.camel.NamedNode;
 import org.apache.camel.model.RouteDefinition;
@@ -18,6 +19,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 @ApplicationScoped
 public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
     private final MessageStoreSink sink;
+    @Inject TrafficSignals trafficSignals;
     private final String integrationName;
     private final PayloadCapturePolicy payloadPolicy;
     private final Set<String> auditRoutes;
@@ -90,14 +92,15 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
 
     @Override
     public RoutePolicy createRoutePolicy(CamelContext camelContext, String routeId, NamedNode route) {
-        // Only a Kafka input has the v1 parking, commit and replay contract.
+        // Only a Kafka input has the adapter's parking, commit and replay behavior.
         // Internal direct/HTTP exchanges may contain transformed receiver data.
+        // Every other route still reads a replay's redo list, so none of its sends carries it.
         if (!(route instanceof RouteDefinition definition) || definition.getInput() == null) {
-            return null;
+            return new RedoStepsRoutePolicy();
         }
         String uri = definition.getInput().getEndpointUri();
         if (uri == null) {
-            return null;
+            return new RedoStepsRoutePolicy();
         }
         uri = camelContext.resolvePropertyPlaceholders(uri);
         if (inputAuditRoutes.contains(routeId)) {
@@ -116,9 +119,12 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             return new MessageStoreAuditRoutePolicy(sink, integrationName, payloadPolicy);
         }
         if (!uri.startsWith("kafka:")) {
-            return null;
+            return new RedoStepsRoutePolicy();
         }
-        return new MessageStoreRoutePolicy(sink, integrationName, payloadPolicy);
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, integrationName, payloadPolicy);
+        policy.setTrafficSignals(trafficSignals);
+        if (trafficSignals != null) trafficSignals.observeKafkaBoundary();
+        return policy;
     }
 
     void validateAuditRoutes(@Observes StartupEvent ignored) {

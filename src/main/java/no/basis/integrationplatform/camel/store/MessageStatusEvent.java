@@ -33,9 +33,9 @@ public record MessageStatusEvent(
     }
 
     /**
-     * Per-attempt step observation, contract §7 (DECISION D4). The serialized
-     * shape must match {@code spec/schemas/steps-json.schema.json}:
-     * step, status, idempotencyKey, endpointUri, targetRef, error, occurredAt.
+     * Per-attempt step observation. The serialized shape has exactly these
+     * fields: step, status, idempotencyKey, endpointUri, targetRef, error,
+     * occurredAt.
      */
     public record Step(
             String step,

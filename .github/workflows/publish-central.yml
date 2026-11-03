@@ -1,74 +1,111 @@
-name: Publish to Maven Central
+name: Verify published artifacts and create GitHub Release
 
-# Tag-driven release per ADR-003: the pom stays on -SNAPSHOT on main; the
-# version is derived from the tag (vX.Y.Z) at publish time. Requires repo
-# secrets CENTRAL_TOKEN_USERNAME / CENTRAL_TOKEN_PASSWORD (Sonatype Central
-# portal token) and GPG_PRIVATE_KEY / GPG_PASSPHRASE.
-
+# No tag-push build/upload. release-candidate.yml retains the unsigned candidate;
+# signing, upload and publication happen only on the offline release workstation
+# (docs/release-packaging.md). This path only reads public artifacts and notes.
 on:
-  push:
-    tags:
-      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        required: true
+        description: Existing approved final tag
+      candidate_run:
+        required: true
+        description: Existing successful unsigned candidate inspection run
+      signed_entries_sha256:
+        required: true
+        description: entries_sha256 from the reviewed offline signing receipt
+      signer:
+        required: true
+        description: Trusted uppercase 40-character signing fingerprint
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: central-release-page-${{ inputs.tag }}
+  cancel-in-progress: false
+
+env:
+  TAG: ${{ inputs.tag }}
+  CANDIDATE_RUN: ${{ inputs.candidate_run }}
+  SIGNED_ENTRIES_SHA256: ${{ inputs.signed_entries_sha256 }}
+  SIGNER: ${{ inputs.signer }}
 
 jobs:
-  publish:
+  verify:
     if: github.server_url == 'https://github.com'
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    env:
-      TAG: ${{ github.ref_name }}
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-
-      - name: Validate tag format
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate existing tag and reviewed candidate inputs
         run: |
-          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "Tag '$TAG' is not a release tag (vX.Y.Z); refusing to publish." >&2
-            exit 1
+          version="$(.github/scripts/release-version-from-tag.sh "$TAG")"
+          source_commit="$(git rev-parse "refs/tags/$TAG^{}")"
+          python3 .github/scripts/release-candidate.py selection --mode readback --version "$version" --commit "$source_commit" --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --bundle-hash "$SIGNED_ENTRIES_SHA256"
+          echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
+          echo "SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          path: source
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-central-candidate-${{ env.RELEASE_VERSION }}
+          path: evidence
+          run-id: ${{ inputs.candidate_run }}
+          github-token: ${{ github.token }}
+      - name: Verify actual public payloads against the same reviewed candidate
+        env:
+          PUBLIC_KEY: ${{ vars.RELEASE_SIGNING_PUBLIC_KEY }}
+        run: |
+          export GNUPGHOME="$RUNNER_TEMP/central-public-readback-keyring"
+          echo "GNUPGHOME=$GNUPGHOME" >> "$GITHUB_ENV"
+          mkdir -m 700 "$GNUPGHOME"
+          test -n "$PUBLIC_KEY"
+          printf '%s\n' "$PUBLIC_KEY" | gpg --no-options --batch --import
+          python3 -I .github/scripts/sign-candidate.py verify --candidate evidence --version "$RELEASE_VERSION" --source-commit "$SOURCE_COMMIT" --candidate-run "$CANDIDATE_RUN"
+          python3 -I .github/scripts/verify-public-release.py --pom source/pom.xml --version "$RELEASE_VERSION" --signer "$SIGNER" --unsigned-receipt evidence/unsigned.json --entries-sha256 "$SIGNED_ENTRIES_SHA256" --output public-readback.json
+      - name: Retain actual artifact readback
+        uses: actions/upload-artifact@v4
+        with:
+          name: central-public-readback-${{ inputs.tag }}
+          path: public-readback.json
+          if-no-files-found: error
+          retention-days: 90
+      - name: Stop owned verifier agent and remove public-key keyring
+        if: always()
+        run: |
+          if [ -n "${GNUPGHOME:-}" ]; then
+            case "$GNUPGHOME" in "$RUNNER_TEMP"/central-*) gpgconf --kill gpg-agent || true; rm -rf -- "$GNUPGHOME" ;; *) exit 1 ;; esac
           fi
 
-      - name: Validate matching version changelog
-        run: python3 scripts/check_changelog.py --tag "$TAG"
-
-      - name: Validate and extract GitHub release notes
-        run: python3 .github/scripts/release-notes.py --tag "$TAG" --output release-notes.md
-
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "21"
-          cache: maven
-          server-id: central
-          server-username: CENTRAL_TOKEN_USERNAME
-          server-password: CENTRAL_TOKEN_PASSWORD
-          gpg-private-key: ${{ secrets.GPG_PRIVATE_KEY }}
-          gpg-passphrase: GPG_PASSPHRASE
-
-      - name: Set release version from tag
-        run: mvn --batch-mode --no-transfer-progress versions:set -DnewVersion="${TAG#v}" -DgenerateBackupPoms=false
-
-      - name: Publish
-        run: mvn --batch-mode --no-transfer-progress -Prelease deploy
-        env:
-          CENTRAL_TOKEN_USERNAME: ${{ secrets.CENTRAL_TOKEN_USERNAME }}
-          CENTRAL_TOKEN_PASSWORD: ${{ secrets.CENTRAL_TOKEN_PASSWORD }}
-          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
-
   github-release:
-    needs: publish
+    needs: verify
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
       contents: write
     env:
-      TAG: ${{ github.ref_name }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
-      - name: Extract reviewed release notes
-        run: python3 .github/scripts/release-notes.py --tag "$TAG" --output release-notes.md
-      - name: Create GitHub Release and verify its notes
+        with:
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+          path: source
+          persist-credentials: false
+      - name: Extract reviewed release notes from the existing tag
+        run: python3 .github/scripts/release-notes.py --tag "$TAG" --changelog source/CHANGELOG.md --pom source/pom.xml --output release-notes.md
+      - name: Create GitHub Release and compare existing notes without overwriting
         shell: bash
         run: |
           set -euo pipefail
@@ -76,10 +113,10 @@ jobs:
             gh release create "$TAG" --verify-tag --title "Camel Quarkus adapter ${TAG#v}" --notes-file release-notes.md
             gh release view "$TAG" --json body,tagName > release-readback.json
           fi
-          python3 - <<'PYTHON'
+          python3 - <<'PY'
           import json, os
           from pathlib import Path
           release = json.loads(Path('release-readback.json').read_text())
           assert release['tagName'] == os.environ['TAG'], 'Release tag mismatch'
-          assert release['body'] == Path('release-notes.md').read_text(), 'Release notes mismatch: review existing notes; never overwrite automatically'
-          PYTHON
+          assert release['body'] == Path('release-notes.md').read_text(), 'Release notes mismatch: review; never overwrite automatically'
+          PY

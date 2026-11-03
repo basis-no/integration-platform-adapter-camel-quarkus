@@ -31,6 +31,9 @@ jobs:
       - name: Test release notes extraction
         run: python3 -m unittest discover -s tests -p "test_release_notes.py"
 
+      - name: Test offline release packaging and recovery guards
+        run: python3 .github/scripts/test-release-packaging.py
+
       - name: Set up Java
         uses: actions/setup-java@v4
         with:

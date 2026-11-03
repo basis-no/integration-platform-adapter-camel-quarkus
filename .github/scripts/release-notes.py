@@ -46,5 +46,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--tag', required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--pom', type=Path, default=Path('pom.xml'))
+    parser.add_argument('--changelog', type=Path, default=Path('CHANGELOG.md'))
     args = parser.parse_args()
-    args.output.write_text(extract(Path('pom.xml').read_text(), Path('CHANGELOG.md').read_text(), args.tag))
+    args.output.write_text(extract(args.pom.read_text(), args.changelog.read_text(), args.tag))

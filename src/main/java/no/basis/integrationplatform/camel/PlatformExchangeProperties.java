@@ -8,11 +8,20 @@ public final class PlatformExchangeProperties {
     public static final String STEP_SHOULD_SKIP = "basis.messageStore.stepShouldSkip";
     public static final String REDO_STEPS = "basis.messageStore.redoSteps";
     public static final String STEP_ALREADY_DELIVERED = "basis.messageStore.stepAlreadyDelivered";
+    /** The attempt's first failure to check or record a step outcome; see {@code StepOutcomeFailure}. */
+    public static final String STEP_OUTCOME_FAILURE = "basis.messageStore.stepOutcomeFailure";
+    /** The consumed input's message id, captured when a recorded exchange begins. */
+    public static final String INPUT_MESSAGE_ID = "basis.messageStore.inputMessageId";
     public static final String KAFKA_MANUAL_COMMIT = "basis.messageStore.kafkaManualCommit";
     public static final String DLQ_PARKED = "basis.messageStore.dlqParked";
     public static final String PAYLOAD_STORAGE = "basis.messageStore.payloadStorage";
     public static final String PAYLOAD_SIZE_BYTES = "basis.messageStore.payloadSizeBytes";
     public static final String PAYLOAD_BYTES = "basis.messageStore.payloadBytes";
+    /**
+     * The consumed input of a managed Kafka input for DLQ parking, kept as a byte array or
+     * String only when {@link #PAYLOAD_BYTES} does not keep it for replay.
+     */
+    public static final String PARKING_PAYLOAD = "basis.messageStore.parkingPayload";
     public static final String PAYLOAD_EXPIRES_AT = "basis.messageStore.payloadExpiresAt";
     public static final String PAYLOAD_DELETED_AT = "basis.messageStore.payloadDeletedAt";
     public static final String REPLAYABLE = "basis.messageStore.replayable";

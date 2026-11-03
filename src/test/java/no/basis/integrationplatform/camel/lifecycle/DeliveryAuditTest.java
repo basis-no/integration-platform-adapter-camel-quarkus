@@ -161,7 +161,7 @@ class DeliveryAuditTest {
                     assertNotNull(reply.getException());
                     if (receiverFails) {
                         assertSame(rejection, reply.getException());
-                        assertEquals(1, rejection.getSuppressed().length);
+                        assertEquals(0, rejection.getSuppressed().length, "A receiver's exception may be shared");
                     }
                 }
             }
