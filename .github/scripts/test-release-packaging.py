@@ -226,6 +226,9 @@ class Fixtures(unittest.TestCase):
         self.assertNotIn('cache:', text)
         self.assertNotIn('actions/cache', text)
         self.assertIn('--workflow-run "$GITHUB_RUN_ID"', text)
+        # Dispatchable from main, and from release/0.3 until main carries the same tools.
+        self.assertIn("(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/0.3')", text)
+        self.assertIn('refs/heads/main|refs/heads/release/0.3) ;; *) exit 1 ;;', text)
         snapshot = (workflows / 'publish-snapshot.yml').read_text()
         self.assertIn('exit 1', snapshot)
         self.assertNotIn('checkout@', snapshot)
