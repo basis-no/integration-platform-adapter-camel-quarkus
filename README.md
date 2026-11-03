@@ -25,7 +25,7 @@ This library is a Camel/Quarkus runtime adapter. It is self-contained: the
 tables, topics and headers it reads and writes are documented in this README,
 and the schema it expects ships in `src/main/resources/db/message-store/`.
 
-See the [changelog](CHANGELOG.md) for candidate changes, upgrade actions and
+See the [changelog](CHANGELOG.md) for changes, upgrade actions and
 limitations. [Release tooling](docs/release-packaging.md) builds unsigned candidates
 without production credentials. Final releases are signed with the offline
 signer and uploaded by the release manager from reviewed tooling; CI holds no
@@ -33,18 +33,21 @@ publishing credentials. A tag never rebuilds or uploads a release. Final notes
 need an approved date and exact artifact provenance; source preparation does not
 authorize publication. See [Releasing](docs/releasing.md).
 
-## 0.3.5 maintenance line
+## 0.3 maintenance line
 
-This maintenance line retains the 0.3.4 replay and failure-ownership safeguards.
-Its runtime source passed cross-runtime tests against
-the .NET adapter and isolated runtime acceptance. See
+`0.3.6` is the current maintenance release. It retains the 0.3.4 replay and
+failure-ownership safeguards and the 0.3.5 inspection options. See
 [0.3.4 qualification](docs/maintenance-qualification.md) and
 [0.3.5 inspection qualification](docs/delivery-audit.md#qualification-and-rollout)
-for source provenance, scope and limits. Qualification does not deploy or automatically
-upgrade an application. The stable publication workflow derives the package
-version from its release tag. The published stable package is `0.3.5`; the
-maintenance source POM remains `0.3.5-SNAPSHOT` for development. Select the stable
-package explicitly when upgrading an integration.
+for source provenance, scope and limits, and the [changelog](CHANGELOG.md) for
+what 0.3.6 changes. Qualification does not deploy or automatically upgrade an
+application.
+
+A release is built as an unsigned candidate in CI, without credentials, from the
+reviewed source commit; the release tooling sets the release version, while the
+source POM stays at `X.Y.Z-SNAPSHOT`. The release manager signs that candidate
+offline and uploads it to Maven Central. Select the stable package explicitly
+when upgrading an integration.
 
 For acceptance, use a locally built `X.Y.Z-SNAPSHOT` or a snapshot of a reviewed
 commit published from the release manager's workstation. See
@@ -72,13 +75,13 @@ Stable release coordinates (verify the tag publication completed before upgradin
 <dependency>
   <groupId>no.basis.integrationplatform</groupId>
   <artifactId>integration-platform-adapter-camel-quarkus</artifactId>
-  <version>0.3.5</version>
+  <version>0.3.6</version>
 </dependency>
 ```
 
 ## Processing Semantics
 
-The unreleased 0.3.6 candidate converts the owned `x-bip-correlation-id` from
+From 0.3.6 the adapter converts the owned `x-bip-correlation-id` from
 Kafka's byte-array header representation to text before downstream processing.
 This preserves the same ID through HTTP forwarding and journal recording. It
 does not convert unrelated binary headers or introduce support for arbitrary
@@ -698,11 +701,10 @@ has the exact conditions and the cases the ERROR line does not catch.
 
 ## Key-Value Store
 
-The combined local `0.3.6-SNAPSHOT` candidate adds
-[`KeyValueStore`](docs/key-value-store.md) for small integration-scoped JSON
-cursors and markers in the `bip_key_value` table, which the database operator
-provisions in the Message Store. It keeps the full maintenance baseline and adds
-no leases or separate store service. It is not a published release.
+0.3.6 adds [`KeyValueStore`](docs/key-value-store.md) for small
+integration-scoped JSON cursors and markers in the `bip_key_value` table, which
+the database operator provisions in the Message Store. It keeps the full
+maintenance baseline and adds no leases or separate store service.
 Calls have their own transactions; they are not atomic with delivery or polling.
 The feature is lazy and has no effect when unused. Calls fail explicitly if the
 table is unavailable; no schema or metadata is created at startup.
@@ -776,7 +778,7 @@ Configuration reference:
 | --- | --- | --- | --- |
 | `basis.delivery-audit.routes` | comma-separated exact route ids | empty | Select independent `direct:` delivery requests for non-replayable audit. |
 | `basis.input-audit.routes` | comma-separated exact route ids | empty | Select non-Kafka input inspection without changing source recovery. |
-| `basis.message-store.key-value.sweep-interval-seconds` | integer seconds, `1..3600` | `3600` | Once the candidate Key-Value Store is used, sweep this integration’s expired keys in bounded batches. |
+| `basis.message-store.key-value.sweep-interval-seconds` | integer seconds, `1..3600` | `3600` | Once the Key-Value Store is used, sweep this integration’s expired keys in bounded batches. |
 | `basis.message-store.sink` | `log`, `postgres`, `kafka` | `log` | Selects where terminal message outcomes go. |
 | `basis.message-store.step-outcome-store` | `noop`, `postgres` | `noop` | Selects whether delivered-step checks are durable. |
 | `basis.message-store.step-ids.emergency-allow-generated` | `true`, `false` | `false` | Emergency escape hatch: start even though a tracked send has no explicit id, with a warning for each. See [step tracking](#step-tracking). |
@@ -886,9 +888,9 @@ checks a named business datasource alongside a legacy Message Store with no KV
 table. Its baseline and candidate results must be recorded separately; upgrading
 the adapter does not move application state.
 
-## Optional activity metrics candidate
+## Optional activity metrics
 
-The unreleased candidate adds explicitly selected Kafka admission and
+0.3.6 adds explicitly selected Kafka admission and
 broker-confirmed publication counters through an existing Micrometer registry.
 They measure activity, not unique transactions or downstream completion. Defaults
 remain disabled; missing or incomplete coverage is unknown. See
