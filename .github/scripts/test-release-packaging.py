@@ -7,6 +7,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -384,6 +386,22 @@ class Fixtures(unittest.TestCase):
                 recovery.recover(self.path, self.receipt, self.state, publish=True, call=call)
             self.assertEqual(calls, ['/status?id=' + ID])
 
+    def test_saved_state_and_its_directory_are_synced_before_any_network_call(self):
+        synced, original = [], recovery.sync
+        def record(descriptor):
+            synced.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+            original(descriptor)
+        with patch.object(recovery, 'sync', side_effect=record):
+            recovery.save(self.root / 'synced.json', {'phase': 'upload-started'})
+        self.assertEqual(synced, [False, True])  # The file, then the directory holding the rename.
+        def fail_directory(descriptor):
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError('directory sync failed')
+        with patch.object(recovery, 'sync', side_effect=fail_directory):
+            with self.assertRaises(OSError):
+                recovery.recover(self.path, self.receipt, self.state, allow_upload=True,
+                                 call=lambda *args: self.fail('Network called before the intent was durable'))
+
     def test_ambiguous_publish_never_repeated(self):
         self.saved(publish_attempted=True)
         with self.assertRaises(ValueError):
@@ -629,6 +647,55 @@ class OfflineSigner(unittest.TestCase):
         shutil.move(str(self.candidate / 'unsigned'), str(outside / 'unsigned'))
         (self.candidate / 'unsigned').symlink_to(outside / 'unsigned')
         self.refused('Symbolic link')
+
+    def test_directory_swapped_after_inventory_is_never_followed(self):
+        original = signer.inventory
+        def swap(root, names):
+            descriptor = original(root, names)
+            tampered = self.root / 'tampered'
+            shutil.copytree(self.candidate / 'unsigned', tampered)
+            for path in tampered.iterdir():
+                path.write_bytes(b'tampered')
+            (self.candidate / 'unsigned').rename(self.root / 'inventoried')
+            (self.candidate / 'unsigned').symlink_to(tampered)
+            return descriptor
+        with patch.object(signer, 'inventory', side_effect=swap):
+            result = signer.verify_candidate(self.candidate, VERSION, self.COMMIT, self.RUN, self.pom)
+        # Read through the inventoried directory, not the link that replaced it.
+        self.assertEqual(result['payloads'], self.payloads)
+
+    def test_file_swapped_for_a_fifo_after_inventory_is_refused_without_waiting(self):
+        original = signer.inventory
+        def swap(root, names):
+            descriptor = original(root, names)
+            (self.candidate / 'unsigned.json').unlink()
+            os.mkfifo(self.candidate / 'unsigned.json')
+            return descriptor
+        def blocked(*args):
+            raise AssertionError('verification waited on a FIFO')  # Not an OSError: never absorbed.
+        previous = signal.signal(signal.SIGALRM, blocked)
+        signal.alarm(10)
+        try:
+            with patch.object(signer, 'inventory', side_effect=swap):
+                with self.assertRaisesRegex(ValueError, 'regular file'):
+                    signer.verify_candidate(self.candidate, VERSION, self.COMMIT, self.RUN, self.pom)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_archived_receipt_and_provenance_are_the_verified_bytes(self):
+        receipt = (self.candidate / 'unsigned.json').read_bytes()
+        provenance = (self.candidate / 'provenance.json').read_bytes()
+        original = signer.detach_sign
+        def change_evidence(payload, signature, fingerprint):
+            (self.candidate / 'unsigned.json').write_bytes(receipt + b' ')
+            (self.candidate / 'provenance.json').write_bytes(provenance + b' ')
+            original(payload, signature, fingerprint)
+        with patch.object(signer, 'detach_sign', side_effect=change_evidence):
+            result = self.sign()
+        self.assertEqual((self.output / 'unsigned.json').read_bytes(), receipt)
+        self.assertEqual((self.output / 'provenance.json').read_bytes(), provenance)
+        self.assertEqual(result['unsigned_receipt_sha256'], hashlib.sha256(receipt).hexdigest())
 
     def test_receipt_mismatch_rejected(self):
         self.refused('mismatch', commit='e' * 40)

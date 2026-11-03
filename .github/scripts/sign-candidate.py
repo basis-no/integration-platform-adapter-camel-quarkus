@@ -31,6 +31,7 @@ RECEIPT_KEYS = {'source_commit', 'version', 'qualification', 'payload_sha256', '
 SUFFIXES = ('.pom', '.jar', '-sources.jar', '-javadoc.jar')
 POM_NS = {'p': 'http://maven.apache.org/POM/4.0.0'}
 SIGN_TIMEOUT = 300  # Allows an operator to answer pinentry.
+NOFOLLOW = getattr(os, 'O_NOFOLLOW', 0)
 
 _spec = importlib.util.spec_from_file_location('central_bundle', TOOLS / 'central-bundle.py')
 bundle = importlib.util.module_from_spec(_spec)
@@ -69,59 +70,96 @@ def inside(path, parent):
     return path == parent or parent in path.parents
 
 
-def inventory(directory, names):
-    """Require exactly the retained artifact layout: regular files, no links."""
-    if directory.is_symlink() or not directory.is_dir():
-        raise ValueError('Candidate directory must be a real directory')
-    expected_files = set(EVIDENCE) | {'unsigned/' + name for name in names}
-    found = set()
-    pending = [(directory, '')]
-    while pending:
-        current, prefix = pending.pop()
-        with os.scandir(current) as entries:
-            for entry in entries:
-                relative = prefix + entry.name
-                mode = entry.stat(follow_symlinks=False).st_mode
-                if stat.S_ISLNK(mode):
-                    raise ValueError('Symbolic link rejected in candidate: ' + relative)
-                if stat.S_ISDIR(mode):
-                    if relative != 'unsigned':
-                        raise ValueError('Unexpected candidate directory: ' + relative)
-                    pending.append((Path(entry.path), relative + '/'))
-                elif stat.S_ISREG(mode):
-                    if relative not in expected_files:
-                        raise ValueError('Unexpected candidate file: ' + relative)
-                    found.add(relative)
-                else:
-                    raise ValueError('Special file rejected in candidate: ' + relative)
-    missing = expected_files - found
-    if missing:
-        raise ValueError('Missing candidate files: ' + ', '.join(sorted(missing)))
-
-
-def read_limited(path, limit=bundle.LIMIT):
-    # O_NOFOLLOW: a file swapped for a link after the inventory is still refused.
+def open_directory(name, parent=None):
+    """Open a real directory without following a link; later reads go through this descriptor."""
     try:
-        descriptor = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
+        descriptor = os.open(name, os.O_RDONLY | getattr(os, 'O_DIRECTORY', 0) | NOFOLLOW, dir_fd=parent)
     except OSError as error:
-        raise ValueError('Candidate file is not a readable regular file: ' + path.name) from error
+        raise ValueError('Candidate directory must be a real directory: ' + os.path.basename(str(name))) from error
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ValueError('Candidate directory must be a real directory: ' + os.path.basename(str(name)))
+    return descriptor
+
+
+def listing(descriptor, prefix):
+    """Map each entry of a pinned directory to its own mode; a link is refused, never followed."""
+    found = {}
+    with os.scandir(descriptor) as entries:
+        for entry in entries:
+            mode = entry.stat(follow_symlinks=False).st_mode
+            if stat.S_ISLNK(mode):
+                raise ValueError('Symbolic link rejected in candidate: ' + prefix + entry.name)
+            found[prefix + entry.name] = mode
+    return found
+
+
+def inventory(root, names):
+    """Require exactly the retained artifact layout: regular files, no links.
+
+    Returns a descriptor for the pinned ``unsigned`` directory; the caller closes it.
+    """
+    expected_files = set(EVIDENCE) | {'unsigned/' + name for name in names}
+    found = listing(root, '')
+    unsigned = None
+    try:
+        if stat.S_ISDIR(found.get('unsigned', 0)):
+            unsigned = open_directory('unsigned', root)
+            found.update(listing(unsigned, 'unsigned/'))
+        for relative, mode in found.items():
+            if stat.S_ISDIR(mode):
+                if relative != 'unsigned':
+                    raise ValueError('Unexpected candidate directory: ' + relative)
+            elif not stat.S_ISREG(mode):
+                raise ValueError('Special file rejected in candidate: ' + relative)
+            elif relative not in expected_files:
+                raise ValueError('Unexpected candidate file: ' + relative)
+        missing = expected_files - set(found)
+        if missing:
+            raise ValueError('Missing candidate files: ' + ', '.join(sorted(missing)))
+    except BaseException:
+        if unsigned is not None:
+            os.close(unsigned)
+        raise
+    return unsigned
+
+
+def read_limited(name, parent=None, limit=bundle.LIMIT):
+    # Relative to a pinned directory, without following a link and without blocking on a
+    # FIFO swapped in after the inventory: only a regular file opened here is read.
+    label = os.path.basename(str(name))
+    try:
+        descriptor = os.open(name, os.O_RDONLY | NOFOLLOW | getattr(os, 'O_NONBLOCK', 0), dir_fd=parent)
+    except OSError as error:
+        raise ValueError('Candidate file is not a readable regular file: ' + label) from error
     with os.fdopen(descriptor, 'rb') as handle:
         if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise ValueError('Candidate file is not a regular file: ' + path.name)
+            raise ValueError('Candidate file is not a regular file: ' + label)
         data = handle.read(limit + 1)
     if len(data) > limit:
-        raise ValueError('Candidate file exceeds size limit: ' + path.name)
+        raise ValueError('Candidate file exceeds size limit: ' + label)
     return data
 
 
 def verify_candidate(directory, version, commit, run, pom):
-    """Return verified payload bytes and identity; never sign or execute anything."""
+    """Return verified payload and evidence bytes and identity; never sign or execute anything."""
     check_inputs(version, commit, run)
     group, artifact = trusted_coordinate(pom)
     names = payload_names(artifact, version)
-    directory = Path(directory)
-    inventory(directory, names)
-    receipt_bytes = read_limited(directory / 'unsigned.json', 1024 * 1024)
+    root = open_directory(Path(directory))
+    try:
+        unsigned = inventory(root, names)
+        try:
+            return read_candidate(root, unsigned, names, version, commit, run, group, artifact)
+        finally:
+            os.close(unsigned)
+    finally:
+        os.close(root)
+
+
+def read_candidate(root, unsigned, names, version, commit, run, group, artifact):
+    """Read each file once, through the pinned directories, and check it."""
+    receipt_bytes = read_limited('unsigned.json', root, 1024 * 1024)
     receipt = json.loads(receipt_bytes)
     if not isinstance(receipt, dict) or set(receipt) != RECEIPT_KEYS:
         raise ValueError('Unsigned receipt fields differ from the expected identity record')
@@ -133,13 +171,14 @@ def verify_candidate(directory, version, commit, run, pom):
     if (not isinstance(hashes, dict) or set(hashes) != set(names)
             or not all(isinstance(value, str) and re.fullmatch(r'[a-f0-9]{64}', value) for value in hashes.values())):
         raise ValueError('Unsigned receipt must pin exactly the four expected payload names')
-    provenance = json.loads(read_limited(directory / 'provenance.json', 4 * 1024 * 1024))
+    provenance_bytes = read_limited('provenance.json', root, 4 * 1024 * 1024)
+    provenance = json.loads(provenance_bytes)
     if any(provenance.get(key) != value for key, value in
            (('version', version), ('source_commit', commit), ('group', group), ('artifact', artifact))):
         raise ValueError('Candidate provenance identity mismatch')
     payloads = {}
     for name in names:
-        data = read_limited(directory / 'unsigned' / name)
+        data = read_limited(name, unsigned)
         if not data:
             raise ValueError('Empty payload: ' + name)
         if sha256(data) != hashes[name]:
@@ -155,7 +194,8 @@ def verify_candidate(directory, version, commit, run, pom):
             'version': version, 'source_commit': commit, 'candidate_run': run,
             'unsigned_receipt_sha256': sha256(receipt_bytes),
             'provenance_workflow_head': provenance.get('workflow_head'),
-            'payload_sha256': dict(hashes), 'payloads': payloads}
+            'payload_sha256': dict(hashes), 'payloads': payloads,
+            'evidence': {'unsigned.json': receipt_bytes, 'provenance.json': provenance_bytes}}
 
 
 def sign_command(payload, signature, signer):
@@ -212,7 +252,7 @@ def sign(directory, version, commit, run, signer, output, pom):
         with target.open('xb') as handle:
             handle.write(data)
         detach_sign(target, signed / (name + '.asc'), signer)
-        signature = read_limited(signed / (name + '.asc'), 1024 * 1024)
+        signature = read_limited(signed / (name + '.asc'), limit=1024 * 1024)
         if sha256(target.read_bytes()) != candidate['payload_sha256'][name]:
             raise ValueError('Signed payload changed during signing: ' + name)
         bundle.verify_signature(data, signature, signer)
@@ -230,8 +270,9 @@ def sign(directory, version, commit, run, signer, output, pom):
             or validated['bundle_sha256'] != sha256(archive.read_bytes())
             or any(validated['entries'][f'{root}/{version}/{name}'] != value for name, value in expected.items())):
         raise ValueError('Assembled bundle differs from the verified payloads and signatures')
-    for name in ('unsigned.json', 'provenance.json'):
-        (output / name).write_bytes(read_limited(directory / name, 4 * 1024 * 1024))
+    # Archive the exact receipt and provenance bytes that were verified, not a later reread.
+    for name, data in candidate['evidence'].items():
+        (output / name).write_bytes(data)
     receipt = {'result': 'SIGNED_BUNDLE_VALIDATED_NOT_UPLOADED',
                'coordinate': candidate['coordinate'], 'version': version,
                'source_commit': commit, 'candidate_run': run,
@@ -269,6 +310,7 @@ def main():
             parser.error('verify neither signs nor writes output')
         result = verify_candidate(args.candidate, args.version, args.source_commit, args.candidate_run, args.pom)
         result.pop('payloads')
+        result.pop('evidence')
         result['result'] = 'UNSIGNED_CANDIDATE_MATCHES_RECEIPT'
     else:
         if not args.signer or not args.output:
