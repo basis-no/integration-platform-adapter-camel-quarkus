@@ -12,9 +12,9 @@
   columns of the schema files the adapter ships; the error names what is
   missing and the `alter table … add column if not exists …` statements that
   add it. `bip_message_replay_audit` is checked only when replay is enabled,
-  and `bip_step_outcome` only with the Postgres step store. The Postgres step
-  store without a JDBC DataSource also refuses startup, instead of failing at
-  the first tracked send.
+  and `bip_step_outcome` only with the Postgres step store. The Postgres sink
+  or step store without a JDBC DataSource also refuses startup, instead of
+  failing only after the first message was processed.
   Upgrade: bring a store provisioned for 0.3.x to the shipped schema before
   starting this version; the startup error lists the statements.
 - Kafka activity counters, as in adapter 0.3.6, with admission counting on by

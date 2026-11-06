@@ -80,6 +80,18 @@ class ContractVersionStartupGateTest {
     }
 
     @Test
+    void saysHowToAddAMissingPrimaryKeyColumn() throws Exception {
+        execute("alter table bip_step_outcome drop column idempotency_key");
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("log", "postgres", true, () -> dataSource, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("alter table bip_step_outcome add column if not exists idempotency_key text,"
+                + " then give existing rows unique values and run alter table bip_step_outcome add primary key"
+                + " (idempotency_key)"), thrown.getMessage());
+    }
+
+    @Test
     void refusesThePostgresStepStoreWithoutADataSource() {
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
                 new ContractVersionStartupGate("log", "postgres", true, () -> null, 1, 0L)::verify);
@@ -172,10 +184,13 @@ class ContractVersionStartupGateTest {
     }
 
     @Test
-    void continuesWhenNoDataSourceIsResolvable() {
+    void refusesThePostgresSinkWithoutADataSource() {
         ContractVersionStartupGate gate = new ContractVersionStartupGate("postgres", () -> null);
 
-        assertDoesNotThrow(gate::verify);
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, gate::verify);
+
+        assertTrue(thrown.getMessage().contains("basis.message-store.sink=postgres requires a JDBC DataSource"),
+                thrown.getMessage());
     }
 
     @Test

@@ -122,12 +122,10 @@ public class ContractVersionStartupGate {
         }
         DataSource resolved = dataSource.get();
         if (resolved == null) {
-            if (postgresSteps) {
-                // The step store is created on its first use, so it would fail only at the first send.
-                throw new IllegalStateException(
-                        "basis.message-store.step-outcome-store=postgres requires a JDBC DataSource");
-            }
-            return;
+            // The sink and the step store are created on their first use, so they would fail only
+            // after a message was processed, and the record would be read and processed again.
+            throw new IllegalStateException((postgresSink ? "basis.message-store.sink=postgres"
+                    : "basis.message-store.step-outcome-store=postgres") + " requires a JDBC DataSource");
         }
 
         SQLException lastFailure = null;

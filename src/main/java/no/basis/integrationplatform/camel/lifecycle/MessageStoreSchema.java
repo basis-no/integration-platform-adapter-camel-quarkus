@@ -131,10 +131,16 @@ final class MessageStoreSchema {
      */
     private static String addColumn(String table, String definition) {
         String lower = definition.toLowerCase(Locale.ROOT);
+        String column = definition.split(" ", 2)[0];
+        if (lower.contains(" primary key")) {
+            // A primary key needs a value in every row, and a unique one.
+            return "alter table " + table + " add column if not exists "
+                    + definition.replaceFirst("(?i) primary key", "") + ", then give existing rows unique values"
+                    + " and run alter table " + table + " add primary key (" + column + ")";
+        }
         if (!lower.contains(" not null") || lower.contains(" default ")) {
             return "alter table " + table + " add column if not exists " + definition;
         }
-        String column = definition.split(" ", 2)[0];
         String nullable = definition.replaceFirst("(?i) not null", "");
         return "alter table " + table + " add column if not exists " + nullable
                 + ", then give existing rows a value and run alter table " + table
