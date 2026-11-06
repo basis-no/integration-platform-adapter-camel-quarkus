@@ -57,8 +57,10 @@ were not checked yet
 ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
 An output checkpoint is checked completely before it is restored; see
 [Output-Producing Side Effects](steps-and-idempotency.md#output-producing-side-effects).
-Missing, corrupt, expired, oversized, or unavailable required objects fail
-processing; success is not recorded and a consumed offset is not committed.
+A missing, expired, oversized or unavailable required object, and a corrupt
+one that is detected, fails processing; success is not recorded and a consumed
+offset is not committed. Until #60 is fixed, a corrupt input that the route
+does not read to its end can still complete and be committed.
 
 Object storage failure during required capture also fails the message. The
 adapter never claims replayability without durable bytes.
