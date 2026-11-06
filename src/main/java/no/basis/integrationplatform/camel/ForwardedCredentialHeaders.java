@@ -13,7 +13,6 @@ import org.apache.camel.util.URISupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -46,11 +45,12 @@ public final class ForwardedCredentialHeaders {
     private static final Logger LOG = LoggerFactory.getLogger(ForwardedCredentialHeaders.class);
     private static final Set<String> HTTP_SCHEMES = Set.of("http", "https");
     private static final Set<String> HTTP_COMPONENTS = Set.of("http", "https", "netty-http", "vertx-http");
-    private static final String KAFKA_CONSUMER_PREFIX = "kafka.";
+    // Camel's Kafka headers under both names: an application's own filter may let Camel*
+    // headers through.
+    private static final List<String> KAFKA_PREFIXES = List.of("kafka.", "CamelKafka");
     private static final String HEADER_FILTER_STRATEGY = "headerFilterStrategy";
     private static final Set<String> WARNED = ConcurrentHashMap.newKeySet();
-    private static final Set<CamelContext> INSTALLED = Collections.synchronizedSet(
-            Collections.newSetFromMap(new WeakHashMap<>()));
+    private static final Map<CamelContext, FilterHttpEndpoints> INSTALLED = new WeakHashMap<>();
 
     private ForwardedCredentialHeaders() {
     }
@@ -115,8 +115,24 @@ public final class ForwardedCredentialHeaders {
      * @param context the Camel context
      */
     public static void install(CamelContext context) {
-        if (INSTALLED.add(context)) {
-            context.getCamelContextExtension().registerEndpointCallback(new FilterHttpEndpoints(context));
+        synchronized (INSTALLED) {
+            FilterHttpEndpoints filter = INSTALLED.get(context);
+            if (filter != null && filter.caughtUp) {
+                return;
+            }
+            if (filter == null) {
+                filter = new FilterHttpEndpoints(context);
+                INSTALLED.put(context, filter);
+                // Camel keeps the callback, and runs it on the registered endpoints once.
+                context.getCamelContextExtension().registerEndpointCallback(filter);
+            }
+            // Again, until it completes once: an endpoint that cannot be extended stops the
+            // catch-up, and the endpoints after it must not stay unfiltered when the
+            // application starts again without it.
+            for (Endpoint endpoint : List.copyOf(context.getEndpoints())) {
+                filter.registerEndpoint(endpoint.getEndpointUri(), endpoint);
+            }
+            filter.caughtUp = true;
         }
     }
 
@@ -134,7 +150,14 @@ public final class ForwardedCredentialHeaders {
      * left alone. An HTTP endpoint whose filter cannot be read or replaced fails, so the route
      * does not start without it.
      */
-    private record FilterHttpEndpoints(CamelContext context) implements EndpointStrategy {
+    private static final class FilterHttpEndpoints implements EndpointStrategy {
+        private final CamelContext context;
+        private volatile boolean caughtUp;
+
+        private FilterHttpEndpoints(CamelContext context) {
+            this.context = context;
+        }
+
         @Override
         public Endpoint registerEndpoint(String uri, Endpoint registered) {
             // interceptSendToEndpoint registers a wrapper around the endpoint that sends.
@@ -188,7 +211,7 @@ public final class ForwardedCredentialHeaders {
     private record RecordHeaderFilter(HeaderFilterStrategy filter) implements HeaderFilterStrategy {
         @Override
         public boolean applyFilterToCamelHeaders(String name, Object value, Exchange exchange) {
-            if (name != null && name.regionMatches(true, 0, KAFKA_CONSUMER_PREFIX, 0, KAFKA_CONSUMER_PREFIX.length())) {
+            if (name != null && KAFKA_PREFIXES.stream().anyMatch(prefix -> name.regionMatches(true, 0, prefix, 0, prefix.length()))) {
                 return true;
             }
             if (name != null && PlatformRouteConfiguration.isCredentialHeader(name) && (value instanceof byte[]

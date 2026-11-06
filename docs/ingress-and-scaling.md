@@ -56,9 +56,11 @@ forward a caller's credential deliberately. Nor does any such send forward
 Camel's Kafka consumer headers named `kafka.*`. On camel-kafka versions before
 4.14.8, 4.18.3 and 4.21.0, these include `kafka.HEADERS`, which lists the bytes
 of every record header, credentials included, and the record key, topic,
-partition, offset and timestamp. Later Camel versions name them `CamelKafka*`,
-and Camel's HTTP producers do not send those names. A receiver that needs the
-record key or topic should get it from a header the route sets itself.
+partition, offset and timestamp. Later Camel versions name them `CamelKafka*`;
+Camel's own HTTP header filters drop those names, and the adapter leaves them
+out too, also when an endpoint's own filter would let them through. A receiver
+that needs the record key or topic should get it from a header the route sets
+itself.
 
 The adapter adds these headers to the header filter of every `http`, `https`,
 `netty-http` and `vertx-http` endpoint the context registers, together with the

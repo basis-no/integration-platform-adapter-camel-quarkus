@@ -3,7 +3,7 @@
 ## Unreleased
 
 - No send to an HTTP receiver forwards a consumed Kafka record's credential
-  headers or the Kafka consumer's `kafka.*` headers
+  headers or the Kafka consumer's `kafka.*` and `CamelKafka*` headers
   ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)).
   On camel-kafka 4.0.0 to 4.14.7, 4.15.0 to 4.18.2, and 4.19.0 to 4.20.0
   (Camel's CVE-2026-49098), the consumer sets `kafka.HEADERS` to the record's
@@ -11,10 +11,14 @@
   the bytes of every record header, credentials included. It also sent the
   record key, topic, partition, offset, timestamp and last-record flags.
   Adapter 0.3.6 withheld the record's credential headers only on a tracked
-  `to` or `toD` through Camel's `http` component, so its release note's claim
-  was incomplete. `enrich`, `wireTap`, `recipientList`, `routingSlip` and
-  `ProducerTemplate` sends still forwarded them, and `vertx-http` sent them
-  as text.
+  `to` or `toD` whose endpoint URI starts with `http:` or `https:`, which
+  includes a static `to` through `netty-http`, so its release note's claim was
+  incomplete. `enrich`, `wireTap`, `recipientList`, `routingSlip` and
+  `ProducerTemplate` sends still forwarded them, `vertx-http` sent them as
+  text, and a `toD` through `netty-http` sent them as lists of numbers.
+  Later Camel versions name the consumer's headers `CamelKafka*`, which Camel's
+  own HTTP header filters drop, but an application's filter can let them
+  through; the adapter leaves out both names.
   The adapter now adds both to the header filter of every `http`, `https`,
   `netty-http` and `vertx-http` endpoint the context registers, together with
   the endpoint's own filter, so the producer leaves them out of the request

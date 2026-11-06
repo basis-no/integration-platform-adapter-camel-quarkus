@@ -314,6 +314,74 @@ class HttpSendRecordHeadersTest {
     }
 
     @Test
+    void aPermissiveOwnFilterStillLeavesOutTheRecordHeadersUnderBothKafkaNames() throws Exception {
+        var permissive = new org.apache.camel.spi.HeaderFilterStrategy() {
+            public boolean applyFilterToCamelHeaders(String name, Object value, Exchange exchange) {
+                return false;
+            }
+
+            public boolean applyFilterToExternalHeaders(String name, Object value, Exchange exchange) {
+                return false;
+            }
+        };
+        context.getRegistry().bind("permissive", permissive);
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .to(receiver + "/permissive?headerFilterStrategy=#permissive").id("post-permissive");
+            }
+        });
+        context.start();
+        // As Camel 4.18.3 and later name them.
+        sendRecord(Map.of("CamelKafkaHeaders", recordHeaders, "CamelKafkaKey", "record-key"));
+
+        assertEquals(List.of("/permissive"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+        assertTrue(requests.getFirst().headerNames().stream().noneMatch(name -> name.startsWith("camelkafka")),
+                requests.getFirst().headerNames().toString());
+        assertEquals("route-own", requests.getFirst().routeToken());
+    }
+
+    @Test
+    void anEndpointThatCannotBeExtendedDoesNotLeaveTheOthersUnfiltered() throws Exception {
+        var unfilterable = new org.apache.camel.support.DefaultComponent() {
+            @Override
+            protected org.apache.camel.Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) {
+                return new org.apache.camel.support.DefaultEndpoint(uri, this) {
+                    public org.apache.camel.Producer createProducer() {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    public org.apache.camel.Consumer createConsumer(org.apache.camel.Processor processor) {
+                        throw new UnsupportedOperationException();
+                    }
+                };
+            }
+        };
+        context.addComponent("https", unfilterable);
+        // Registered before the adapter's filter, in this order.
+        var bad = context.getEndpoint("https://receiver.example/orders");
+        context.getEndpoint(receiver + "/cached");
+        context.start();
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> ForwardedCredentialHeaders.install(context));
+
+        context.removeEndpoint(bad);
+        ForwardedCredentialHeaders.install(context);
+        try (var producer = context.createProducerTemplate()) {
+            producer.send(receiver + "/cached", e -> {
+                e.getMessage().setHeader("kafka.HEADERS", recordHeaders);
+                e.getMessage().setHeader("Authorization", CALLER_AUTHORIZATION);
+                e.getMessage().setHeader("X-Route-Header", "route-value");
+                e.getMessage().setBody("{}");
+            });
+        }
+
+        assertEquals(List.of("/cached"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+    }
+
+    @Test
     void anHttpEndpointWhoseFilterCannotBeExtendedDoesNotStart() throws Exception {
         context.addComponent("https", new org.apache.camel.support.DefaultComponent() {
             @Override
