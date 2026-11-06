@@ -78,8 +78,11 @@ place. `sign-upload` and `publish` refuse to run otherwise.
 6. After `PUBLISHED`, run the `release-page.yml` command from the run summary to
    read back the public bytes and create the GitHub Release.
 
-A failed or timed-out portal step is resumed from the retained state artifact on
-the release workstation, never by re-running the job or pushing another tag.
+A failed or timed-out portal step is never re-run and never repeated by pushing
+another tag: a re-run refuses. Recover on the release workstation after checking
+the deployment in the Central portal, from the retained state when it matches the
+portal, otherwise by reconciling in the portal; see
+[release packaging](release-packaging.md#protected-tag-release-in-ci).
 
 ## Final release offline
 
@@ -171,7 +174,7 @@ Before a final tag, finish a `## X.Y.Z — YYYY-MM-DD` section in `CHANGELOG.md`
 Include changes, compatibility, upgrade steps, known limitations and artifact identity.
 The tag must match the source POM version. The manual release-page workflow
 verifies actual public bytes against the reviewed unsigned candidate and the
-offline signing receipt, and validates the section before creating a GitHub Release. Relative documentation links are
+signing receipt (offline or from the protected job), and validates the section before creating a GitHub Release. Relative documentation links are
 pinned to the released tag.
 
 Verify the actual Central artifacts and GitHub Release body before marking the
