@@ -49,10 +49,19 @@ until its exchange completes, unless it is stored as an object.
 ## Object Metadata and Verification
 
 For `s3_object`, Postgres stores the immutable object reference, size, SHA-256,
-content type, and expiry. The adapter validates bucket, prefix, size, checksum,
-and expiry before processing or replay. Missing, corrupt, expired, oversized,
-or unavailable required objects fail processing; success is not recorded and a
-consumed offset is not committed.
+content type, and expiry. Before processing or replay, the adapter validates
+the bucket, prefix, expiry and the object's size. An input's SHA-256 is checked
+when the route reads the payload stream to its end, and a mismatch fails that
+read: a route that acts on only part of an object payload can use bytes that
+were not checked yet
+([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+An output checkpoint is checked completely before it is restored; see
+[Output-Producing Side Effects](steps-and-idempotency.md#output-producing-side-effects).
+A missing, expired, oversized or unavailable required object, and a corrupt
+one that is detected, fails processing; success is not recorded and a consumed
+offset is not committed. While an input is checked only at its end, a corrupt
+input that the route does not read to its end can still complete and be
+committed.
 
 Object storage failure during required capture also fails the message. The
 adapter never claims replayability without durable bytes.
