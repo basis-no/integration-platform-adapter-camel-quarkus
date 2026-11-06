@@ -90,6 +90,10 @@ Start with the [documentation index](docs/index.md).
 - On `main`, a replay request with `redoSteps` is refused unless delivered
   steps are recorded (the `postgres` step store); see
   [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
+- 0.4.0-rc1 gives an application's own `onException` handler the consumed
+  input instead of the message the route left, and logs that a handled message
+  is being parked. 0.3.6 fixed it, and so does 0.4.0; see
+  [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is

@@ -17,6 +17,21 @@
   application's own `StepOutcomeStore` that records nothing should override
   `recordsDeliveredSteps()`. The public `PostgresKafkaMessageReplayService`
   constructor built from explicit dependencies keeps accepting redo.
+- An application's own `onException` handler, in a route, a route builder or a
+  route configuration, sees and sends the message as the route left it, as a
+  `doCatch` does, as in adapter 0.3.6. The adapter prepares a message for the
+  dead letter queue, and logs it at ERROR, only when its dead letter channel
+  sends the message there. Before, `main` still prepared it in the dead letter
+  channel's `onPrepareFailure`, which Camel also runs before such a handler: the
+  handler, and with `continued(true)` the rest of the route, got the consumed
+  input instead of the body the route left, masked credential headers, the
+  input's message id and `x-bip-error` / `x-bip-dlq-at`, and an ERROR said the
+  message was being parked although it completed.
+  Upgrade: an `onException` handler that used the consumed input as its body,
+  or read `x-bip-error`, now gets the body the route left and neither header.
+  Use `useOriginalMessage()` on the `onException` and `${exception.message}`.
+  A Camel event notifier for `ExchangeFailureHandlingEvent` also gets the
+  message as the route left it, also when the adapter parks it.
 - Kafka activity counters, as in adapter 0.3.6, with admission counting on by
   default. Without `basis.traffic.signals`, an application with a Kafka
   boundary exports `integration_traffic_events_total{signal="record_admitted"}`,

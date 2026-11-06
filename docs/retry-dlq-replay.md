@@ -108,6 +108,15 @@ recorded `FAILED`, not committed, and read again. If it marks the failure
 handled, the application has taken it over: the message is recorded
 `COMPLETED` and committed, and nothing is parked.
 
+Such a handler, in a route, a route builder or a route configuration, sees and
+sends the message as the route left it, as a `doCatch` does, also with
+`continued(true)` for the rest of the route: the body the route left, its own
+headers, and neither `x-bip-error` nor `x-bip-dlq-at`. The adapter prepares the
+parked record, and logs the parking at ERROR, only in its dead-letter route,
+when the dead letter channel actually parks the message. To work with the
+consumed input in a handler, use Camel's `useOriginalMessage()` on the
+`onException` and `${exception.message}` for the error.
+
 Camel skips the dead letter channel's preparation and the adapter's
 dead-letter route for an exchange that its route stopped
 (`exchange.setRouteStop(true)`) before it failed. The adapter then records
