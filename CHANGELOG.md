@@ -247,14 +247,16 @@ and iteration its own step key. See the
   upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
   4.21.0 or later, such as Quarkus 3.33.4 (Camel 4.18.4). Do not remove all
   `kafka.*` headers: that also removes `kafka.KEY`, which Camel's Kafka
-  producer uses as the key of the record the adapter parks in the DLQ. The withholding above covers only a tracked
-  `to` or `toD` through Camel's `http` component. Remove the record's
-  credential headers too before every other send to an HTTP receiver: a send
-  through `vertx-http`, which sends them as text, or `netty-http`, also a
-  tracked one, and an `enrich`, `wireTap`, `recipientList`, `routingSlip` or
-  `ProducerTemplate` send. Adapter 0.3.5 and earlier
-  also send them through every tracked send to Camel's `http` component, as
-  byte-array text; remove them there too.
+  producer uses as the key of the record the adapter parks in the DLQ. The
+  withholding above covers only a tracked `to` or `toD` whose endpoint URI
+  starts with `http:` or `https:`, which includes a static `to` through
+  `netty-http`. Remove the record's credential headers too before every other
+  send to an HTTP receiver: a send through `vertx-http`, which sends them as
+  text, a `toD` through `netty-http`, which sends them as lists of numbers,
+  and an `enrich`, `wireTap`, `recipientList`, `routingSlip` or
+  `ProducerTemplate` send. Adapter 0.3.5 and earlier also send them through
+  every tracked send to Camel's `http` component, as byte-array text; remove
+  them there too.
   There is no 0.3.x fix. Adapter 0.4.0, not yet released, will withhold the
   `kafka.*` headers and the record's credential headers on sends to `http`,
   `https`, `netty-http` and `vertx-http` endpoints, with documented limits.
