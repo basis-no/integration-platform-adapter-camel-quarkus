@@ -174,6 +174,39 @@ original record back to its historical offset. Kafka ordering is guaranteed
 only within a partition, and bulk replay needs a separately defined ordering
 policy.
 
+### Replay order
+
+A replay record goes to the end of the integration's replay topic, never back
+to the original offset. Its key is the message's stored correlation id: the
+`x-bip-correlation-id` as the route left it when the outcome was recorded. The
+adapter publishes with the Kafka client's default partitioner, so with the same
+key, the same partition count and a producer of the input that also uses Kafka's
+default partitioner for Java clients, the replay lands on the original record's
+partition. It does not when:
+
+- the input's producer keyed its records by something else than the correlation
+  id, or the route changed `x-bip-correlation-id`;
+- the record had no `x-bip-correlation-id`: the replay record then has no key,
+  and Kafka places it on any partition;
+- the topic's partition count changed, or the producer used another partitioner.
+
+Kafka keeps order only per key within a partition, so even on the same
+partition a replay comes after every newer record that was read in the
+meantime: a newer message for the same entity may already have been processed.
+A replay of several messages has no overall order. When you resend several
+messages:
+
+- resend per key, oldest first, and wait for each to complete before the next;
+- do not resend a failure that a newer message for the same key has already
+  superseded: replaying it would restore stale data;
+- keep `x-bip-correlation-id` equal to the record key when order per entity
+  matters, so that the replay key and the original key agree.
+
+The .NET adapter keys its replay records by the correlation id too, but falls
+back to the original record's key and then to the message id when there is no
+correlation id, and its Kafka client places keys with a different default
+partitioner than Java clients.
+
 ## Redo Steps
 
 Ordinary replay skips side effects already recorded `DELIVERED`. An operator
