@@ -67,7 +67,6 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
                         .useExponentialBackOff()
@@ -77,7 +76,6 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(6)
                         .redeliveryDelay(5000)
                         .useExponentialBackOff()
@@ -87,7 +85,6 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(0));
 
         ingressNormalizationConfiguration();
@@ -156,9 +153,11 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     /**
      * Prepares an exhausted exchange for parking. The message counts as parked only once
      * {@link PlatformDeadLetterRoute} has published it; until then, and when the publish fails,
-     * it is not.
+     * it is not. The parking route runs it on the exchange the dead letter channel sends it,
+     * not onPrepareFailure: Camel runs that also before an application's own onException
+     * handler, which must see and send the message as the route left it.
      */
-    void prepareDlq(Exchange exchange) {
+    static void prepareDlq(Exchange exchange) {
         exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, false);
 
         // The parked record is the consumed input. A route may have set another id for a
@@ -231,7 +230,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 || lower.endsWith("-key") || lower.endsWith("_key");
     }
 
-    private String failureMessage(Exchange exchange) {
+    private static String failureMessage(Exchange exchange) {
         Throwable failure = exchange.getException();
         if (failure == null) {
             failure = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
