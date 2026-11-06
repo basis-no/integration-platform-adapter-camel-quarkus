@@ -35,7 +35,7 @@ its SHA-256:
 - the cached PostgreSQL 17 image the test pins, and a fresh UUID as run id.
 
 ```sh
-./mvnw test -Dtest=RestrictedLoginWriterIT -Dsurefire.failIfNoSpecifiedTests=false \
+./mvnw test -Dtest=RestrictedLoginWriterIT \
   -Dbip.test.run-id="$(uuidgen)" -Dbip.test.recovery-sql-dir="$sql_dir" \
   -Dbip.test.sha256.002_adapter_v1_message_store.sql=… \
   -Dbip.test.sha256.004_contract_metadata.sql=… \
@@ -46,9 +46,13 @@ its SHA-256:
   -Dbip.test.psql="$psql_path" -Dbip.test.psql-sha256=…
 ```
 
-It tests the classes of the build. To qualify an exact packaged adapter JAR
-instead, put it on the test classpath and add `-Dbip.test.adapter-version` and
-`-Dbip.test.adapter-sha256`.
+It tests the classes of the build and records them in
+`target/restricted-login-writer/artifact-provenance.txt`. All six cases use
+inline payloads; object-backed payloads are not covered. To qualify an exact
+packaged adapter JAR instead, run the test from a separate test module that
+depends on the installed artifact, so that only the JAR provides the adapter's
+classes, and add `-Dbip.test.adapter-version` and `-Dbip.test.adapter-sha256`;
+the test refuses classes that do not come from that JAR.
 
 ## Integration Testing Defaults
 

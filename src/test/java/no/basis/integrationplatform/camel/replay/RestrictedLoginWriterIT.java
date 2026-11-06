@@ -267,11 +267,17 @@ class RestrictedLoginWriterIT {
      * With {@code bip.test.adapter-sha256}, the run qualifies an exact packaged adapter JAR.
      * Without it, it tests the classes of this build, and records that it did.
      */
+    /** Kept after a passing run too, unlike the temporary directory. */
+    static Path provenance() throws Exception {
+        Path directory = Files.createDirectories(Path.of("target", "restricted-login-writer"));
+        return directory.resolve("artifact-provenance.txt");
+    }
+
     static void verifyLoadedArtifact() throws Exception {
         assertEquals(PostgresMessageStoreSink.class.getProtectionDomain().getCodeSource().getLocation(), PostgresKafkaMessageReplayService.class.getProtectionDomain().getCodeSource().getLocation());
         assertEquals(PostgresMessageStoreSink.class.getProtectionDomain().getCodeSource().getLocation(), PostgresStepOutcomeStore.class.getProtectionDomain().getCodeSource().getLocation());
         if (System.getProperty("bip.test.adapter-sha256") == null) {
-            Files.writeString(temporary.resolve("artifact-provenance.txt"), "classes under test="
+            Files.writeString(provenance(), "classes under test="
                     + PostgresMessageStoreSink.class.getProtectionDomain().getCodeSource().getLocation() + "\n");
             return;
         }
@@ -286,7 +292,7 @@ class RestrictedLoginWriterIT {
             try (var input = archive.getInputStream(Objects.requireNonNull(archive.getJarEntry("META-INF/maven/no.basis.integrationplatform/integration-platform-adapter-camel-quarkus/pom.properties")))) { properties.load(input); }
             assertEquals(version, properties.getProperty("version"));
         }
-        Files.writeString(temporary.resolve("artifact-provenance.txt"), "version=" + version + "\nsha256=" + sha(jar) + "\n");
+        Files.writeString(provenance(), "version=" + version + "\nsha256=" + sha(jar) + "\n");
     }
 
     static void installExactGrantScript(Path executable, Path script) throws Exception {
