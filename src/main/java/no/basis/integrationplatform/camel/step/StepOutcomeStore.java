@@ -13,6 +13,16 @@ import java.util.Optional;
  */
 public interface StepOutcomeStore {
     /**
+     * Reports whether delivered steps are recorded, so that a replay skips them and a redo
+     * request can choose which to run again.
+     *
+     * @return {@code false} for a store that records nothing, where every step runs on every replay
+     */
+    default boolean recordsDeliveredSteps() {
+        return true;
+    }
+
+    /**
      * Reports checkpoint support.
      *
      * @return whether the store can persist and restore output checkpoints
