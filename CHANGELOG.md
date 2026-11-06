@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Kafka activity counters, as in adapter 0.3.6, with admission counting on by
+  default. Without `basis.traffic.signals`, an application with a Kafka
+  boundary exports `integration_traffic_events_total{signal="record_admitted"}`,
+  its support gauge and the process start time through the application's
+  Micrometer registry; an application without a Kafka boundary, or without a
+  registry, exports nothing. Publication counting (`record_published`) stays
+  opt-in, with an explicit topic list and validated producer settings. An
+  explicit `basis.traffic.signals` list selects exactly its signals, as in
+  0.3.6, and `none` turns every signal off. See
+  [Kafka activity metrics](docs/activity-metrics.md).
+  Upgrade from 0.3.6: an application that did not set `basis.traffic.signals`
+  now exports the admission counter; set `basis.traffic.signals=none` to keep
+  0.3.6's default. An explicit empty value no longer turns counting off.
 - A replay sends a message again only to the integration that recorded it,
   through the Kafka input route that recorded it. Before, `main` republished
   any message in the store to the replay topic of the integration named in its

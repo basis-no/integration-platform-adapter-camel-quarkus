@@ -143,6 +143,40 @@ class MessageStoreRoutePolicyFactoryTest {
         }
     }
 
+    @Test
+    void countsKafkaAdmissionByDefaultOnlyWithAKafkaBoundary() {
+        var withoutKafka = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        MessageStoreRoutePolicyFactory http = factory("receive-order", false, "record-failed");
+        http.trafficSignals = defaultSignals(withoutKafka);
+        http.createRoutePolicy(null, "receive-order", route("platform-http:/orders"));
+        assertTrue(withoutKafka.getMeters().isEmpty(), "An application without a Kafka boundary exports no activity metrics");
+
+        var withKafka = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        MessageStoreRoutePolicyFactory kafka = factory("auto", true, "dlq");
+        kafka.trafficSignals = defaultSignals(withKafka);
+        kafka.createRoutePolicy(null, "orders", route("kafka:bip.orders.in"));
+        kafka.createRoutePolicy(null, "transform", route("direct:transform"));
+        assertEquals(1.0, withKafka.get("integration_traffic_signal_supported")
+                .tag("signal", "record_admitted").gauge().value());
+        assertEquals(0.0, withKafka.get("integration_traffic_signal_supported")
+                .tag("signal", "record_published").gauge().value());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static no.basis.integrationplatform.camel.traffic.TrafficSignals defaultSignals(
+            io.micrometer.core.instrument.MeterRegistry registry) {
+        var registries = (jakarta.enterprise.inject.Instance<io.micrometer.core.instrument.MeterRegistry>)
+                java.lang.reflect.Proxy.newProxyInstance(MessageStoreRoutePolicyFactoryTest.class.getClassLoader(),
+                        new Class<?>[]{jakarta.enterprise.inject.Instance.class},
+                        (proxy, method, args) -> switch (method.getName()) {
+                            case "isResolvable" -> true;
+                            case "get" -> registry;
+                            default -> throw new UnsupportedOperationException(method.getName());
+                        });
+        return new no.basis.integrationplatform.camel.traffic.TrafficSignals(
+                registries, java.util.Optional.empty(), java.util.Optional.empty());
+    }
+
     private MessageStoreRoutePolicyFactory factory(String boundaryRoutes, boolean replayEnabled, String failureMode) {
         MessageStoreSink sink = result -> {
         };
