@@ -12,6 +12,7 @@ import no.basis.integrationplatform.camel.ingress.IngressNormalizationConfig;
 import no.basis.integrationplatform.camel.ingress.IngressReplicaSafety;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
+import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.CamelContext;
 import org.apache.camel.NamedNode;
 import org.apache.camel.spi.RoutePolicy;
@@ -37,6 +38,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
     private final IngressNormalizationConfig ingressNormalizationConfig;
     private final IngressReplicaSafety ingressReplicaSafety;
     private final Set<String> seenNormalizationRoutes = ConcurrentHashMap.newKeySet();
+    @Inject TrafficSignals trafficSignals;
 
     /**
      * Creates the CDI policy factory from adapter configuration and runtime services.
@@ -162,8 +164,13 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         }
         MessageBoundaryKind boundaryKind = boundarySelector.kind(route);
         validateBoundary(routeId, boundaryKind);
-        return new MessageStoreRoutePolicy(
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
                 sink, integrationName, payloadPolicy, boundaryKind, kafkaCommitEnabled, objectStore);
+        if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
+            policy.setTrafficSignals(trafficSignals);
+            trafficSignals.observeKafkaBoundary();
+        }
+        return policy;
     }
 
     void validateConfiguredNormalizationRoutes(@Observes StartupEvent ignored) {

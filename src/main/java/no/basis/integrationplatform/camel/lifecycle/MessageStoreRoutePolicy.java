@@ -13,6 +13,7 @@ import no.basis.integrationplatform.camel.payload.PayloadStorageException;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
+import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.Exchange;
 import org.apache.camel.ExchangePropertyKey;
 import org.apache.camel.Route;
@@ -50,6 +51,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private final MessageBoundaryKind boundaryKind;
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
+    private TrafficSignals trafficSignals;
 
     /**
      * Creates a Kafka policy using the default payload policy.
@@ -105,6 +107,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         this.objectStore = objectStore;
     }
 
+    void setTrafficSignals(TrafficSignals trafficSignals) {
+        this.trafficSignals = trafficSignals;
+    }
+
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
         normalizeKafkaEnvelopeHeaders(exchange);
@@ -121,6 +127,9 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             StepOutcomeFailure.begin(exchange);
         }
         capturePayloadMetadata(exchange);
+        if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
+            trafficSignals.recordAdmitted(exchange);
+        }
     }
 
     @Override
