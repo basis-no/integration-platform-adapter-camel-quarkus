@@ -80,7 +80,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             Processor nextTarget) {
 
         httpTimeoutOptions.check(context, definition, target);
-        HttpKafkaConsumerHeaders.install(context);
+        ForwardedCredentialHeaders.install(context);
         if (inDeadLetterRoute(definition)) {
             // Parking is the adapter's own work, not a step that a replay may skip.
             return target;

@@ -1,6 +1,8 @@
 package no.basis.integrationplatform.camel.step;
 
 import com.sun.net.httpserver.HttpServer;
+import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
+import no.basis.integrationplatform.camel.LogCapture;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.impl.DefaultCamelContext;
@@ -21,19 +23,20 @@ import java.util.TreeSet;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
- * Camel 4.18.0's Kafka consumer sets {@code kafka.HEADERS}, {@code kafka.TOPIC} and the other
- * {@code kafka.*} headers; HTTP producers sent them, and {@code kafka.HEADERS} listed every
- * record header's bytes. They are withheld at the HTTP endpoint the send resolved to, so a
- * {@code toD} URI and a route behind an internal endpoint still read them, and every EIP that
- * sends to HTTP is covered.
+ * A consumed record's credential headers and Camel 4.18.0's {@code kafka.*} consumer headers
+ * are withheld at the HTTP endpoint a send resolved to, through every EIP: a {@code toD} URI
+ * and a route behind an internal endpoint still read them, and a credential header the route
+ * sets itself is sent as before.
  */
-class HttpKafkaConsumerHeadersTest {
+class HttpSendRecordHeadersTest {
     private static final byte[] CALLER_AUTHORIZATION = "Bearer synthetic-caller".getBytes(StandardCharsets.UTF_8);
 
     private final List<Request> requests = Collections.synchronizedList(new ArrayList<>());
@@ -45,7 +48,7 @@ class HttpKafkaConsumerHeadersTest {
     private DefaultCamelContext context;
     private String receiver;
 
-    private record Request(String path, Set<String> headerNames, String routeHeader) {
+    private record Request(String path, Set<String> headerNames, String routeHeader, String routeToken) {
     }
 
     @BeforeEach
@@ -56,7 +59,8 @@ class HttpKafkaConsumerHeadersTest {
             x.getRequestBody().readAllBytes();
             var names = new TreeSet<String>();
             x.getRequestHeaders().keySet().forEach(name -> names.add(name.toLowerCase(Locale.ROOT)));
-            requests.add(new Request(x.getRequestURI().getPath(), names, x.getRequestHeaders().getFirst("X-Route-Header")));
+            requests.add(new Request(x.getRequestURI().getPath(), names, x.getRequestHeaders().getFirst("X-Route-Header"),
+                    x.getRequestHeaders().getFirst("X-Route-Token")));
             x.sendResponseHeaders(failures.getAndDecrement() > 0 ? 500 : 200, -1);
             x.close();
             received.countDown();
@@ -92,7 +96,7 @@ class HttpKafkaConsumerHeadersTest {
 
         assertEquals(List.of("/static", "/orders-in"), requests.stream().map(Request::path).toList(),
                 "A toD URI that reads a kafka.* header sends where it did before");
-        assertNoConsumerHeaders();
+        assertNoRecordHeaders();
         assertEquals(3, seen.size(), seen.toString());
         assertSame(recordHeaders, seen.get(0), "The route still sees the headers after an HTTP send");
         assertEquals(List.of("orders-in", "orders-in"), seen.subList(1, 3),
@@ -100,10 +104,11 @@ class HttpKafkaConsumerHeadersTest {
     }
 
     @Test
-    void everyEipThatSendsToHttpWithholdsThem() throws Exception {
-        received = new CountDownLatch(6);
+    void everyEipThatSendsToHttpWithholdsThemAndSendsTheRoutesOwnCredential() throws Exception {
+        received = new CountDownLatch(7);
         context.addRoutes(new RouteBuilder() {
             public void configure() {
+                restConfiguration().producerComponent("http").host(receiver.substring("http://".length()));
                 from("direct:record").routeId("record")
                         .enrich(receiver + "/enrich")
                         .wireTap(receiver + "/tap")
@@ -111,17 +116,54 @@ class HttpKafkaConsumerHeadersTest {
                         .routingSlip(constant(receiver + "/slip"))
                         .multicast().to(receiver + "/multicast").id("post-multicast").end()
                         .process(e -> e.getContext().createProducerTemplate().send(receiver + "/template", e))
-                        .process(e -> seen.add(e.getMessage().getHeader("kafka.HEADERS")));
+                        .to("rest:post:rest").id("post-rest")
+                        .process(e -> {
+                            seen.add(e.getMessage().getHeader("kafka.HEADERS"));
+                            seen.add(e.getMessage().getHeader("Authorization"));
+                        });
+            }
+        });
+        context.start();
+        try (var logs = LogCapture.of(ForwardedCredentialHeaders.class)) {
+            sendRecord(Map.of());
+
+            assertTrue(received.await(10, TimeUnit.SECONDS), "Received: " + requests);
+            assertTrue(logs.at(Level.WARNING).stream().noneMatch(r -> LogCapture.text(r).contains("synthetic")),
+                    "The value is never logged");
+            assertTrue(logs.at(Level.WARNING).stream().anyMatch(r -> LogCapture.text(r).contains("a send in route record")));
+        }
+        assertEquals(Set.of("/enrich", "/tap", "/list", "/slip", "/multicast", "/template", "/rest"),
+                Set.copyOf(requests.stream().map(Request::path).toList()));
+        assertNoRecordHeaders();
+        for (Request request : requests) {
+            assertEquals("route-own", request.routeToken(), request.path() + ": a credential the route sets is sent");
+        }
+        assertSame(recordHeaders, seen.get(0), "The route still sees the headers after the sends");
+        assertArrayEquals(CALLER_AUTHORIZATION, (byte[]) seen.get(1));
+    }
+
+    @Test
+    void aRouteForwardsTheCallersCredentialDeliberatelyBySettingItAsText() throws Exception {
+        List<String> authorization = Collections.synchronizedList(new ArrayList<>());
+        server.removeContext("/");
+        server.createContext("/", x -> {
+            x.getRequestBody().readAllBytes();
+            authorization.add(x.getRequestHeaders().getFirst("Authorization"));
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .enrich(receiver + "/withheld")
+                        .setHeader("Authorization", header("Authorization").convertToString())
+                        .enrich(receiver + "/forwarded");
             }
         });
         context.start();
         sendRecord(Map.of());
 
-        assertTrue(received.await(10, TimeUnit.SECONDS), "Received: " + requests);
-        assertEquals(Set.of("/enrich", "/tap", "/list", "/slip", "/multicast", "/template"),
-                Set.copyOf(requests.stream().map(Request::path).toList()));
-        assertNoConsumerHeaders();
-        assertSame(recordHeaders, seen.getFirst(), "The route still sees the headers after the sends");
+        assertEquals(java.util.Arrays.asList(null, "Bearer synthetic-caller"), authorization);
     }
 
     @Test
@@ -141,14 +183,15 @@ class HttpKafkaConsumerHeadersTest {
         assertEquals(null, result.getException());
         assertEquals(List.of("/orders-in", "/orders-in"), requests.stream().map(Request::path).toList(),
                 "The redelivery sends where the first try did");
-        assertNoConsumerHeaders();
+        assertNoRecordHeaders();
         assertSame(recordHeaders, seen.getFirst());
     }
 
-    private void assertNoConsumerHeaders() {
+    private void assertNoRecordHeaders() {
         for (Request request : requests) {
             assertTrue(request.headerNames().stream().noneMatch(name -> name.startsWith("kafka.")),
                     request.path() + " got " + request.headerNames());
+            assertTrue(!request.headerNames().contains("authorization"), request.path() + " got the record's credential");
             assertEquals("route-value", request.routeHeader(), "Other headers are sent as before");
         }
     }
@@ -161,7 +204,9 @@ class HttpKafkaConsumerHeadersTest {
                 e.getMessage().setHeader("kafka.TOPIC", "orders-in");
                 e.getMessage().setHeader("kafka.KEY", "record-key");
                 e.getMessage().setHeader("kafka.OFFSET", 42L);
+                e.getMessage().setHeader("Authorization", CALLER_AUTHORIZATION);
                 e.getMessage().setHeader("X-Route-Header", "route-value");
+                e.getMessage().setHeader("X-Route-Token", "route-own");
                 e.getMessage().getHeaders().putAll(extra);
                 e.getMessage().setBody("{}");
             });

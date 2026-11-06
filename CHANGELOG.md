@@ -2,31 +2,37 @@
 
 ## Unreleased
 
-- A send to an `http`, `https`, `netty-http` or `vertx-http` endpoint no
-  longer forwards the Kafka consumer's `kafka.*` headers
+- No send to an HTTP receiver forwards a consumed Kafka record's credential
+  headers or the Kafka consumer's `kafka.*` headers
   ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)).
   On camel-kafka 4.0.0 to 4.14.7, 4.15.0 to 4.18.2, and 4.19.0 to 4.20.0
   (Camel's CVE-2026-49098), the consumer sets `kafka.HEADERS` to the record's
   whole header set. The HTTP producer sent it as a header whose value lists
   the bytes of every record header, credentials included. It also sent the
   record key, topic, partition, offset, timestamp and last-record flags.
-  The adapter withholds these headers while Camel sends to such an endpoint,
-  after Camel has chosen the endpoint. It restores them when the send
-  completes, also after a failure. The route, a `toD` URI, and routes it calls
-  through internal endpoints such as `direct:` therefore still read them. This
-  covers `to`, `toD`, `enrich`, `wireTap`, `recipientList`, `routingSlip`,
-  `multicast` and a `ProducerTemplate`. It does not cover other components,
-  such as `rest:`, nor a `ProducerTemplate` whose event notifier is disabled;
-  remove the headers before such a send. Later Camel versions
-  name these headers `CamelKafka*`, and Camel's HTTP producers do not send
-  those names. Adapter 0.3.6 withheld only the credential headers themselves,
-  and only for Camel's `http` component, so its release note's claim was
-  incomplete. That credential withholding still covers a tracked `to` or
-  `toD` only: remove the record's credential headers before an `enrich`,
-  `wireTap`, `recipientList`, `routingSlip` or `ProducerTemplate` send to an
-  HTTP receiver.
-  Upgrade: a receiver that read `kafka.*` request headers must get the values
-  from headers the route sets itself.
+  Adapter 0.3.6 withheld the record's credential headers only on a tracked
+  `to` or `toD` through Camel's `http` component, so its release note's claim
+  was incomplete. `enrich`, `wireTap`, `recipientList`, `routingSlip`,
+  `multicast` and `ProducerTemplate` sends still forwarded them, and
+  `vertx-http` sent them as text.
+  The adapter now withholds both while Camel sends to an `http`, `https`,
+  `netty-http`, `vertx-http` or `rest` endpoint, after Camel has chosen the
+  endpoint, through any of these EIPs or a `ProducerTemplate`. It restores
+  them when the send completes, also after a failure. The route, a `toD` URI,
+  and routes it calls through internal endpoints such as `direct:` therefore
+  still read them. A credential header is withheld only while it still holds
+  the record's bytes; one the route sets itself, as text, is sent as before.
+  Each withheld credential header logs a warning once per step or route and
+  header name, without the value. The withholding runs on Camel's exchange
+  sending events, so a `ProducerTemplate` whose event notifier is disabled
+  sends without it; remove the headers before such a send.
+  Upgrade: a receiver that got a caller's credential forwarded from the
+  record, for example through `vertx-http` or an `enrich`, no longer gets it
+  and may answer 401. To forward a credential deliberately, set the header in
+  the route as text, for example
+  `setHeader("Authorization", header("Authorization").convertToString())`. A
+  receiver that read `kafka.*` request headers must get the values from
+  headers the route sets itself.
 - A Kafka input is committed only after it completed or the DLQ endpoint
   accepted its record. Before, a failed DLQ publish was recorded as `DLQ` and
   the offset committed, so the message was acknowledged without being parked;
@@ -132,8 +138,8 @@
   name, without the value. A `toD` that chooses its component only when it
   sends, such as `${header.receiverUrl}` or `language:header:receiverUrl`, is
   treated as an HTTP send. Same rule as adapter 0.3.6. In 0.3.6 this did not
-  cover Camel's `kafka.HEADERS`, which lists the same bytes; see the first
-  entry above.
+  cover Camel's `kafka.HEADERS`, which lists the same bytes, other EIPs or
+  other HTTP components; see the first entry above.
 - When it creates a route, the adapter logs a warning for each HTTP timeout
   option that Camel 4's `http` component accepts without applying it, and names
   the replacement. The call otherwise waits for the component's timeout, three

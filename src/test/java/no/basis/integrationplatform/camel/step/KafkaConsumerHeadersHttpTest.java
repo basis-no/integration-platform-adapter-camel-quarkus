@@ -44,8 +44,8 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the route's headers and the record's own non-credential headers, but none of the Kafka
  * consumer's metadata headers: on Camel versions that name them {@code kafka.*}, such as
  * 4.18.0, HTTP producers sent them, and {@code kafka.HEADERS} listed every record header's
- * bytes, credentials included. Camel's http component also withholds the record's credential
- * headers; {@code vertx-http} sends them as text, which a route can rely on.
+ * bytes, credentials included. The record's credential headers are withheld too, which
+ * {@code vertx-http} sent as text; a credential header the route sets itself is sent.
  */
 @Testcontainers
 class KafkaConsumerHeadersHttpTest {
@@ -92,6 +92,7 @@ class KafkaConsumerHeadersHttpTest {
                             + "&autoOffsetReset=earliest&allowManualCommit=true&autoCommitEnable=false&pollTimeoutMs=100")
                             .routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
                             .setHeader("X-Route-Header", constant("route-value"))
+                            .setHeader("X-Route-Token", constant("route-own"))
                             .process(e -> before.complete(Map.copyOf(e.getMessage().getHeaders())))
                             .to(url).id("post-order")
                             .process(e -> after.complete(Map.copyOf(e.getMessage().getHeaders())));
@@ -115,10 +116,9 @@ class KafkaConsumerHeadersHttpTest {
                     "No Kafka consumer metadata reaches the receiver: " + names);
             String values = headers.values().stream().flatMap(List::stream).collect(Collectors.joining("\n"));
             assertFalse(values.contains(byteList(CREDENTIAL)), "The credential is not sent as its byte list");
-            if (component.isEmpty()) {
-                assertFalse(values.contains(CREDENTIAL), "The credential is not sent as text");
-                assertFalse(names.contains("authorization"), "The record's credential header is not sent");
-            }
+            assertFalse(values.contains(CREDENTIAL), "The credential is not sent as text");
+            assertFalse(names.contains("authorization"), "The record's credential header is not sent");
+            assertEquals(List.of("route-own"), headers.get("X-route-token"), "A credential the route sets is sent");
 
             assertEquals(List.of("route-value"), headers.get("X-route-header"), "The route's own headers are sent as before");
             assertEquals(List.of("message-1"), headers.get("X-bip-message-id"));

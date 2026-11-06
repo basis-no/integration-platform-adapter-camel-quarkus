@@ -45,42 +45,40 @@ published. Nor is a send through a `toD` with `cacheSize=-1` to an endpoint
 that is not yet registered: Camel creates such an endpoint for the one send
 without registering it, so the adapter cannot find it afterwards. An endpoint
 that is already registered is reused and checked. At most 100 header names are
-reported per route; one more line then says that further names are not logged. A tracked
-send through Camel's `http` component does not forward credential-like
-headers that still hold a consumed record's bytes, and logs a warning that names
-the header, never its value. A `toD` that chooses its component only when it
-sends, such as `${header.receiverUrl}`, is treated as an HTTP send.
+reported per route; one more line then says that further names are not logged.
 
-No send to an `http`, `https`, `netty-http` or `vertx-http` endpoint forwards
+No send to an HTTP receiver forwards a consumed record's credential-like
+headers, by the same name rule, while they still hold the record's bytes. A
+credential header the route sets itself is text and is sent as before; set it
+as text, for example with
+`setHeader("Authorization", header("Authorization").convertToString())`, to
+forward a caller's credential deliberately. Nor does any such send forward
 Camel's Kafka consumer headers named `kafka.*`. On camel-kafka versions before
-4.14.8, 4.18.3 and 4.21.0, these headers include `kafka.HEADERS`, which lists
-the bytes of every record header, credentials included. They also include the
-record key, topic, partition, offset and timestamp.
-
-The adapter withholds them while Camel sends to such an endpoint, after Camel
-has chosen the endpoint. It restores them when the send completes, also after
-a failure. A `toD` URI can therefore still use them, and so can the route and
-the routes it calls through internal endpoints such as `direct:`. This covers
-`to`, `toD`, `enrich`, `wireTap`, `recipientList`, `routingSlip`, `multicast`
-and a `ProducerTemplate`. It does not cover other components that call an HTTP
-receiver, such as `rest:`; remove the headers before such a send with
-`removeHeaders("kafka.*")`. The withholding runs on Camel's exchange sending
-and sent events, so a `ProducerTemplate` whose event notifier is disabled
-(`setEventNotifierEnabled(false)`) sends without it; remove the headers before
-such a send too. Later Camel versions name these headers `CamelKafka*`, and
-Camel's HTTP producers do not send those names. A receiver that needs the
+4.14.8, 4.18.3 and 4.21.0, these include `kafka.HEADERS`, which lists the bytes
+of every record header, credentials included, and the record key, topic,
+partition, offset and timestamp. Later Camel versions name them `CamelKafka*`,
+and Camel's HTTP producers do not send those names. A receiver that needs the
 record key or topic should get it from a header the route sets itself.
 
-The credential withholding above applies to a tracked `to` or `toD` only. An
-`enrich`, `wireTap`, `recipientList`, `routingSlip` or `ProducerTemplate` send
-through Camel's `http` component still sends the record's credential headers
-as byte-array text. Remove them before such a send, for example with
-`removeHeaders("Authorization")`, or keep only the headers the receiver needs.
+The adapter withholds these headers while Camel sends to an `http`, `https`,
+`netty-http`, `vertx-http` or `rest` endpoint, after Camel has chosen the
+endpoint, and restores them when the send completes, also after a failure. A
+`toD` URI can therefore still use them, and so can the route and the routes it
+calls through internal endpoints such as `direct:`. This covers `to`, `toD`,
+`enrich`, `wireTap`, `recipientList`, `routingSlip`, `multicast` and a
+`ProducerTemplate`. Each withheld credential header logs a warning once per
+step or route and header name, never its value. A tracked `to` or `toD`
+through Camel's `http` component, and a `toD` that chooses its component only
+when it sends, such as `${header.receiverUrl}`, also withhold the credential
+headers around the send itself.
 
-`vertx-http` sends a record's credential headers as text. Remove them before
-the send unless the receiver should get them. Other record headers still reach
-the receiver, as byte-array text through Camel's `http` component, unless they
-are `x-bip-*` headers.
+The withholding at the endpoint runs on Camel's exchange sending and sent
+events, so a `ProducerTemplate` whose event notifier is disabled
+(`setEventNotifierEnabled(false)`) sends without it. Other components that call
+an HTTP receiver are not covered either. Remove the headers before such a send,
+with `removeHeaders("kafka.*")` and, for example, `removeHeaders("Authorization")`.
+Other record headers still reach the receiver, as byte-array text through
+Camel's `http` component, unless they are `x-bip-*` headers.
 
 ## Non-Kafka Normalization
 
