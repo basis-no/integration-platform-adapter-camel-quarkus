@@ -2,6 +2,50 @@
 
 ## Unreleased
 
+- No send to an HTTP receiver forwards a consumed Kafka record's credential
+  headers or the Kafka consumer's `kafka.*` and `CamelKafka*` headers
+  ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)).
+  On camel-kafka 4.0.0 to 4.14.7, 4.15.0 to 4.18.2, and 4.19.0 to 4.20.0
+  (Camel's CVE-2026-49098), the consumer sets `kafka.HEADERS` to the record's
+  whole header set. The HTTP producer sent it as a header whose value lists
+  the bytes of every record header, credentials included. It also sent the
+  record key, topic, partition, offset, timestamp and last-record flags.
+  Adapter 0.3.6 withheld the record's credential headers only on a tracked
+  `to` or `toD` whose endpoint URI starts with `http:` or `https:`, which
+  includes a static `to` through `netty-http`, so its release note's claim was
+  incomplete. `enrich`, `wireTap`, `recipientList`, `routingSlip` and
+  `ProducerTemplate` sends still forwarded them, `vertx-http` sent them as
+  text, and a `toD` through `netty-http` sent them as lists of numbers.
+  Later Camel versions name the consumer's headers `CamelKafka*`, which Camel's
+  own HTTP header filters drop, but an application's filter can let them
+  through; the adapter leaves out both names.
+  The adapter now adds both to the header filter of every `http`, `https`,
+  `netty-http` and `vertx-http` endpoint the context registers, together with
+  the endpoint's own filter, so the producer leaves them out of the request
+  whichever EIP sends: `to`, `toD`, `enrich`, `wireTap`, `recipientList`,
+  `routingSlip`, `multicast` and a `ProducerTemplate`. The exchange keeps
+  the headers, so the route, a `toD` URI, a `rest:` placeholder, a later
+  routing slip step, a route behind an internal endpoint such as `direct:`,
+  and the record the adapter parks in the DLQ still see them. A credential
+  header is left out only while it still holds the record's bytes; one the
+  route sets itself, as text, is sent as before. Each credential header left
+  out logs a warning once per step or route and header name, without the
+  value. An HTTP endpoint whose header filter the adapter cannot extend fails
+  when it is created, so its route does not start. Not covered: an endpoint
+  that Camel creates for a single send without registering it, such as one
+  from a `toD` with `cacheSize=-1`; an endpoint whose header filter is replaced
+  after the endpoint was registered; and a `rest:` send, whose producer
+  replaces the filter of the HTTP endpoint it sends through
+  ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53)).
+  Remove `kafka.HEADERS`, `CamelKafkaHeaders` and the record's credential
+  headers before such a send.
+  Upgrade: a receiver that got a caller's credential forwarded from the
+  record, for example through `vertx-http` or an `enrich`, no longer gets it
+  and may answer 401. To forward a credential deliberately, set the header in
+  the route as text, for example
+  `setHeader("Authorization", header("Authorization").convertToString())`. A
+  receiver that read `kafka.*` request headers must get the values from
+  headers the route sets itself.
 - Build and test against Quarkus 3.33.4 (Camel 4.18.4, Camel Quarkus 3.33.3)
   instead of Quarkus 3.32.2 (Camel 4.18.0). Camel 4.18.3 and later include
   Camel's fix for
@@ -135,7 +179,9 @@
   a consumed Kafka record's bytes; it logs a warning once per step and header
   name, without the value. A `toD` that chooses its component only when it
   sends, such as `${header.receiverUrl}` or `language:header:receiverUrl`, is
-  treated as an HTTP send. Same rule as adapter 0.3.6.
+  treated as an HTTP send. Same rule as adapter 0.3.6. In 0.3.6 this did not
+  cover Camel's `kafka.HEADERS`, which lists the same bytes, other EIPs or
+  other HTTP components; see the first entry above.
 - When it creates a route, the adapter logs a warning for each HTTP timeout
   option that Camel 4's `http` component accepts without applying it, and names
   the replacement. The call otherwise waits for the component's timeout, three

@@ -1,0 +1,488 @@
+package no.basis.integrationplatform.camel.step;
+
+import com.sun.net.httpserver.HttpServer;
+import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
+import no.basis.integrationplatform.camel.LogCapture;
+import org.apache.camel.Exchange;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.impl.DefaultCamelContext;
+import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
+
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeSet;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.logging.Level;
+
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
+/**
+ * A consumed record's credential headers and Camel 4.18.0's {@code kafka.*} consumer headers
+ * are withheld at the HTTP endpoint a send resolved to, through every EIP: a {@code toD} URI
+ * and a route behind an internal endpoint still read them, and a credential header the route
+ * sets itself is sent as before.
+ */
+class HttpSendRecordHeadersTest {
+    private static final byte[] CALLER_AUTHORIZATION = "Bearer synthetic-caller".getBytes(StandardCharsets.UTF_8);
+
+    private final List<Request> requests = Collections.synchronizedList(new ArrayList<>());
+    private final List<Object> seen = Collections.synchronizedList(new ArrayList<>());
+    private final AtomicInteger failures = new AtomicInteger();
+    private final RecordHeaders recordHeaders = new RecordHeaders();
+    private volatile CountDownLatch received = new CountDownLatch(0);
+    private HttpServer server;
+    private DefaultCamelContext context;
+    private String receiver;
+
+    private record Request(String path, Set<String> headerNames, String routeHeader, String routeToken) {
+    }
+
+    @BeforeEach
+    void start() throws Exception {
+        recordHeaders.add("Authorization", CALLER_AUTHORIZATION);
+        server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", x -> {
+            x.getRequestBody().readAllBytes();
+            var names = new TreeSet<String>();
+            x.getRequestHeaders().keySet().forEach(name -> names.add(name.toLowerCase(Locale.ROOT)));
+            requests.add(new Request(x.getRequestURI().getPath(), names, x.getRequestHeaders().getFirst("X-Route-Header"),
+                    x.getRequestHeaders().getFirst("X-Route-Token")));
+            x.sendResponseHeaders(failures.getAndDecrement() > 0 ? 500 : 200, -1);
+            x.close();
+            received.countDown();
+        });
+        server.start();
+        receiver = "http://127.0.0.1:" + server.getAddress().getPort();
+        context = new DefaultCamelContext();
+        context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(new NoStepTracker()));
+    }
+
+    @AfterEach
+    void stop() throws Exception {
+        context.close();
+        server.stop(0);
+    }
+
+    @Test
+    void aToDUriAndARouteBehindAnInternalEndpointStillReadTheHeaders() throws Exception {
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .to(receiver + "/static").id("post-static")
+                        .process(e -> seen.add(e.getMessage().getHeader("kafka.HEADERS")))
+                        .toD(receiver + "/${headerAs(kafka.TOPIC,java.lang.String)}").id("post-topic")
+                        .toD("${header.targetUri}").id("send-target")
+                        .to("direct:sub");
+                from("direct:sub").routeId("sub")
+                        .process(e -> seen.add(e.getMessage().getHeader("kafka.TOPIC")));
+            }
+        });
+        context.start();
+        sendRecord(Map.of("targetUri", "direct:sub"));
+
+        assertEquals(List.of("/static", "/orders-in"), requests.stream().map(Request::path).toList(),
+                "A toD URI that reads a kafka.* header sends where it did before");
+        assertNoRecordHeaders();
+        assertEquals(3, seen.size(), seen.toString());
+        assertSame(recordHeaders, seen.get(0), "The route still sees the headers after an HTTP send");
+        assertEquals(List.of("orders-in", "orders-in"), seen.subList(1, 3),
+                "A route behind a static or dynamic internal send still sees them");
+    }
+
+    @Test
+    void everyEipThatSendsToHttpWithholdsThemAndSendsTheRoutesOwnCredential() throws Exception {
+        received = new CountDownLatch(6);
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("eips")
+                        .enrich(receiver + "/enrich")
+                        .wireTap(receiver + "/tap")
+                        .recipientList(constant(receiver + "/list"))
+                        .routingSlip(constant(receiver + "/slip"))
+                        .multicast().to(receiver + "/multicast").id("post-multicast").end()
+                        .process(e -> e.getContext().createProducerTemplate().send(receiver + "/template", e))
+                        .process(e -> {
+                            seen.add(e.getMessage().getHeader("kafka.HEADERS"));
+                            seen.add(e.getMessage().getHeader("Authorization"));
+                        });
+            }
+        });
+        context.start();
+        try (var logs = LogCapture.of(ForwardedCredentialHeaders.class)) {
+            sendRecord(Map.of());
+
+            assertTrue(received.await(10, TimeUnit.SECONDS), "Received: " + requests);
+            assertTrue(logs.at(Level.WARNING).stream().noneMatch(r -> LogCapture.text(r).contains("synthetic")),
+                    "The value is never logged");
+            assertTrue(logs.at(Level.WARNING).stream().anyMatch(r -> LogCapture.text(r).contains("a send in route eips")));
+        }
+        assertEquals(Set.of("/enrich", "/tap", "/list", "/slip", "/multicast", "/template"),
+                Set.copyOf(requests.stream().map(Request::path).toList()));
+        assertNoRecordHeaders();
+        for (Request request : requests) {
+            assertEquals("route-own", request.routeToken(), request.path() + ": a credential the route sets is sent");
+        }
+        assertSame(recordHeaders, seen.get(0), "The route still sees the headers after the sends");
+        assertArrayEquals(CALLER_AUTHORIZATION, (byte[]) seen.get(1));
+    }
+
+    @Test
+    void aRouteForwardsTheCallersCredentialDeliberatelyBySettingItAsText() throws Exception {
+        List<String> authorization = Collections.synchronizedList(new ArrayList<>());
+        server.removeContext("/");
+        server.createContext("/", x -> {
+            x.getRequestBody().readAllBytes();
+            authorization.add(x.getRequestHeaders().getFirst("Authorization"));
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .enrich(receiver + "/withheld")
+                        .setHeader("Authorization", header("Authorization").convertToString())
+                        .enrich(receiver + "/forwarded");
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(java.util.Arrays.asList(null, "Bearer synthetic-caller"), authorization);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "vertx-http:"})
+    void aNestedSendDoesNotPutBackWhatTheOuterSendWithheld(String component) throws Exception {
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                interceptSendToEndpoint(".*/outer").to(component + receiver + "/inner");
+                from("direct:record").routeId("record")
+                        .to(component + receiver + "/outer").id("post-outer")
+                        .process(e -> {
+                            seen.add(e.getMessage().getHeader("kafka.HEADERS"));
+                            seen.add(e.getMessage().getHeader("Authorization"));
+                        });
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/inner", "/outer"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+        assertSame(recordHeaders, seen.get(0), "The route still sees the headers after both sends");
+        assertArrayEquals(CALLER_AUTHORIZATION, (byte[]) seen.get(1));
+    }
+
+    @Test
+    void aRestSendStillBindsTheConsumerHeadersIntoItsPathAndQuery() throws Exception {
+        List<String> uris = Collections.synchronizedList(new ArrayList<>());
+        server.removeContext("/");
+        server.createContext("/", x -> {
+            x.getRequestBody().readAllBytes();
+            uris.add(x.getRequestURI().toString());
+            var names = new TreeSet<String>();
+            x.getRequestHeaders().keySet().forEach(name -> names.add(name.toLowerCase(Locale.ROOT)));
+            requests.add(new Request(x.getRequestURI().getPath(), names, x.getRequestHeaders().getFirst("X-Route-Header"),
+                    x.getRequestHeaders().getFirst("X-Route-Token")));
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                restConfiguration().producerComponent("http").host(receiver.substring("http://".length()));
+                from("direct:record").routeId("record")
+                        .to("rest:post:orders/{kafka.TOPIC}?queryParameters=key={kafka.KEY}").id("post-rest");
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        // The rest: producer replaces the filter of the endpoint it sends through, so a rest: send
+        // is not covered; the record headers must not be removed before it either.
+        assertEquals(List.of("/orders/orders-in?key=record-key"), uris, "The path and query bind as before");
+    }
+
+    @Test
+    void aRoutingSlipStepAfterAnHttpSendStillSeesTheHeaders() throws Exception {
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .routingSlip(constant(receiver + "/first,direct:sub"));
+                from("direct:sub").routeId("sub").process(e -> {
+                    seen.add(e.getMessage().getHeader("kafka.HEADERS"));
+                    seen.add(e.getMessage().getHeader("kafka.KEY"));
+                });
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/first"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+        assertSame(recordHeaders, seen.get(0));
+        assertEquals("record-key", seen.get(1));
+    }
+
+    @Test
+    void aProducerTemplateWithoutEventNotificationIsCovered() throws Exception {
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record").process(e -> {
+                    try (var template = e.getContext().createProducerTemplate()) {
+                        template.setEventNotifierEnabled(false);
+                        template.send(receiver + "/template", e);
+                    }
+                });
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/template"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+    }
+
+    @Test
+    void anEndpointsOwnHeaderFilterStillApplies() throws Exception {
+        List<Set<String>> names = Collections.synchronizedList(new ArrayList<>());
+        server.removeContext("/");
+        server.createContext("/", x -> {
+            x.getRequestBody().readAllBytes();
+            var received = new TreeSet<String>();
+            x.getRequestHeaders().keySet().forEach(name -> received.add(name.toLowerCase(Locale.ROOT)));
+            names.add(received);
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        var own = new org.apache.camel.http.base.HttpHeaderFilterStrategy();
+        own.getOutFilter().add("x-route-header");
+        context.getRegistry().bind("ownFilter", own);
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .to(receiver + "/own?headerFilterStrategy=#ownFilter").id("post-own");
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(1, names.size());
+        assertTrue(!names.getFirst().contains("x-route-header"), "The endpoint's own filter applies: " + names);
+        assertTrue(names.getFirst().stream().noneMatch(name -> name.startsWith("kafka.") || name.equals("authorization")),
+                "The record headers are left out too: " + names);
+        assertTrue(names.getFirst().contains("x-route-token"));
+    }
+
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aSubclassedHttpComponentIsCovered(boolean configurerWithoutTheOption) throws Exception {
+        // Its configurer may be missing or not know the headerFilterStrategy option; the endpoint
+        // still has its filter.
+        var unaware = new UnawareConfigurer();
+        context.addComponent("http", new org.apache.camel.component.http.HttpComponent() {
+            @Override
+            public org.apache.camel.spi.PropertyConfigurer getEndpointPropertyConfigurer() {
+                return configurerWithoutTheOption ? unaware : null;
+            }
+        });
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record").to(receiver + "/subclassed").id("post-subclassed");
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/subclassed"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+    }
+
+    @Test
+    void aPermissiveOwnFilterStillLeavesOutTheRecordHeadersUnderBothKafkaNames() throws Exception {
+        var permissive = new org.apache.camel.spi.HeaderFilterStrategy() {
+            public boolean applyFilterToCamelHeaders(String name, Object value, Exchange exchange) {
+                return false;
+            }
+
+            public boolean applyFilterToExternalHeaders(String name, Object value, Exchange exchange) {
+                return false;
+            }
+        };
+        context.getRegistry().bind("permissive", permissive);
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .to(receiver + "/permissive?headerFilterStrategy=#permissive").id("post-permissive");
+            }
+        });
+        context.start();
+        // As Camel 4.18.3 and later name them.
+        sendRecord(Map.of("CamelKafkaHeaders", recordHeaders, "CamelKafkaKey", "record-key"));
+
+        assertEquals(List.of("/permissive"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+        assertTrue(requests.getFirst().headerNames().stream().noneMatch(name -> name.startsWith("camelkafka")),
+                requests.getFirst().headerNames().toString());
+        assertEquals("route-own", requests.getFirst().routeToken());
+    }
+
+    @Test
+    void anEndpointThatCannotBeExtendedDoesNotLeaveTheOthersUnfiltered() throws Exception {
+        var unfilterable = new org.apache.camel.support.DefaultComponent() {
+            @Override
+            protected org.apache.camel.Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) {
+                return new org.apache.camel.support.DefaultEndpoint(uri, this) {
+                    public org.apache.camel.Producer createProducer() {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    public org.apache.camel.Consumer createConsumer(org.apache.camel.Processor processor) {
+                        throw new UnsupportedOperationException();
+                    }
+                };
+            }
+        };
+        context.addComponent("https", unfilterable);
+        // Registered before the adapter's filter, in this order.
+        var bad = context.getEndpoint("https://receiver.example/orders");
+        context.getEndpoint(receiver + "/cached");
+        context.start();
+        org.junit.jupiter.api.Assertions.assertThrows(IllegalStateException.class,
+                () -> ForwardedCredentialHeaders.install(context));
+
+        context.removeEndpoint(bad);
+        ForwardedCredentialHeaders.install(context);
+        try (var producer = context.createProducerTemplate()) {
+            producer.send(receiver + "/cached", e -> {
+                e.getMessage().setHeader("kafka.HEADERS", recordHeaders);
+                e.getMessage().setHeader("Authorization", CALLER_AUTHORIZATION);
+                e.getMessage().setHeader("X-Route-Header", "route-value");
+                e.getMessage().setBody("{}");
+            });
+        }
+
+        assertEquals(List.of("/cached"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+    }
+
+    @Test
+    void anHttpEndpointWhoseFilterCannotBeExtendedDoesNotStart() throws Exception {
+        context.addComponent("https", new org.apache.camel.support.DefaultComponent() {
+            @Override
+            protected org.apache.camel.Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) {
+                return new org.apache.camel.support.DefaultEndpoint(uri, this) {
+                    public org.apache.camel.Producer createProducer() {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    public org.apache.camel.Consumer createConsumer(org.apache.camel.Processor processor) {
+                        throw new UnsupportedOperationException();
+                    }
+                };
+            }
+        });
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record").to("https://receiver.example/orders").id("post-order");
+            }
+        });
+
+        Exception failure = org.junit.jupiter.api.Assertions.assertThrows(Exception.class, context::start);
+        Throwable cause = failure;
+        while (cause.getCause() != null && !(cause instanceof IllegalStateException)) {
+            cause = cause.getCause();
+        }
+        assertTrue(String.valueOf(cause.getMessage()).contains("Cannot add a consumed Kafka record's credential headers"),
+                String.valueOf(cause));
+    }
+
+    @Test
+    void aFailedSendRestoresTheHeadersForItsRedelivery() throws Exception {
+        failures.set(1);
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .errorHandler(defaultErrorHandler().maximumRedeliveries(1).redeliveryDelay(0))
+                        .toD(receiver + "/${headerAs(kafka.TOPIC,java.lang.String)}").id("post-topic")
+                        .process(e -> seen.add(e.getMessage().getHeader("kafka.HEADERS")));
+            }
+        });
+        context.start();
+        Exchange result = sendRecord(Map.of());
+
+        assertEquals(null, result.getException());
+        assertEquals(List.of("/orders-in", "/orders-in"), requests.stream().map(Request::path).toList(),
+                "The redelivery sends where the first try did");
+        assertNoRecordHeaders();
+        assertSame(recordHeaders, seen.getFirst());
+    }
+
+    private void assertNoRecordHeaders() {
+        for (Request request : requests) {
+            assertTrue(request.headerNames().stream().noneMatch(name -> name.startsWith("kafka.")),
+                    request.path() + " got " + request.headerNames());
+            assertTrue(!request.headerNames().contains("authorization"), request.path() + " got the record's credential");
+            assertEquals("route-value", request.routeHeader(), "Other headers are sent as before");
+        }
+    }
+
+    private Exchange sendRecord(Map<String, Object> extra) {
+        try (var producer = context.createProducerTemplate()) {
+            return producer.send("direct:record", e -> {
+                // As Camel 4.18.0's Kafka consumer sets them; later versions name them CamelKafka*.
+                e.getMessage().setHeader("kafka.HEADERS", recordHeaders);
+                e.getMessage().setHeader("kafka.TOPIC", "orders-in");
+                e.getMessage().setHeader("kafka.KEY", "record-key");
+                e.getMessage().setHeader("kafka.OFFSET", 42L);
+                e.getMessage().setHeader("Authorization", CALLER_AUTHORIZATION);
+                e.getMessage().setHeader("X-Route-Header", "route-value");
+                e.getMessage().setHeader("X-Route-Token", "route-own");
+                e.getMessage().getHeaders().putAll(extra);
+                e.getMessage().setBody("{}");
+            });
+        } catch (Exception e) {
+            throw new AssertionError(e);
+        }
+    }
+
+    /** A configurer that knows no option. */
+    private static final class UnawareConfigurer
+            implements org.apache.camel.spi.PropertyConfigurer, org.apache.camel.spi.PropertyConfigurerGetter {
+        public boolean configure(org.apache.camel.CamelContext camelContext, Object target, String name, Object value,
+                boolean ignoreCase) {
+            return false;
+        }
+
+        public Class<?> getOptionType(String name, boolean ignoreCase) {
+            return null;
+        }
+
+        public Object getOptionValue(Object target, String name, boolean ignoreCase) {
+            return null;
+        }
+    }
+
+    private static final class NoStepTracker implements StepTracker {
+        public void beforeSend(Exchange e) {}
+        public void recordDelivered(Exchange e) {}
+        public void recordSkipped(Exchange e) {}
+        public void recordFailed(Exchange e) {}
+        public void recordFailedAndRethrow(Exchange e) {}
+    }
+}

@@ -45,12 +45,55 @@ published. Nor is a send through a `toD` with `cacheSize=-1` to an endpoint
 that is not yet registered: Camel creates such an endpoint for the one send
 without registering it, so the adapter cannot find it afterwards. An endpoint
 that is already registered is reused and checked. At most 100 header names are
-reported per route; one more line then says that further names are not logged. A tracked
-send through Camel's `http` component does not forward credential-like
-headers that still hold a consumed record's bytes, and logs a warning that names
-the header, never its value. A `toD` that chooses its component only when it
-sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver, as
-byte-array text unless they are `x-bip-*` headers.
+reported per route; one more line then says that further names are not logged.
+
+No send to an HTTP receiver forwards a consumed record's credential-like
+headers, by the same name rule, while they still hold the record's bytes. A
+credential header the route sets itself is text and is sent as before; set it
+as text, for example with
+`setHeader("Authorization", header("Authorization").convertToString())`, to
+forward a caller's credential deliberately. Nor does any such send forward
+Camel's Kafka consumer headers named `kafka.*`. On camel-kafka versions before
+4.14.8, 4.18.3 and 4.21.0, these include `kafka.HEADERS`, which lists the bytes
+of every record header, credentials included, and the record key, topic,
+partition, offset and timestamp. Later Camel versions name them `CamelKafka*`;
+Camel's own HTTP header filters drop those names, and the adapter leaves them
+out too, also when an endpoint's own filter would let them through. A receiver
+that needs the record key or topic should get it from a header the route sets
+itself.
+
+The adapter adds these headers to the header filter of every `http`, `https`,
+`netty-http` and `vertx-http` endpoint the context registers, together with the
+endpoint's own filter, such as one set with `headerFilterStrategy=#name`. The
+producer then leaves them out of the request, whichever EIP sends: `to`, `toD`,
+`enrich`, `wireTap`, `recipientList`, `routingSlip`, `multicast` and a
+`ProducerTemplate`. The exchange keeps the headers. A `toD` URI, a
+`rest:` placeholder such as `{kafka.TOPIC}`, a later routing slip step, the
+route and the routes it calls through internal endpoints such as `direct:`
+still read them, and the record the adapter parks in the DLQ keeps its key.
+Each credential header left out logs a warning once per step or route and
+header name, never its value. A tracked `to` or `toD` through Camel's `http`
+component, and a `toD` that chooses its component only when it sends, such as
+`${header.receiverUrl}`, also withhold the credential headers around the send
+itself.
+
+An HTTP endpoint whose header filter the adapter cannot extend fails when it is
+created, so its route does not start. An endpoint without a header filter sends
+no headers and is left as it is. Not covered: an endpoint that Camel creates for
+a single send without registering it, such as one from a `toD` with
+`cacheSize=-1`; an endpoint whose header filter is replaced after the endpoint
+was registered; a `rest:` send, whose producer replaces the filter of the HTTP
+endpoint it sends through
+([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53));
+and components other than these four. Remove the headers before such a send:
+Camel's header that holds the record's whole header set, under both names, with
+`removeHeader("kafka.HEADERS")` and `removeHeader("CamelKafkaHeaders")`, and
+the record's credential headers, for example with
+`removeHeaders("Authorization")`. Do not remove all `kafka.*` or `CamelKafka*`
+headers: that also removes the record key, which Camel's Kafka producer uses as
+the key of the record the adapter parks in the DLQ.
+Other record headers still reach the receiver, as byte-array text through
+Camel's `http` component, unless they are `x-bip-*` headers.
 
 ## Non-Kafka Normalization
 

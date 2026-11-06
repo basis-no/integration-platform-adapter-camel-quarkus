@@ -64,6 +64,14 @@ Start with the [documentation index](docs/index.md).
 
 - Released versions are on the `0.3` line and use message-store schema
   version 1; see [CHANGELOG.md](CHANGELOG.md).
+- Security: adapter 0.3.1 to 0.3.6 and 0.4.0-rc1 can forward a consumed
+  Kafka record's credentials to an HTTP receiver, through Camel's
+  `kafka.HEADERS` on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0.
+  The record's credential headers themselves reach the receiver too: on
+  0.3.5 and earlier and 0.4.0-rc1 through every HTTP send, and on 0.3.6
+  through untracked sends such as `enrich` and through `vertx-http`. See
+  [GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)
+  for the workaround. Fixed for 0.4.0.
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is
