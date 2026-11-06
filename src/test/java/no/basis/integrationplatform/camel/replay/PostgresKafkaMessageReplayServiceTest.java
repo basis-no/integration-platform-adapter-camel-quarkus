@@ -181,16 +181,24 @@ class PostgresKafkaMessageReplayServiceTest {
     }
 
     @Test
-    void theConfiguredStepStoreDecidesWhetherRedoIsAccepted() {
+    void theStepStoreInUseDecidesWhetherRedoIsAccepted() {
         sink.record(result("message-791", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
         var redo = new MessageReplayRequest("message-791", "operator@example.com", "Redo the upload", List.of("sftp"));
+        var recording = new no.basis.integrationplatform.camel.step.StepOutcomeStore() {
+            public boolean wasDelivered(String key) { return false; }
+            public void recordDelivered(StepResult step) { }
+            public void recordFailed(StepResult step) { }
+        };
 
-        assertThrows(MessageReplayException.class, () -> configured("noop").replay(redo));
-        assertEquals(2, configured("postgres").replay(redo).attempt());
+        assertThrows(MessageReplayException.class,
+                () -> configured(new no.basis.integrationplatform.camel.step.NoopStepOutcomeStore()).replay(redo));
+        assertThrows(MessageReplayException.class, () -> configured(null).replay(redo));
+        // An application's own store that records delivered steps, in place of the adapter's.
+        assertEquals(2, configured(recording).replay(redo).attempt());
     }
 
     @SuppressWarnings("unchecked")
-    private PostgresKafkaMessageReplayService configured(String stepOutcomeStore) {
+    private PostgresKafkaMessageReplayService configured(no.basis.integrationplatform.camel.step.StepOutcomeStore store) {
         var dataSources = (jakarta.enterprise.inject.Instance<DataSource>) java.lang.reflect.Proxy.newProxyInstance(
                 getClass().getClassLoader(), new Class<?>[]{jakarta.enterprise.inject.Instance.class},
                 (proxy, method, args) -> switch (method.getName()) {
@@ -198,10 +206,17 @@ class PostgresKafkaMessageReplayServiceTest {
                     case "get" -> dataSource;
                     default -> throw new UnsupportedOperationException(method.getName());
                 });
+        var stores = (jakarta.enterprise.inject.Instance<no.basis.integrationplatform.camel.step.StepOutcomeStore>)
+                java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                        new Class<?>[]{jakarta.enterprise.inject.Instance.class},
+                        (proxy, method, args) -> switch (method.getName()) {
+                            case "isResolvable" -> store != null;
+                            case "get" -> store;
+                            default -> throw new UnsupportedOperationException(method.getName());
+                        });
         return new PostgresKafkaMessageReplayService(dataSources, java.util.Optional.of(KAFKA.getBootstrapServers()),
                 "bip.%s.in", no.basis.integrationplatform.camel.payload.PayloadObjectStore.disabled(), context,
-                "order-pipeline", stepOutcomeStore, new no.basis.integrationplatform.camel.MessageStoreTestProfileConfig(
-                        no.basis.integrationplatform.camel.MessageStoreTestProfileConfig.DEFAULT_PROFILE, false));
+                "order-pipeline", stores);
     }
 
     @Test

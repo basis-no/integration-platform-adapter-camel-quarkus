@@ -182,7 +182,10 @@ as delivered and every step runs on every replay, so a request whose
 `redoSteps` names a step is refused with `409 Conflict` before the replay audit
 row is written or anything is published. Resend it without `redoSteps`. A list
 of blank entries counts as no redo. With `postgres`, redo works as described
-above. The same rule applies in the .NET adapter.
+above. The rule asks the step outcome store in use, so an application's own
+`StepOutcomeStore` bean that replaces the adapter's decides through
+`recordsDeliveredSteps()`, which is `true` unless it overrides it. The same rule
+applies in the .NET adapter.
 
 The list stays inside the integration. When an exchange enters a route, the
 adapter reads `x-bip-redo-steps`, keeps the list for the attempt's step tracking

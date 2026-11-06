@@ -87,6 +87,9 @@ Start with the [documentation index](docs/index.md).
   intercept strategy "does not return an AsyncProcessor instance", once per
   untracked processor such as `validate`. Harmless; fixed for 0.4.0. See
   [Troubleshooting](docs/troubleshooting.md#route-fails-at-startup).
+- On `main`, a replay request with `redoSteps` is refused unless delivered
+  steps are recorded (the `postgres` step store); see
+  [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is

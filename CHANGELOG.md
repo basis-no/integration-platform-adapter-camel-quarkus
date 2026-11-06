@@ -9,10 +9,14 @@
   outcomes every step runs on every replay, so the request promised a choice
   that did not exist. A replay without `redoSteps`, and redo with the `postgres`
   step store, are unchanged. The .NET adapter applies the same rule.
+  The rule asks the step outcome store in use: `StepOutcomeStore` gets a
+  default method `recordsDeliveredSteps()`, `true` unless overridden and
+  `false` for the `noop` store.
   Upgrade: a caller that sent `redoSteps` to an application on the `noop` step
-  store must resend without it; every step runs again either way.
-  The public `PostgresKafkaMessageReplayService` constructor built from explicit
-  dependencies keeps accepting redo.
+  store must resend without it; every step runs again either way. An
+  application's own `StepOutcomeStore` that records nothing should override
+  `recordsDeliveredSteps()`. The public `PostgresKafkaMessageReplayService`
+  constructor built from explicit dependencies keeps accepting redo.
 - Kafka activity counters, as in adapter 0.3.6, with admission counting on by
   default. Without `basis.traffic.signals`, an application with a Kafka
   boundary exports `integration_traffic_events_total{signal="record_admitted"}`,
