@@ -55,6 +55,7 @@ public class ContractVersionStartupGate {
     static final long DEFAULT_RETRY_DELAY_MS = 3_000L;
 
     private final String sinkMode;
+    private final boolean postgresSteps;
     private final MessageStoreSchema schema;
     private final Supplier<DataSource> dataSource;
     private final int maxAttempts;
@@ -97,8 +98,8 @@ public class ContractVersionStartupGate {
             Supplier<DataSource> dataSource, int maxAttempts, long retryDelayMs) {
         this.sinkMode = sinkMode;
         boolean postgresSink = "postgres".equals(sinkMode);
-        this.schema = MessageStoreSchema.required(
-                postgresSink, postgresSink && replayEnabled, "postgres".equals(stepOutcomeStore));
+        this.postgresSteps = "postgres".equals(stepOutcomeStore);
+        this.schema = MessageStoreSchema.required(postgresSink, postgresSink && replayEnabled, postgresSteps);
         this.dataSource = dataSource;
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retryDelayMs = retryDelayMs;
@@ -121,6 +122,11 @@ public class ContractVersionStartupGate {
         }
         DataSource resolved = dataSource.get();
         if (resolved == null) {
+            if (postgresSteps) {
+                // The step store is created on its first use, so it would fail only at the first send.
+                throw new IllegalStateException(
+                        "basis.message-store.step-outcome-store=postgres requires a JDBC DataSource");
+            }
             return;
         }
 

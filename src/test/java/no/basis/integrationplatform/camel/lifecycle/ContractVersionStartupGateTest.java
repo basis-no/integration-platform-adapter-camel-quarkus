@@ -68,6 +68,26 @@ class ContractVersionStartupGateTest {
     }
 
     @Test
+    void saysHowToAddARequiredColumnToATableWithRows() throws Exception {
+        execute("alter table bip_message_attempt drop column route_id");
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("postgres", "noop", true, () -> dataSource, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("alter table bip_message_attempt add column if not exists route_id text,"
+                + " then give existing rows a value and run alter table bip_message_attempt alter column route_id"
+                + " set not null"), thrown.getMessage());
+    }
+
+    @Test
+    void refusesThePostgresStepStoreWithoutADataSource() {
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("log", "postgres", true, () -> null, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("requires a JDBC DataSource"), thrown.getMessage());
+    }
+
+    @Test
     void refusesAStoreWithoutTheStepOutcomeTableOnlyWhenStepsAreStoredThere() throws Exception {
         execute("drop table bip_step_outcome");
 

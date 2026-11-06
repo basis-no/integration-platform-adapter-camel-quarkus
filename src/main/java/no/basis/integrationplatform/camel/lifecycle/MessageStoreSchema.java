@@ -112,8 +112,7 @@ final class MessageStoreSchema {
             List<String> absent = columns.keySet().stream().filter(column -> !found.contains(column)).toList();
             if (!absent.isEmpty()) {
                 missing.add(table + "." + String.join(", " + table + ".", absent));
-                absent.forEach(column -> statements.add(
-                        "alter table " + table + " add column if not exists " + columns.get(column)));
+                absent.forEach(column -> statements.add(addColumn(table, columns.get(column))));
             }
         });
         if (!missing.isEmpty()) {
@@ -123,6 +122,23 @@ final class MessageStoreSchema {
                     + " earlier adapter version. Bring it to the schema in db/message-store/ in the adapter JAR"
                     + " before starting: " + String.join("; ", statements) + ".");
         }
+    }
+
+    /**
+     * The statement that adds a column. A column that must have a value but has no default
+     * cannot be added to a table with rows in one step, so it is added without the
+     * requirement, to be filled in before the requirement is set.
+     */
+    private static String addColumn(String table, String definition) {
+        String lower = definition.toLowerCase(Locale.ROOT);
+        if (!lower.contains(" not null") || lower.contains(" default ")) {
+            return "alter table " + table + " add column if not exists " + definition;
+        }
+        String column = definition.split(" ", 2)[0];
+        String nullable = definition.replaceFirst("(?i) not null", "");
+        return "alter table " + table + " add column if not exists " + nullable
+                + ", then give existing rows a value and run alter table " + table
+                + " alter column " + column + " set not null";
     }
 
     private void add(String source, String table, Map<String, Map<String, String>> parsed) {
