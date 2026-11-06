@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.replay;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
@@ -34,7 +35,8 @@ import java.util.stream.Collectors;
 
 /**
  * Postgres-backed audited replay service that republishes payloads to Kafka. It replays only
- * this integration's own messages, and only to the Kafka input route that recorded them.
+ * this integration's own messages, and only to the Kafka input route that recorded them. It
+ * accepts redo steps only when step outcomes are recorded in Postgres.
  */
 @ApplicationScoped
 public class PostgresKafkaMessageReplayService implements MessageReplayService {
@@ -103,6 +105,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
     private final PayloadObjectStore objectStore;
     private final CamelContext camelContext;
     private final String integrationName;
+    private final boolean stepLedger;
 
     /**
      * Creates the CDI replay service.
@@ -113,6 +116,8 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
      * @param objectStore object payload store
      * @param camelContext context whose routes a replay may target
      * @param integrationName this integration's name, the owner of the messages it may replay
+     * @param stepOutcomeStore configured step outcome store; redo needs {@code postgres}
+     * @param testProfile active test-profile policy
      */
     @Inject
     public PostgresKafkaMessageReplayService(
@@ -122,9 +127,12 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
                     defaultValue = "bip.%s.in") String inputTopicPattern,
             PayloadObjectStore objectStore,
             CamelContext camelContext,
-            @ConfigProperty(name = "app.name", defaultValue = "unknown-integration") String integrationName) {
+            @ConfigProperty(name = "app.name", defaultValue = "unknown-integration") String integrationName,
+            @ConfigProperty(name = "basis.message-store.step-outcome-store", defaultValue = "noop") String stepOutcomeStore,
+            MessageStoreTestProfileConfig testProfile) {
         this(() -> dataSource.isResolvable() ? dataSource.get() : null, bootstrapServers.orElse(""),
-                inputTopicPattern, objectStore, camelContext, integrationName);
+                inputTopicPattern, objectStore, camelContext, integrationName,
+                "postgres".equals(testProfile.effectiveStepOutcomeStore(stepOutcomeStore)));
     }
 
     PostgresKafkaMessageReplayService(
@@ -133,12 +141,23 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             String inputTopicPattern,
             CamelContext camelContext,
             String integrationName) {
+        this(dataSource, bootstrapServers, inputTopicPattern, camelContext, integrationName, true);
+    }
+
+    PostgresKafkaMessageReplayService(
+            DataSource dataSource,
+            String bootstrapServers,
+            String inputTopicPattern,
+            CamelContext camelContext,
+            String integrationName,
+            boolean stepLedger) {
         this(() -> dataSource, bootstrapServers, inputTopicPattern, PayloadObjectStore.disabled(),
-                camelContext, integrationName);
+                camelContext, integrationName, stepLedger);
     }
 
     /**
-     * Creates a replay service from explicit dependencies.
+     * Creates a replay service from explicit dependencies. It accepts redo steps; the caller
+     * must record step outcomes in Postgres for them to mean anything.
      *
      * @param dataSource message-store datasource
      * @param bootstrapServers Kafka bootstrap servers
@@ -154,7 +173,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             PayloadObjectStore objectStore,
             CamelContext camelContext,
             String integrationName) {
-        this(() -> dataSource, bootstrapServers, inputTopicPattern, objectStore, camelContext, integrationName);
+        this(() -> dataSource, bootstrapServers, inputTopicPattern, objectStore, camelContext, integrationName, true);
     }
 
     private PostgresKafkaMessageReplayService(
@@ -163,13 +182,15 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             String inputTopicPattern,
             PayloadObjectStore objectStore,
             CamelContext camelContext,
-            String integrationName) {
+            String integrationName,
+            boolean stepLedger) {
         this.dataSource = dataSource;
         this.bootstrapServers = bootstrapServers;
         this.inputTopicPattern = inputTopicPattern;
         this.objectStore = objectStore;
         this.camelContext = camelContext;
         this.integrationName = integrationName;
+        this.stepLedger = stepLedger;
     }
 
     @Override
@@ -183,6 +204,13 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             throw new MessageReplayException("Replay request is required");
         }
         String messageId = request.messageId();
+        if (!stepLedger && request.redoSteps().stream().anyMatch(step -> step != null && !step.isBlank())) {
+            // Nothing is recorded as delivered, so every step runs anyway: a redo list would
+            // promise a choice that does not exist.
+            throw new MessageReplayException("Message " + messageId + " is not replayable with redoSteps: they need"
+                    + " basis.message-store.step-outcome-store=postgres, and with noop every step runs on every"
+                    + " replay. Resend without redoSteps.");
+        }
         ReplayableMessage message = loadReplayableMessage(messageId);
         int nextAttempt = message.lastAttempt() + 1;
         String topic = inputTopic(message.integration());

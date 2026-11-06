@@ -126,10 +126,17 @@ class PostgresKafkaMessageReplayServiceTest {
 
         try (KafkaConsumer<String, byte[]> consumer = consumer()) {
             consumer.subscribe(List.of(TOPIC));
-            var records = consumer.poll(Duration.ofSeconds(10));
+            // Other tests publish to the same topic on the shared broker.
+            var records = new java.util.ArrayList<org.apache.kafka.clients.consumer.ConsumerRecord<String, byte[]>>();
+            consumer.poll(Duration.ofSeconds(10)).forEach(candidate -> {
+                var id = candidate.headers().lastHeader(PlatformHeaders.MESSAGE_ID);
+                if (id != null && "message-123".equals(new String(id.value(), StandardCharsets.UTF_8))) {
+                    records.add(candidate);
+                }
+            });
 
-            assertEquals(1, records.count());
-            var record = records.iterator().next();
+            assertEquals(1, records.size());
+            var record = records.getFirst();
             assertEquals("order-456", record.key());
             assertEquals("payload-body", new String(record.value(), StandardCharsets.UTF_8));
             assertEquals("message-123", header(record, PlatformHeaders.MESSAGE_ID));
@@ -155,6 +162,59 @@ class PostgresKafkaMessageReplayServiceTest {
 
         assertEquals("Message message-456 is not replayable: payload storage mode is metadata-only", thrown.getMessage());
         assertEquals("0", singleValue("select count(*) from bip_message_replay_audit where message_id = 'message-456'"));
+    }
+
+    @Test
+    void refusesRedoWithoutTheStepLedgerBeforeAuditOrPublication() {
+        sink.record(result("message-789", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        var withoutLedger = new PostgresKafkaMessageReplayService(
+                dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", context, "order-pipeline", false);
+        long published = published(TOPIC);
+
+        MessageReplayException thrown = assertThrows(MessageReplayException.class, () -> withoutLedger.replay(
+                new MessageReplayRequest("message-789", "operator@example.com", "Redo the upload", List.of("sftp"))));
+
+        assertEquals("Message message-789 is not replayable with redoSteps: they need"
+                + " basis.message-store.step-outcome-store=postgres, and with noop every step runs on every replay."
+                + " Resend without redoSteps.", thrown.getMessage());
+        assertNothingAuditedOrPublished(TOPIC, published);
+    }
+
+    @Test
+    void theConfiguredStepStoreDecidesWhetherRedoIsAccepted() {
+        sink.record(result("message-791", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        var redo = new MessageReplayRequest("message-791", "operator@example.com", "Redo the upload", List.of("sftp"));
+
+        assertThrows(MessageReplayException.class, () -> configured("noop").replay(redo));
+        assertEquals(2, configured("postgres").replay(redo).attempt());
+    }
+
+    @SuppressWarnings("unchecked")
+    private PostgresKafkaMessageReplayService configured(String stepOutcomeStore) {
+        var dataSources = (jakarta.enterprise.inject.Instance<DataSource>) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[]{jakarta.enterprise.inject.Instance.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "isResolvable" -> true;
+                    case "get" -> dataSource;
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+        return new PostgresKafkaMessageReplayService(dataSources, java.util.Optional.of(KAFKA.getBootstrapServers()),
+                "bip.%s.in", no.basis.integrationplatform.camel.payload.PayloadObjectStore.disabled(), context,
+                "order-pipeline", stepOutcomeStore, new no.basis.integrationplatform.camel.MessageStoreTestProfileConfig(
+                        no.basis.integrationplatform.camel.MessageStoreTestProfileConfig.DEFAULT_PROFILE, false));
+    }
+
+    @Test
+    void replaysWithoutRedoAndIgnoresBlankRedoEntriesWithoutTheStepLedger() {
+        sink.record(result("message-790", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        var withoutLedger = new PostgresKafkaMessageReplayService(
+                dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", context, "order-pipeline", false);
+        long published = published(TOPIC);
+
+        withoutLedger.replay(MessageReplayRequest.forMessage("message-790"));
+        withoutLedger.replay(new MessageReplayRequest("message-790", null, null, List.of(" ")));
+
+        assertEquals(published + 2, published(TOPIC));
     }
 
     @Test
