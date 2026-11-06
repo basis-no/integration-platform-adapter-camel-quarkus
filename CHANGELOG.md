@@ -17,6 +17,16 @@
   application's own `StepOutcomeStore` that records nothing should override
   `recordsDeliveredSteps()`. The public `PostgresKafkaMessageReplayService`
   constructor built from explicit dependencies keeps accepting redo.
+- The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
+  for small JSON values per integration, such as polling cursors and markers,
+  in the Message Store's `bip_key_value` table, with get, put,
+  compare-and-set, put-if-absent, delete and list, an optional time to live
+  and a bounded expiry sweep (`basis.message-store.key-value.sweep-interval-seconds`),
+  plus `KeyValueIdempotentRepository` for Camel's idempotent consumer. The same
+  limits and row-lifecycle rule apply: a version restarts at 1 after deletion
+  or expiry cleanup, and the store offers no leases or fencing. Against a store
+  without `bip_key_value` the application starts and only Key-Value Store
+  calls fail. See [Key-Value Store](docs/key-value-store.md).
 - An application's own `onException` handler, in a route, a route builder or a
   route configuration, sees and sends the message as the route left it, as a
   `doCatch` does, as in adapter 0.3.6. The adapter prepares a message for the

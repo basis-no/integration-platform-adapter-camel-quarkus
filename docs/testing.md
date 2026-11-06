@@ -46,6 +46,9 @@ The adapter logs a prominent warning and exposes readiness data describing the
 active profile and effective persistence/commit behavior. Production
 configuration must keep test profiles disabled.
 
+The profiles do not apply to the [Key-Value Store](key-value-store.md): its
+calls still read and write `bip_key_value` under `no-persistence`.
+
 No-commit mode does not make one running Kafka consumer continuously reread the
 same record. Its in-memory position already advanced. Restart, seek, or reset
 the group offset before expecting another delivery.
