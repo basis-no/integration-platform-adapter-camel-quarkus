@@ -245,7 +245,10 @@ and iteration its own step key. See the
   key, topic, partition, offset and timestamp go out too. Remove
   `kafka.HEADERS` before the send with `.removeHeader("kafka.HEADERS")`, or
   upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
-  4.21.0 or later, such as Quarkus 3.33.4 (Camel 4.18.4). Do not remove all
+  4.21.0 or later, such as Quarkus 3.33.4 (Camel 4.18.4). Those versions name
+  the header `CamelKafkaHeaders`, which Camel's own HTTP header filters drop;
+  an endpoint with its own `headerFilterStrategy` that lets `Camel*` headers
+  through still sends it, so remove `CamelKafkaHeaders` there too. Do not remove all
   `kafka.*` headers: that also removes `kafka.KEY`, which Camel's Kafka
   producer uses as the key of the record the adapter parks in the DLQ. The
   withholding above covers only a tracked `to` or `toD` whose endpoint URI

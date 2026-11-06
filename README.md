@@ -345,7 +345,11 @@ other header's value. Do not remove them all with `removeHeaders("kafka.*")`:
 that also removes `kafka.KEY`, which Camel's Kafka producer uses as the key of
 the record that the adapter parks in the DLQ, so a parked record loses its
 key. Alternatively, upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
-4.21.0 or later, such as Quarkus 3.33.4. The withholding above covers only a
+4.21.0 or later, such as Quarkus 3.33.4. Those versions name the header
+`CamelKafkaHeaders`, which Camel's own HTTP header filters drop; an endpoint
+with its own `headerFilterStrategy` that lets `Camel*` headers through still
+sends it, so remove `CamelKafkaHeaders` before such a send or make that filter
+drop it. The withholding above covers only a
 tracked `to` or `toD` whose endpoint URI starts with `http:` or `https:`,
 which includes a static `to` through `netty-http`. So also remove the record's
 credential headers, such as `Authorization`, before every other send to an
