@@ -19,6 +19,20 @@
   Not changed: an input whose payload is in object storage is still checked
   against its SHA-256 only when the route reads it to its end
   ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+- A replay sends a message again only to the integration that recorded it,
+  through the Kafka input route that recorded it. Before, `main` republished
+  any message in the store to the replay topic of the integration named in its
+  row, so one integration's admin endpoint could resend another integration's
+  message, and a message recorded by a route that had since been removed or
+  changed was sent to whatever now consumed the topic. The replay service now
+  refuses, before it writes the replay audit row or publishes anything, a
+  message of another integration, a message whose last attempt was recorded by
+  a route that is not a Kafka consumer of this integration's replay topic, and
+  a message whose last attempt is missing or holds another payload. The 0.3
+  line already refused these. The public `PostgresKafkaMessageReplayService`
+  constructors take the Camel context and the integration name.
+  Upgrade: a message recorded by a route that was removed, renamed or moved to
+  another topic can no longer be replayed through the adapter.
 - No send to an HTTP receiver forwards a consumed Kafka record's credential
   headers or the Kafka consumer's `kafka.*` and `CamelKafka*` headers
   ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)).

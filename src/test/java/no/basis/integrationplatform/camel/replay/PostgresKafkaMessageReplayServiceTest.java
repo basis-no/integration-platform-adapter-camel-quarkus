@@ -6,12 +6,17 @@ import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 import no.basis.integrationplatform.camel.store.PostgresMessageStoreSink;
+import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.impl.DefaultCamelContext;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.ByteArrayDeserializer;
 import org.apache.kafka.common.serialization.StringDeserializer;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -35,6 +40,7 @@ import java.util.UUID;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 @Testcontainers
 class PostgresKafkaMessageReplayServiceTest {
@@ -46,6 +52,7 @@ class PostgresKafkaMessageReplayServiceTest {
     @Container
     private static final ConfluentKafkaContainer KAFKA = new ConfluentKafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
 
+    private DefaultCamelContext context;
     private DataSource dataSource;
     private PostgresMessageStoreSink sink;
     private PostgresKafkaMessageReplayService replayService;
@@ -55,7 +62,22 @@ class PostgresKafkaMessageReplayServiceTest {
         dataSource = dataSource();
         no.basis.integrationplatform.camel.TestJdbc.awaitReachable(dataSource);
         sink = new PostgresMessageStoreSink(dataSource);
-        replayService = new PostgresKafkaMessageReplayService(dataSource, KAFKA.getBootstrapServers(), "bip.%s.in");
+        context = new DefaultCamelContext();
+        context.addRoutes(new RouteBuilder() {
+            @Override
+            public void configure() {
+                from("kafka:" + TOPIC + "?brokers=" + KAFKA.getBootstrapServers())
+                        .routeId("camel-route-id").autoStartup(false).process(e -> { });
+                from("direct:receiver").routeId("receiver-request").process(e -> { });
+                from("kafka:another-input?brokers=" + KAFKA.getBootstrapServers())
+                        .routeId("other-input").autoStartup(false).process(e -> { });
+                from("kafka:" + TOPIC + "?topicIsPattern=true&brokers=" + KAFKA.getBootstrapServers())
+                        .routeId("pattern-input").autoStartup(false).process(e -> { });
+            }
+        });
+        context.start();
+        replayService = new PostgresKafkaMessageReplayService(
+                dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", context, "order-pipeline");
 
         try (Connection connection = dataSource.getConnection();
              Statement statement = connection.createStatement()) {
@@ -67,6 +89,13 @@ class PostgresKafkaMessageReplayServiceTest {
                     statement.execute(sql);
                 }
             }
+        }
+    }
+
+    @AfterEach
+    void stopContext() throws Exception {
+        if (context != null) {
+            context.close();
         }
     }
 
@@ -128,12 +157,101 @@ class PostgresKafkaMessageReplayServiceTest {
         assertEquals("0", singleValue("select count(*) from bip_message_replay_audit where message_id = 'message-456'"));
     }
 
+    @Test
+    void refusesAnotherIntegrationsMessageBeforeAuditOrPublication() {
+        sink.record(result("other-message", 1, "<Input/>".getBytes(StandardCharsets.UTF_8), true, null,
+                "other-integration"));
+        long published = published("bip.other-integration.in");
+
+        MessageReplayException thrown = assertThrows(
+                MessageReplayException.class,
+                () -> replayService.replay("other-message"));
+
+        assertEquals("Message other-message is not replayable by this integration", thrown.getMessage());
+        assertNothingAuditedOrPublished("bip.other-integration.in", published);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"receiver-request", "removed-route", "other-input", "pattern-input"})
+    void refusesAMessageWhoseInputRouteDoesNotConsumeTheReplayTopic(String routeId) throws Exception {
+        sink.record(result("unsafe-old", 1, "<Input/>".getBytes(StandardCharsets.UTF_8), true, null));
+        try (Connection connection = dataSource.getConnection();
+             var statement = connection.prepareStatement(
+                     "update bip_message_attempt set route_id = ? where message_id = 'unsafe-old'")) {
+            statement.setString(1, routeId);
+            statement.executeUpdate();
+        }
+        long published = published(TOPIC);
+
+        MessageReplayException thrown = assertThrows(
+                MessageReplayException.class,
+                () -> replayService.replay("unsafe-old"));
+
+        assertTrue(thrown.getMessage().contains("input route does not consume"), thrown.getMessage());
+        assertNothingAuditedOrPublished(TOPIC, published);
+    }
+
+    @Test
+    void refusesAStoredPayloadThatDoesNotMatchItsLastAttempt() {
+        sink.record(result("unsafe-old", 1, "<Input/>".getBytes(StandardCharsets.UTF_8), true, null));
+        update("update bip_message_log set payload_bytes = decode('00', 'hex') where message_id = 'unsafe-old'");
+        long published = published(TOPIC);
+
+        assertThrows(MessageReplayException.class, () -> replayService.replay("unsafe-old"));
+        assertNothingAuditedOrPublished(TOPIC, published);
+    }
+
+    @Test
+    void refusesAMessageWithoutItsLastAttempt() {
+        sink.record(result("unsafe-old", 1, "<Input/>".getBytes(StandardCharsets.UTF_8), true, null));
+        update("delete from bip_message_attempt where message_id = 'unsafe-old'");
+        long published = published(TOPIC);
+
+        assertThrows(MessageReplayException.class, () -> replayService.replay("unsafe-old"));
+        assertNothingAuditedOrPublished(TOPIC, published);
+    }
+
+    private void assertNothingAuditedOrPublished(String topic, long publishedBefore) {
+        assertEquals("0", singleValue("select count(*) from bip_message_replay_audit"));
+        assertEquals(publishedBefore, published(topic), "Nothing may be published to " + topic);
+    }
+
+    /** The number of records ever published to the topic; other tests share the broker. */
+    private long published(String topic) {
+        try (KafkaConsumer<String, byte[]> consumer = consumer()) {
+            var partitions = consumer.partitionsFor(topic, Duration.ofSeconds(10)).stream()
+                    .map(info -> new org.apache.kafka.common.TopicPartition(info.topic(), info.partition()))
+                    .toList();
+            return consumer.endOffsets(partitions, Duration.ofSeconds(10)).values().stream()
+                    .mapToLong(Long::longValue).sum();
+        }
+    }
+
+    private void update(String sql) {
+        try (Connection connection = dataSource.getConnection();
+             Statement statement = connection.createStatement()) {
+            statement.executeUpdate(sql);
+        } catch (Exception e) {
+            throw new AssertionError("Failed to update test database with: " + sql, e);
+        }
+    }
+
     private MessageAttemptResult result(
             String messageId,
             int attempt,
             byte[] payload,
             boolean replayable,
             String replayDisabledReason) {
+        return result(messageId, attempt, payload, replayable, replayDisabledReason, "order-pipeline");
+    }
+
+    private MessageAttemptResult result(
+            String messageId,
+            int attempt,
+            byte[] payload,
+            boolean replayable,
+            String replayDisabledReason,
+            String integration) {
         return new MessageAttemptResult(
                 1,
                 messageId,
@@ -148,7 +266,7 @@ class PostgresKafkaMessageReplayServiceTest {
                 null,
                 replayable,
                 replayDisabledReason,
-                "order-pipeline",
+                integration,
                 "camel-route-id",
                 attempt,
                 false,
