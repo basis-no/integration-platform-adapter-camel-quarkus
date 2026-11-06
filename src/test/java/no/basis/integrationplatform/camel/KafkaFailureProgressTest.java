@@ -226,6 +226,50 @@ class KafkaFailureProgressTest {
         }
     }
 
+    @Test
+    void aRecordWhoseOutcomeCannotBeRecordedIsReadAgainAfterADoublingWait() throws Exception {
+        String input = "input-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        var client = Map.<String, Object>of("bootstrap.servers", brokers);
+        var reads = new AtomicInteger();
+        long closed;
+        try (var admin = AdminClient.create(client); var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(input, 1, (short) 1))).all().get(20, TimeUnit.SECONDS);
+            bindShippedKafkaDefaults(context);
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(row -> {
+                throw new IllegalStateException("synthetic journal outage");
+            }, "order-pipeline", "postgres-inline", 100_000, 30, true, "dlq", "auto"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=group-" + UUID.randomUUID()
+                            + "&autoOffsetReset=earliest&pollTimeoutMs=100")
+                            .routeId("input").process(e -> reads.incrementAndGet());
+                }
+            });
+            var producerProperties = new HashMap<String, Object>(client);
+            producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            try (var producer = new KafkaProducer<String, String>(producerProperties)) {
+                producer.send(new ProducerRecord<>(input, "key", "order")).get(10, TimeUnit.SECONDS);
+            }
+            context.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+            while (reads.get() == 0 && System.nanoTime() < deadline) Thread.sleep(20);
+            long first = System.nanoTime();
+            Thread.sleep(8_000);
+            // Read at once, again at once, then after 1 s, 2 s and 4 s: before, about two reads a second.
+            assertTrue(reads.get() >= 3 && reads.get() <= 6, "Reads in the first eight seconds: " + reads.get());
+            // The fifth read is followed by an 8 s wait; stop while it runs.
+            while (reads.get() < 5 && System.nanoTime() - first < TimeUnit.SECONDS.toNanos(20)) Thread.sleep(20);
+            assertEquals(5, reads.get());
+            Thread.sleep(500);
+            closed = System.nanoTime();
+        }
+        assertTrue(System.nanoTime() - closed < TimeUnit.SECONDS.toNanos(5), "Stopping does not wait out the back-off");
+    }
+
     /** Binds the Kafka component defaults from the adapter's application.properties, as the runtime does. */
     private static void bindShippedKafkaDefaults(DefaultCamelContext context) throws Exception {
         var defaults = new Properties();
