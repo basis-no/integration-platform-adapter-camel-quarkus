@@ -263,8 +263,9 @@ the message. To recover such a message, either:
   same `Idempotency-Key`; or
 - check at the receiver whether it got the message.
 
-0.4 records the send once per try. A message that 0.3.x parked keeps its
-`DELIVERED` step after the upgrade, so its resend needs the redo too.
+The 0.4.0 development line, not yet released, records the send once per try.
+A message that 0.3.x parked keeps its `DELIVERED` step after the upgrade, so
+its resend needs the redo too.
 
 Processing time still needs an application-specific budget: bounded receiver
 timeouts and retries, number of transactions per input, poll batch size and

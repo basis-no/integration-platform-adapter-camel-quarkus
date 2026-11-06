@@ -239,7 +239,8 @@ and iteration its own step key. See the
   step is recorded `DELIVERED` with no error, so a resend or replay skips it
   and the receiver never gets the message. Resend it with the step in
   `redoSteps`, or check at the receiver; see the sub-route limitation in the
-  README. Adapter 0.4 fixes this; there is no 0.3.x release for it.
+  README. The 0.4.0 development line, not yet released, fixes this; there is
+  no 0.3.x release for it.
 - A step outcome that is not recorded holds back only the input whose attempt
   made the send, with its split parts, loop iterations and branches. A separate
   request the input sends, for example with a `ProducerTemplate`, fails on its
