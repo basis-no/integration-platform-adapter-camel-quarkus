@@ -12,6 +12,7 @@ GitHub and in any static documentation site.
 2. [Steps and idempotency](steps-and-idempotency.md)
 3. [Retry, DLQ, and replay](retry-dlq-replay.md)
 4. [Testing](testing.md)
+5. [Key-Value Store](key-value-store.md)
 
 ### Operator
 

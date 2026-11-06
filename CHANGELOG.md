@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
+  for small JSON values per integration, such as polling cursors and markers,
+  in the Message Store's `bip_key_value` table, with get, put,
+  compare-and-set, put-if-absent, delete and list, an optional time to live
+  and a bounded expiry sweep (`basis.message-store.key-value.sweep-interval-seconds`),
+  plus `KeyValueIdempotentRepository` for Camel's idempotent consumer. The same
+  limits and row-lifecycle rule apply: a version restarts at 1 after deletion
+  or expiry cleanup, and the store offers no leases or fencing. Against a store
+  without `bip_key_value` the application starts and only Key-Value Store
+  calls fail. See [Key-Value Store](docs/key-value-store.md).
 - Kafka activity counters, as in adapter 0.3.6, with admission counting on by
   default. Without `basis.traffic.signals`, an application with a Kafka
   boundary exports `integration_traffic_events_total{signal="record_admitted"}`,
