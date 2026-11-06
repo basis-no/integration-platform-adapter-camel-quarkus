@@ -17,7 +17,7 @@ Releases are available from Maven Central:
 <dependency>
   <groupId>no.basis.integrationplatform</groupId>
   <artifactId>integration-platform-adapter-camel-quarkus</artifactId>
-  <version>0.3.1</version>
+  <version>0.3.6</version>
 </dependency>
 ```
 
@@ -172,4 +172,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for branches and pull requests.
 
 This repository starts from a fresh history. Versions up to 0.3.5 were
 developed in an earlier private repository, so this repository has no tags or
-release pages for them. Their notes are in [CHANGELOG.md](CHANGELOG.md).
+release pages for them. Their notes are in [CHANGELOG.md](CHANGELOG.md),
+together with those of 0.3.6, the first release with a tag and a release page
+here.
