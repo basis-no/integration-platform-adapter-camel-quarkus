@@ -245,11 +245,13 @@ and iteration its own step key. See the
   key, topic, partition, offset and timestamp go out too. Remove the headers
   before the send with `.removeHeaders("kafka.*")`, or upgrade to a Quarkus
   platform that brings camel-kafka 4.14.8, 4.18.3 or 4.21.0 or later, such as
-  Quarkus 3.33.4 (Camel 4.18.4). Remove the record's credential headers too
-  before a send through `vertx-http`, which sends them as text: the
-  withholding above covers only Camel's `http` component. Adapter 0.3.5 and
-  earlier also send them through Camel's `http` component, as byte-array
-  text; remove them there too.
+  Quarkus 3.33.4 (Camel 4.18.4). The withholding above covers only a tracked
+  `to` or `toD` through Camel's `http` component. Remove the record's
+  credential headers too before a send through `vertx-http`, which sends them
+  as text, and before an `enrich`, `wireTap`, `recipientList`, `routingSlip`
+  or `ProducerTemplate` send to an HTTP receiver. Adapter 0.3.5 and earlier
+  also send them through every tracked send to Camel's `http` component, as
+  byte-array text; remove them there too.
   There is no 0.3.x fix; adapter 0.4.0 will withhold the `kafka.*` headers.
 - A step outcome that is not recorded holds back only the input whose attempt
   made the send, with its split parts, loop iterations and branches. A separate
