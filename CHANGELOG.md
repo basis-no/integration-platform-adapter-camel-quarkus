@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- The adapter refuses to start against a Message Store that lacks a table or
+  column it writes, with the Postgres sink or the Postgres step store. Before,
+  it started against a store provisioned for an earlier adapter version, for
+  example one without `bip_message_log.payload_ref` or the
+  `bip_step_outcome.checkpoint_*` columns, and then failed every outcome
+  write: each Kafka record was read and processed again and again, calling
+  its receivers each time. One catalog query at startup checks the tables and
+  columns of the schema files the adapter ships; the error names what is
+  missing and the `alter table … add column if not exists …` statements that
+  add it. `bip_message_replay_audit` is checked only when replay is enabled,
+  and `bip_step_outcome` only with the Postgres step store.
+  Upgrade: bring a store provisioned for 0.3.x to the shipped schema before
+  starting this version; the startup error lists the statements.
 - The changelog lists the 0.3.2 to 0.3.6 releases with the same text and dates
   as the 0.3 line. Their documentation links point to the `release/0.3`
   branch, where those pages are kept.
