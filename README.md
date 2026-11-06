@@ -248,6 +248,24 @@ once and records `DLQ`. Per-part identity is not part of 0.3.x; 0.4 adds it. See
 [split step identity advisory](docs/split-step-identity.md) for the exact
 conditions under which a part is not sent, and the safe configuration.
 
+Known sub-route limitation in 0.3.x, found after the 0.3.6 release
+([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)):
+a tracked send in a route that another send calls, such as a `direct:`
+sub-route, is recorded twice. The calling send records the sub-route's step
+again when it completes, so a successful call is listed twice as `DELIVERED`.
+When the sub-route's dead letter channel parks the message after the send
+failed, the calling send sees no failure and records the step `DELIVERED` with
+no error. A resend or replay then skips the send, and the receiver never gets
+the message. To recover such a message, either:
+
+- resend it with the step in `redoSteps`, together with any step whose output
+  it uses (see [Redo behavior](#redo-behavior)); redo repeats the call with the
+  same `Idempotency-Key`; or
+- check at the receiver whether it got the message.
+
+0.4 records the send once per try. A message that 0.3.x parked keeps its
+`DELIVERED` step after the upgrade, so its resend needs the redo too.
+
 Processing time still needs an application-specific budget: bounded receiver
 timeouts and retries, number of transactions per input, poll batch size and
 `max.poll.interval.ms` must fit together. This patch does not classify every
