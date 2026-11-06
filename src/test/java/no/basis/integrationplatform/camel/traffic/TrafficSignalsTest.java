@@ -200,6 +200,23 @@ class TrafficSignalsTest {
         signals.afterPublish(snapshot, exchange, true);
         assertEquals(0, total("record_published")); assertEquals(0, supported("record_published"));
     }
+    @Test void aComponentChosenOnlyWhenSendingIsUnknownNextToAStaticProducer() {
+        for (String uri : List.of("language:header:receiverUrl", "LANGUAGE:simple:${header.target}",
+                "${header.receiverUrl}", "$simple{header.receiverUrl}", " kafka:${header.topic}")) {
+            var registry = new SimpleMeterRegistry();
+            var signals = new TrafficSignals(registry, "record_published", "input");
+            signals.observeProducerEndpoint(producer(true, "all"));
+            signals.observeDynamicEndpoint(uri);
+            assertEquals(0, registry.get("integration_traffic_signal_supported").tag("signal", "record_published")
+                    .gauge().value(), uri);
+            registry.close();
+        }
+    }
+    @Test void aDynamicSendToAnotherFixedComponentKeepsPublicationCoverage() {
+        var signals = publishingSignals();
+        signals.observeDynamicEndpoint("http:receiver.example/${header.path}");
+        assertEquals(1, supported("record_published"));
+    }
     @Test void dynamicKafkaConfigurationIsUnknownWithoutChangingRoutes() {
         var signals = publishingSignals();
         signals.observeDynamicEndpoint("kafka:${header.topic}");

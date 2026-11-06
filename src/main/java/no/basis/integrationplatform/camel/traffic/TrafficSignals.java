@@ -184,14 +184,19 @@ public class TrafficSignals {
 
     /**
      * Marks an unresolved dynamic Kafka destination as unsupported rather than
-     * infer ACK configuration or completeness from a URI expression.
+     * infer ACK configuration or completeness from a URI expression. A destination whose
+     * component is chosen only when it sends, such as {@code ${header.receiverUrl}} or
+     * {@code language:header:receiverUrl}, may be Kafka, so it is unsupported too.
      *
      * @param uri dynamic producer expression
      */
     public void observeDynamicEndpoint(String uri) {
         if (!counts.get(Signal.record_published).selected) return;
-        int colon = uri == null ? -1 : uri.indexOf(':');
-        if (colon < 0 || uri.substring(0, colon).contains("${") || uri.startsWith("kafka:"))
+        String trimmed = uri == null ? "" : uri.trim();
+        int colon = trimmed.indexOf(':');
+        String scheme = colon < 0 ? "" : trimmed.substring(0, colon);
+        if (scheme.isEmpty() || scheme.contains("$") || scheme.contains("{")
+                || scheme.equalsIgnoreCase("language") || scheme.equalsIgnoreCase("kafka"))
             invalidate(Signal.record_published);
     }
 

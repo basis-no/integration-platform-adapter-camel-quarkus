@@ -46,9 +46,16 @@ Producer `additionalProperties.acks` overrides are checked too. Transactional
 producers are unsupported: an individual record ACK does not prove transaction
 commit or consumer visibility. All observed Kafka producers must provide reliable metadata, even when their usual
 destination is outside the allowlist, because per-record topic overrides are
-possible. Dynamic Kafka destinations, unknown dynamic schemes, ACK0 or disabled
-metadata make publication coverage unsupported for that process. A successful
-send without fresh assigned-offset metadata also invalidates coverage.
+possible. Dynamic Kafka destinations, unknown dynamic schemes (a `toD` whose
+component is chosen only when it sends, such as `${header.receiverUrl}` or
+`language:header:receiverUrl`), ACK0 or disabled metadata make publication
+coverage unsupported for that process. A successful send without fresh
+assigned-offset metadata also invalidates coverage.
+
+Only `to` and `toD` sends are observed. A Kafka publish through `enrich`,
+`wireTap`, `recipientList`, `routingSlip` or a `ProducerTemplate` is neither
+counted nor makes coverage unsupported, so keep publishes to the listed topics
+in `to` or `toD` when `record_published` is selected.
 
 The exporter snapshots existing metadata identities before each send and counts
 only new, unique records after producer completion. It preserves application
@@ -66,7 +73,7 @@ the telemetry is unsupported and message processing continues.
 | Prometheus metric | Labels | Value |
 | --- | --- | --- |
 | `integration_traffic_events_total` | `signal=record_admitted` or `record_published` | Monotonic per-process count while supported |
-| `integration_traffic_signal_supported` | Same fixed `signal` values | `1` only for an explicitly selected, supported event; otherwise `0` |
+| `integration_traffic_signal_supported` | Same fixed `signal` values | `1` only for a selected (by default or explicitly) and supported event; otherwise `0` |
 | `integration_traffic_process_start_time_seconds` | None | JVM process-start hint in seconds, not last activity time |
 
 No topic, payload, message, integration or customer identifiers are metric labels.
