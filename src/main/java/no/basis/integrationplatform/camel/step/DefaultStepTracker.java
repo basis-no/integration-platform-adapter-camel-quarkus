@@ -31,6 +31,21 @@ public class DefaultStepTracker implements StepTracker {
 
     private static final ObjectMapper REDO_STEPS_READER = new ObjectMapper();
 
+    /**
+     * The exchange properties that describe the send in progress: {@link #beforeSend} sets
+     * them and the outcome is recorded from them.
+     */
+    static final List<String> CURRENT_STEP_PROPERTIES = List.of(
+            StepVisits.REPEATED_IN,
+            PlatformExchangeProperties.CURRENT_STEP_ID,
+            PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY,
+            PlatformExchangeProperties.CURRENT_ENDPOINT_URI,
+            PlatformExchangeProperties.STEP_SHOULD_SKIP,
+            PlatformExchangeProperties.STEP_ALREADY_DELIVERED,
+            PlatformExchangeProperties.STEP_TRACKING_SUPPRESSED,
+            PlatformExchangeProperties.CURRENT_STEP_ROLE,
+            PlatformExchangeProperties.CURRENT_STEP_CHECKPOINT);
+
     private final StepOutcomeStore stepOutcomeStore;
     private final StepClassifier stepClassifier;
     private final StepOutputCheckpointService checkpointService;
@@ -328,14 +343,7 @@ public class DefaultStepTracker implements StepTracker {
     }
 
     private void clearCurrentStep(Exchange exchange) {
-        exchange.removeProperty(StepVisits.REPEATED_IN);
-        exchange.removeProperty(PlatformExchangeProperties.CURRENT_STEP_ID);
-        exchange.removeProperty(PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY);
-        exchange.removeProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP);
-        exchange.removeProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED);
-        exchange.removeProperty(PlatformExchangeProperties.STEP_TRACKING_SUPPRESSED);
-        exchange.removeProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE);
-        exchange.removeProperty(PlatformExchangeProperties.CURRENT_STEP_CHECKPOINT);
+        CURRENT_STEP_PROPERTIES.forEach(exchange::removeProperty);
     }
 
     private boolean shouldSkip(Exchange exchange) {

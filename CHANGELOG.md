@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+- A tracked send in a route that another send calls, such as a `direct:`
+  sub-route, is recorded once per try. Before, the calling send recorded the
+  sub-route's step again when it completed. A successful call was listed twice
+  as `DELIVERED`. When the sub-route's dead-letter channel parked the message
+  after the send failed, the step was recorded `DELIVERED` with no error, so a
+  resend or replay skipped it and the receiver never got the message. When the
+  input route's error handler retried the call instead, each failed try was
+  listed twice as `FAILED`. A calling send now records only its own step, and
+  a `direct:` send records none. Adapter 0.3.5 and 0.3.6 have the same fault,
+  and no 0.3.x release fixes it; see
+  [Steps and idempotency](docs/steps-and-idempotency.md#sends-in-a-sub-route)
+  for the workaround.
+  Upgrade: a message that 0.3.x parked in this shape keeps its `DELIVERED`
+  step; resend it with the step in `redoSteps`.
 - A Kafka input is committed only after it completed or the DLQ endpoint
   accepted its record. Before, a failed DLQ publish was recorded as `DLQ` and
   the offset committed, so the message was acknowledged without being parked;

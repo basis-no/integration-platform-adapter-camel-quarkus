@@ -64,6 +64,11 @@ Start with the [documentation index](docs/index.md).
 
 - Released versions are on the `0.3` line and use message-store schema
   version 1; see [CHANGELOG.md](CHANGELOG.md).
+- Known limitation of 0.3.x: a failed send in a `direct:` sub-route is
+  recorded `DELIVERED` when the sub-route's dead-letter channel parks the
+  message, so a resend skips it. Resend with the step in `redoSteps`; see
+  [Sends in a sub-route](docs/steps-and-idempotency.md#sends-in-a-sub-route).
+  Fixed for 0.4.0.
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3
   payload storage, output-side-effect checkpoints, non-Kafka ingress
   normalization, and replica-safety validation.
