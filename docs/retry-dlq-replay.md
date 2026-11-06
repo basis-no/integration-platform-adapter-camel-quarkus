@@ -146,9 +146,9 @@ refuses a message:
 
 - whose stored integration is not this integration (`app.name`);
 - whose last attempt was recorded by a route that is not a Kafka consumer of
-  this integration's replay topic in the running application: a route that
-  was removed or renamed, consumes another topic or a topic pattern, or is not
-  a Kafka route;
+  exactly this integration's replay topic in the running application: a route
+  that was removed or renamed, consumes another topic, a list of topics or a
+  topic pattern, or is not a Kafka route;
 - whose last attempt is missing, or holds another payload than the message.
 
 The endpoint answers `409 Conflict` with the reason. A message recorded by a
