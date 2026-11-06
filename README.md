@@ -67,8 +67,9 @@ Start with the [documentation index](docs/index.md).
 - Security: adapter 0.3.1 to 0.3.6 and 0.4.0-rc1 can forward a consumed
   Kafka record's credentials to an HTTP receiver, through Camel's
   `kafka.HEADERS` on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0.
-  Adapter 0.3.5 and earlier also send the record's credential headers
-  directly. See
+  Adapter 0.3.5 and earlier, and 0.4.0-rc1, also send the record's
+  credential headers directly, and `vertx-http` sends them as text on every
+  version. See
   [GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)
   for the `removeHeaders("kafka.*")` workaround. Fixed for 0.4.0.
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3

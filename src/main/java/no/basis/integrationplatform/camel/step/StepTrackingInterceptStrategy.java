@@ -80,6 +80,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             Processor nextTarget) {
 
         httpTimeoutOptions.check(context, definition, target);
+        HttpKafkaConsumerHeaders.install(context);
         if (inDeadLetterRoute(definition)) {
             // Parking is the adapter's own work, not a step that a replay may skip.
             return target;
@@ -258,7 +259,6 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         private final EndpointSend endpointSend;
         private final StepTracker stepTracker;
         private final boolean httpSend;
-        private final boolean httpProducer;
         private final boolean dynamicScheme;
         private final Endpoint endpoint;
         private final boolean mayPublishToKafka;
@@ -281,7 +281,6 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
             this.httpSend = ForwardedCredentialHeaders.isHttp(endpointSend.endpointUri());
-            this.httpProducer = ForwardedCredentialHeaders.isHttpProducer(endpointSend.endpointUri());
             this.dynamicScheme = dynamicScheme;
             this.endpoint = endpoint;
             this.mayPublishToKafka = mayPublishToKafka;
@@ -388,10 +387,8 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         private java.util.Map<String, Object> withholdCredentials(Exchange exchange) {
             // A send that picks its component at send time may be http, so it is treated as one.
-            if (httpSend || dynamicScheme) {
-                return ForwardedCredentialHeaders.withhold(exchange, endpointSend.nodeId());
-            }
-            return httpProducer ? ForwardedCredentialHeaders.withholdKafkaMetadata(exchange) : java.util.Map.of();
+            return httpSend || dynamicScheme
+                    ? ForwardedCredentialHeaders.withhold(exchange, endpointSend.nodeId()) : java.util.Map.of();
         }
 
         private boolean alreadyDelivered(Exchange exchange) {
