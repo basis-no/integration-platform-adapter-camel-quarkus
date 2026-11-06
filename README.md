@@ -354,8 +354,10 @@ record's credential headers, such as `Authorization`, before these sends:
   send to an HTTP receiver;
 - with adapter 0.3.5 and earlier, every HTTP send.
 
-Adapter 0.4.0 will withhold the `kafka.*` headers and the record's credential
-headers on every send to an HTTP receiver.
+Adapter 0.4.0, not yet released, will withhold the `kafka.*` headers and the
+record's credential headers on sends to `http`, `https`, `netty-http` and
+`vertx-http` endpoints, through any EIP, with documented limits; see its
+changelog.
 
 - the body is the **original consumed payload**, restored from the payload
   captured at route start — not a mid-transformation body, and not a byte array

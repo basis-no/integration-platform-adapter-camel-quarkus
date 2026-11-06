@@ -254,8 +254,9 @@ and iteration its own step key. See the
   or `ProducerTemplate` send to an HTTP receiver. Adapter 0.3.5 and earlier
   also send them through every tracked send to Camel's `http` component, as
   byte-array text; remove them there too.
-  There is no 0.3.x fix. Adapter 0.4.0 will withhold the `kafka.*` headers
-  and the record's credential headers on every send to an HTTP receiver.
+  There is no 0.3.x fix. Adapter 0.4.0, not yet released, will withhold the
+  `kafka.*` headers and the record's credential headers on sends to `http`,
+  `https`, `netty-http` and `vertx-http` endpoints, with documented limits.
 - A step outcome that is not recorded holds back only the input whose attempt
   made the send, with its split parts, loop iterations and branches. A separate
   request the input sends, for example with a `ProducerTemplate`, fails on its
