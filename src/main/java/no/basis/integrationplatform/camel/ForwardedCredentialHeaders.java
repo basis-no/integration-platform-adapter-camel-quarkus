@@ -29,8 +29,8 @@ import java.util.concurrent.ConcurrentHashMap;
  * sets itself is text and is sent as before. Camel's Kafka consumer also sets headers named
  * {@code kafka.*} on camel-kafka 4.0.0 to 4.14.7, 4.15.0 to 4.18.2 and 4.19.0 to 4.20.0, and
  * HTTP producers send them: {@code kafka.HEADERS} lists the bytes of every record header,
- * credentials included. Later versions name them {@code CamelKafka*}, which HTTP producers do
- * not send.
+ * credentials included. Later versions name them {@code CamelKafka*}, which Camel's default
+ * HTTP header filters drop; an application's own filter may let them through.
  * <p>
  * A tracked {@code to} or {@code toD} through Camel's http component withholds the credential
  * headers around the send. {@link #install} adds both kinds to the header filter of every
