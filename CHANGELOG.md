@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Final releases can be signed and published from a protected `vX.Y.Z` tag in
+  CI, in four separate jobs: `build` runs Maven and the tests with no secret and
+  no identity token, `attest` runs no project code, and `sign-upload` and
+  `publish` each wait for an approval in a protected environment, check out only
+  the release tools at a trusted commit, sign with a CI signing subkey and
+  publish exactly the uploaded deployment. Every action is pinned by commit SHA.
+  The release-page workflow (`release-page.yml`, formerly
+  `publish-central.yml`) only verifies the published artifacts before it writes
+  the GitHub Release. Offline signing stays as the fallback. The path needs
+  repository settings first: the two environments, a tag ruleset, the signer's
+  public key and fingerprint, the trusted tooling commit and the environment
+  secrets; see `docs/release-packaging.md`.
 - Remove production signing and publisher credentials from candidate inspection.
   Inspection now retains unsigned evidence only, and its receipt records the
   producing workflow run. Existing artifacts remain unchanged.
@@ -10,8 +22,9 @@
   the release manager's gpg-agent, verifies each signature against the pinned
   fingerprint and assembles the validated Central bundle with a signing receipt.
   Upload and publication run from the release workstation with
-  `central-recovery.py`; the production key and portal token never exist in
-  GitHub. Post-publication readback compares public bytes with the unsigned
+  `central-recovery.py`; the primary release key never exists in GitHub, and
+  the only signing material there is the protected tag path's dedicated CI
+  subkey and environment-scoped Central token (below). Post-publication readback compares public bytes with the unsigned
   receipt and the signed-entries digest. Snapshot publication stays suspended;
   acceptance uses locally built artifacts.
 
