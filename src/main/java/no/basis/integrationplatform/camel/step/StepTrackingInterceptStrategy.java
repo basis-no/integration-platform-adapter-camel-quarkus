@@ -81,24 +81,25 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         httpTimeoutOptions.check(context, definition, target);
         ForwardedCredentialHeaders.install(context);
+        // Camel warns at route start for each processor handed back without an AsyncProcessor,
+        // and bridges it itself; the converter returns an asynchronous processor unchanged.
+        AsyncProcessor processor = AsyncProcessorConverterHelper.convert(target);
         if (inDeadLetterRoute(definition)) {
             // Parking is the adapter's own work, not a step that a replay may skip.
-            return target;
+            return processor;
         }
         EndpointSend endpointSend = endpointSend(definition, target);
         if (endpointSend == null) {
             String kind = scopeKind(definition);
-            return kind == null ? target
-                    : new PartsScope(AsyncProcessorConverterHelper.convert(target), StepVisits.marker(kind, scopes.incrementAndGet()));
+            return kind == null ? processor : new PartsScope(processor, StepVisits.marker(kind, scopes.incrementAndGet()));
         }
         checkStepId(definition, endpointSend);
 
-        AsyncProcessor delegate = AsyncProcessorConverterHelper.convert(target);
         boolean dynamicScheme = dynamicScheme(target, endpointSend);
         Endpoint endpoint = target instanceof SendProcessor send ? send.getEndpoint() : null;
         boolean mayPublishToKafka = PublishedCredentialHeaders.mayPublishToKafka(
                 endpoint, endpointSend.endpointUri(), dynamicScheme);
-        return new StepTrackingProcessor(delegate, endpointSend, stepTracker, dynamicScheme,
+        return new StepTrackingProcessor(processor, endpointSend, stepTracker, dynamicScheme,
                 mayPublishToKafka ? endpoint : null, mayPublishToKafka, routeId(definition), publishedCredentials);
     }
 
