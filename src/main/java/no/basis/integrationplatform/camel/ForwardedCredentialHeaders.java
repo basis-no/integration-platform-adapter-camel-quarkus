@@ -5,6 +5,7 @@ import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
 import org.apache.camel.spi.EndpointStrategy;
 import org.apache.camel.spi.HeaderFilterStrategy;
+import org.apache.camel.spi.HeaderFilterStrategyAware;
 import org.apache.camel.spi.InterceptSendToEndpoint;
 import org.apache.camel.spi.PropertyConfigurer;
 import org.apache.camel.spi.PropertyConfigurerGetter;
@@ -146,19 +147,34 @@ public final class ForwardedCredentialHeaders {
             }
             PropertyConfigurer configurer = endpoint.getComponent() == null ? null
                     : endpoint.getComponent().getEndpointPropertyConfigurer();
-            if (!(configurer instanceof PropertyConfigurerGetter getter)) {
-                throw unfiltered(endpoint);
-            }
-            Object filter = getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true);
-            if (filter == null || filter instanceof RecordHeaderFilter) {
+            if (configurer instanceof PropertyConfigurerGetter getter
+                    && getter.getOptionType(HEADER_FILTER_STRATEGY, true) instanceof Class<?> type
+                    && HeaderFilterStrategy.class.isAssignableFrom(type)) {
+                // The component's own option: camel-http's endpoint, vertx-http's configuration,
+                // netty-http's endpoint and binding.
+                Object filter = getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true);
+                if (filter == null || filter instanceof RecordHeaderFilter) {
+                    return registered;
+                }
+                if (!(filter instanceof HeaderFilterStrategy strategy)
+                        || !configurer.configure(context, endpoint, HEADER_FILTER_STRATEGY, new RecordHeaderFilter(strategy), true)
+                        || !(getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true) instanceof RecordHeaderFilter)) {
+                    throw unfiltered(endpoint);
+                }
                 return registered;
             }
-            if (!(filter instanceof HeaderFilterStrategy strategy)
-                    || !configurer.configure(context, endpoint, HEADER_FILTER_STRATEGY, new RecordHeaderFilter(strategy), true)
-                    || !(getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true) instanceof RecordHeaderFilter)) {
-                throw unfiltered(endpoint);
+            // A configurer that does not know the option, for example of a subclassed component.
+            if (endpoint instanceof HeaderFilterStrategyAware aware) {
+                HeaderFilterStrategy filter = aware.getHeaderFilterStrategy();
+                if (filter == null || filter instanceof RecordHeaderFilter) {
+                    return registered;
+                }
+                aware.setHeaderFilterStrategy(new RecordHeaderFilter(filter));
+                if (aware.getHeaderFilterStrategy() instanceof RecordHeaderFilter) {
+                    return registered;
+                }
             }
-            return registered;
+            throw unfiltered(endpoint);
         }
 
         private static IllegalStateException unfiltered(Endpoint endpoint) {

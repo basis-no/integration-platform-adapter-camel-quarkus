@@ -289,6 +289,30 @@ class HttpSendRecordHeadersTest {
         assertTrue(names.getFirst().contains("x-route-token"));
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aSubclassedHttpComponentIsCovered(boolean configurerWithoutTheOption) throws Exception {
+        // Its configurer may be missing or not know the headerFilterStrategy option; the endpoint
+        // still has its filter.
+        var unaware = new UnawareConfigurer();
+        context.addComponent("http", new org.apache.camel.component.http.HttpComponent() {
+            @Override
+            public org.apache.camel.spi.PropertyConfigurer getEndpointPropertyConfigurer() {
+                return configurerWithoutTheOption ? unaware : null;
+            }
+        });
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record").to(receiver + "/subclassed").id("post-subclassed");
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/subclassed"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+    }
+
     @Test
     void anHttpEndpointWhoseFilterCannotBeExtendedDoesNotStart() throws Exception {
         context.addComponent("https", new org.apache.camel.support.DefaultComponent() {
@@ -366,6 +390,23 @@ class HttpSendRecordHeadersTest {
             });
         } catch (Exception e) {
             throw new AssertionError(e);
+        }
+    }
+
+    /** A configurer that knows no option. */
+    private static final class UnawareConfigurer
+            implements org.apache.camel.spi.PropertyConfigurer, org.apache.camel.spi.PropertyConfigurerGetter {
+        public boolean configure(org.apache.camel.CamelContext camelContext, Object target, String name, Object value,
+                boolean ignoreCase) {
+            return false;
+        }
+
+        public Class<?> getOptionType(String name, boolean ignoreCase) {
+            return null;
+        }
+
+        public Object getOptionValue(Object target, String name, boolean ignoreCase) {
+            return null;
         }
     }
 
