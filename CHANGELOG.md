@@ -4,8 +4,9 @@
 
 - Routes start without Camel's warning that the adapter's intercept strategy
   "does not return an AsyncProcessor instance". Camel logged it once for each
-  processor the adapter does not track, such as `validate`, and then bridged
-  that processor to its asynchronous routing engine itself. The adapter now
+  processor that the adapter does not track and that is not asynchronous, such
+  as `validate`, and then bridged that processor to its asynchronous routing
+  engine itself. The adapter now
   hands back the same bridge, or the processor unchanged when it is already
   asynchronous, so routes behave and fail as before.
 - A replay sends a message again only to the integration that recorded it,
