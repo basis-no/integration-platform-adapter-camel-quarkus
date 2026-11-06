@@ -349,6 +349,9 @@ record's credential headers, such as `Authorization`, before these sends:
   send to an HTTP receiver;
 - with adapter 0.3.5 and earlier, every HTTP send.
 
+Adapter 0.4.0 will withhold the `kafka.*` headers and the record's credential
+headers on every send to an HTTP receiver.
+
 - the body is the **original consumed payload**, restored from the payload
   captured at route start — not a mid-transformation body, and not a byte array
   the route changed in place. The adapter keeps one copy of a `byte[]` input:
