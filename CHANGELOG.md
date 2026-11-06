@@ -15,22 +15,23 @@
   was incomplete. `enrich`, `wireTap`, `recipientList`, `routingSlip` and
   `ProducerTemplate` sends still forwarded them, and `vertx-http` sent them
   as text.
-  The adapter now withholds both while Camel sends to an `http`, `https`,
-  `netty-http` or `vertx-http` endpoint, after Camel has chosen the endpoint,
-  through any of these EIPs or a `ProducerTemplate`. It restores
-  them when the send completes, also after a failure. The route, a `toD` URI,
-  and routes it calls through internal endpoints such as `direct:` therefore
-  still read them. A credential header is withheld only while it still holds
-  the record's bytes; one the route sets itself, as text, is sent as before.
-  Each withheld credential header logs a warning once per step or route and
-  header name, without the value. The withholding runs on Camel's exchange
-  sending events, so a `ProducerTemplate` whose event notifier is disabled
-  sends without it, and Camel sends on if the withholding fails. A `rest:`
-  send is not covered: its producer binds headers into the path and query
-  after the send starts
-  ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53)).
-  Remove `kafka.HEADERS` and the record's credential headers before such a
-  send.
+  The adapter now adds both to the header filter of every `http`, `https`,
+  `netty-http` and `vertx-http` endpoint the context registers, together with
+  the endpoint's own filter, so the producer leaves them out of the request
+  whichever EIP sends: `to`, `toD`, `enrich`, `wireTap`, `recipientList`,
+  `routingSlip`, `multicast`, a `ProducerTemplate`, and the HTTP endpoint a
+  `rest:` send uses after it has bound its path and query. The exchange keeps
+  the headers, so the route, a `toD` URI, a `rest:` placeholder, a later
+  routing slip step, a route behind an internal endpoint such as `direct:`,
+  and the record the adapter parks in the DLQ still see them. A credential
+  header is left out only while it still holds the record's bytes; one the
+  route sets itself, as text, is sent as before. Each credential header left
+  out logs a warning once per step or route and header name, without the
+  value. An HTTP endpoint whose header filter the adapter cannot extend fails
+  when it is created, so its route does not start. Not covered: an endpoint
+  that Camel creates for a single send without registering it, such as one
+  from a `toD` with `cacheSize=-1`, and an endpoint whose header filter the
+  application replaces after the endpoint was registered.
   Upgrade: a receiver that got a caller's credential forwarded from the
   record, for example through `vertx-http` or an `enrich`, no longer gets it
   and may answer 401. To forward a credential deliberately, set the header in

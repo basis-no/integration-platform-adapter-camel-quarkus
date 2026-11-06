@@ -190,12 +190,16 @@ class HttpSendRecordHeadersTest {
     }
 
     @Test
-    void aRestSendStillBindsTheConsumerHeadersIntoItsPathAndQuery() throws Exception {
+    void aRestSendBindsTheConsumerHeadersIntoItsPathAndQueryButDoesNotSendThem() throws Exception {
         List<String> uris = Collections.synchronizedList(new ArrayList<>());
         server.removeContext("/");
         server.createContext("/", x -> {
             x.getRequestBody().readAllBytes();
             uris.add(x.getRequestURI().toString());
+            var names = new TreeSet<String>();
+            x.getRequestHeaders().keySet().forEach(name -> names.add(name.toLowerCase(Locale.ROOT)));
+            requests.add(new Request(x.getRequestURI().getPath(), names, x.getRequestHeaders().getFirst("X-Route-Header"),
+                    x.getRequestHeaders().getFirst("X-Route-Token")));
             x.sendResponseHeaders(200, -1);
             x.close();
         });
@@ -209,7 +213,79 @@ class HttpSendRecordHeadersTest {
         context.start();
         sendRecord(Map.of());
 
-        assertEquals(List.of("/orders/orders-in?key=record-key"), uris, "A rest: send is not covered, so it binds as before");
+        assertEquals(List.of("/orders/orders-in?key=record-key"), uris, "The path and query bind as before");
+        assertNoRecordHeaders();
+    }
+
+    @Test
+    void aRoutingSlipStepAfterAnHttpSendStillSeesTheHeaders() throws Exception {
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .routingSlip(constant(receiver + "/first,direct:sub"));
+                from("direct:sub").routeId("sub").process(e -> {
+                    seen.add(e.getMessage().getHeader("kafka.HEADERS"));
+                    seen.add(e.getMessage().getHeader("kafka.KEY"));
+                });
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/first"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+        assertSame(recordHeaders, seen.get(0));
+        assertEquals("record-key", seen.get(1));
+    }
+
+    @Test
+    void aProducerTemplateWithoutEventNotificationIsCovered() throws Exception {
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record").process(e -> {
+                    try (var template = e.getContext().createProducerTemplate()) {
+                        template.setEventNotifierEnabled(false);
+                        template.send(receiver + "/template", e);
+                    }
+                });
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/template"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+    }
+
+    @Test
+    void anEndpointsOwnHeaderFilterStillApplies() throws Exception {
+        List<Set<String>> names = Collections.synchronizedList(new ArrayList<>());
+        server.removeContext("/");
+        server.createContext("/", x -> {
+            x.getRequestBody().readAllBytes();
+            var received = new TreeSet<String>();
+            x.getRequestHeaders().keySet().forEach(name -> received.add(name.toLowerCase(Locale.ROOT)));
+            names.add(received);
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        var own = new org.apache.camel.http.base.HttpHeaderFilterStrategy();
+        own.getOutFilter().add("x-route-header");
+        context.getRegistry().bind("ownFilter", own);
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record")
+                        .to(receiver + "/own?headerFilterStrategy=#ownFilter").id("post-own");
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(1, names.size());
+        assertTrue(!names.getFirst().contains("x-route-header"), "The endpoint's own filter applies: " + names);
+        assertTrue(names.getFirst().stream().noneMatch(name -> name.startsWith("kafka.") || name.equals("authorization")),
+                "The record headers are left out too: " + names);
+        assertTrue(names.getFirst().contains("x-route-token"));
     }
 
     @Test

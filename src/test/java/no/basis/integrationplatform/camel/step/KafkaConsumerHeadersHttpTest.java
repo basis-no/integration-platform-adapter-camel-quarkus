@@ -14,6 +14,7 @@ import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
 import org.apache.kafka.common.header.internals.RecordHeader;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.CsvSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.testcontainers.junit.jupiter.Container;
 import org.testcontainers.junit.jupiter.Testcontainers;
@@ -155,8 +156,8 @@ class KafkaConsumerHeadersHttpTest {
      * committed after parking as before.
      */
     @ParameterizedTest
-    @ValueSource(strings = {"", "vertx-http:"})
-    void aParkedRecordKeepsItsKeyAfterAFailedHttpSend(String component) throws Exception {
+    @CsvSource({"'',to", "vertx-http:,to", "'',recipientList", "vertx-http:,recipientList", "'',routingSlip", "vertx-http:,routingSlip"})
+    void aParkedRecordKeepsItsKeyAfterAFailedHttpSend(String component, String shape) throws Exception {
         String input = "input-" + UUID.randomUUID();
         String dlq = "dlq-" + UUID.randomUUID();
         String group = "group-" + UUID.randomUUID();
@@ -187,10 +188,14 @@ class KafkaConsumerHeadersHttpTest {
             String url = component + "http://127.0.0.1:" + receiver.getAddress().getPort() + "/orders";
             context.addRoutes(new RouteBuilder() {
                 public void configure() {
-                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=" + group
+                    var route = from("kafka:" + input + "?brokers=" + brokers + "&groupId=" + group
                             + "&autoOffsetReset=earliest&allowManualCommit=true&autoCommitEnable=false&pollTimeoutMs=100")
-                            .routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
-                            .to(url).id("post-order");
+                            .routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY);
+                    switch (shape) {
+                        case "recipientList" -> route.recipientList(constant(url));
+                        case "routingSlip" -> route.routingSlip(constant(url));
+                        default -> route.to(url).id("post-order");
+                    }
                 }
             });
             var producerProperties = new HashMap<String, Object>(Map.of("bootstrap.servers", brokers));

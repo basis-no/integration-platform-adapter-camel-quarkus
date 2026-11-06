@@ -60,29 +60,30 @@ partition, offset and timestamp. Later Camel versions name them `CamelKafka*`,
 and Camel's HTTP producers do not send those names. A receiver that needs the
 record key or topic should get it from a header the route sets itself.
 
-The adapter withholds these headers while Camel sends to an `http`, `https`,
-`netty-http` or `vertx-http` endpoint, after Camel has chosen the endpoint, and
-restores them when the send completes, also after a failure. A
-`toD` URI can therefore still use them, and so can the route and the routes it
-calls through internal endpoints such as `direct:`. This covers `to`, `toD`,
-`enrich`, `wireTap`, `recipientList`, `routingSlip`, `multicast` and a
-`ProducerTemplate`. Each withheld credential header logs a warning once per
-step or route and header name, never its value. A tracked `to` or `toD`
-through Camel's `http` component, and a `toD` that chooses its component only
-when it sends, such as `${header.receiverUrl}`, also withhold the credential
-headers around the send itself.
+The adapter adds these headers to the header filter of every `http`, `https`,
+`netty-http` and `vertx-http` endpoint the context registers, together with the
+endpoint's own filter, such as one set with `headerFilterStrategy=#name`. The
+producer then leaves them out of the request, whichever EIP sends: `to`, `toD`,
+`enrich`, `wireTap`, `recipientList`, `routingSlip`, `multicast`, a
+`ProducerTemplate`, and the HTTP endpoint a `rest:` send uses, after it has
+bound its path and query. The exchange keeps the headers. A `toD` URI, a
+`rest:` placeholder such as `{kafka.TOPIC}`, a later routing slip step, the
+route and the routes it calls through internal endpoints such as `direct:`
+still read them, and the record the adapter parks in the DLQ keeps its key.
+Each credential header left out logs a warning once per step or route and
+header name, never its value. A tracked `to` or `toD` through Camel's `http`
+component, and a `toD` that chooses its component only when it sends, such as
+`${header.receiverUrl}`, also withhold the credential headers around the send
+itself.
 
-The withholding at the endpoint runs on Camel's exchange sending and sent
-events, so a `ProducerTemplate` whose event notifier is disabled
-(`setEventNotifierEnabled(false)`) sends without it. Camel also sends on when an
-event notifier fails, so a failure to withhold does not stop the send; it is
-logged at WARN by Camel. A `rest:` send is not covered: its producer binds
-headers into the path and query, such as `{id}`, after the send starts, so
-withholding them earlier would send the request elsewhere
-([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53)).
-Other components that call an HTTP receiver are not covered either. Remove the
-headers before such a send,
-with `removeHeader("kafka.HEADERS")` and, for example,
+An HTTP endpoint whose header filter the adapter cannot extend fails when it is
+created, so its route does not start. An endpoint without a header filter sends
+no headers and is left as it is. Not covered: an endpoint that Camel creates for
+a single send without registering it, such as one from a `toD` with
+`cacheSize=-1`; an endpoint whose header filter the application replaces after
+the endpoint was registered; and components other than these four, unless they
+send through one of them. Remove the headers before such a send, with
+`removeHeader("kafka.HEADERS")` and, for example,
 `removeHeaders("Authorization")`. Do not remove all `kafka.*` headers: that also
 removes `kafka.KEY`, which Camel's Kafka producer uses as the key of the record
 the adapter parks in the DLQ.

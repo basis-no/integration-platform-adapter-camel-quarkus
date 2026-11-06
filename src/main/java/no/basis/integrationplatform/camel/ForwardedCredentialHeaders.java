@@ -3,20 +3,21 @@ package no.basis.integrationplatform.camel;
 import org.apache.camel.CamelContext;
 import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
-import org.apache.camel.spi.CamelEvent;
-import org.apache.camel.spi.ManagementStrategy;
-import org.apache.camel.support.EventNotifierSupport;
-import org.apache.camel.support.service.ServiceHelper;
+import org.apache.camel.spi.EndpointStrategy;
+import org.apache.camel.spi.HeaderFilterStrategy;
+import org.apache.camel.spi.PropertyConfigurer;
+import org.apache.camel.spi.PropertyConfigurerGetter;
+import org.apache.camel.util.URISupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.util.ArrayDeque;
-import java.util.Deque;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.WeakHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
@@ -31,22 +32,22 @@ import java.util.concurrent.ConcurrentHashMap;
  * not send.
  * <p>
  * A tracked {@code to} or {@code toD} through Camel's http component withholds the credential
- * headers around the send. {@link #install} withholds both kinds while Camel sends to an
- * {@code http}, {@code https}, {@code netty-http} or {@code vertx-http} endpoint, after it has
- * chosen the endpoint, through any EIP or a {@code ProducerTemplate}, and restores them when
- * the send completes, also after a failure. That runs on Camel's exchange sending events, so
- * a {@code ProducerTemplate} with its event notifier disabled is not covered, and Camel sends
- * on when a notifier fails. A {@code rest:} send is not covered either.
+ * headers around the send. {@link #install} adds both kinds to the header filter of every
+ * {@code http}, {@code https}, {@code netty-http} and {@code vertx-http} endpoint the context
+ * registers, so the producer leaves them out of the request whichever EIP sends, also the one
+ * a {@code rest:} send uses. The exchange keeps the headers. An endpoint whose filter is unset,
+ * which then sends no headers, is left alone, and so is an endpoint Camel does not register,
+ * such as one a {@code toD} with {@code cacheSize=-1} creates for a single send.
  */
 public final class ForwardedCredentialHeaders {
     private static final Logger LOG = LoggerFactory.getLogger(ForwardedCredentialHeaders.class);
     private static final Set<String> HTTP_SCHEMES = Set.of("http", "https");
-    // A rest: producer binds headers into its path and query after the send event, so it is
-    // not covered here.
     private static final Set<String> HTTP_COMPONENTS = Set.of("http", "https", "netty-http", "vertx-http");
     private static final String KAFKA_CONSUMER_PREFIX = "kafka.";
-    private static final String WITHHELD = "basis.messageStore.withheldRecordHeaders";
+    private static final String HEADER_FILTER_STRATEGY = "headerFilterStrategy";
     private static final Set<String> WARNED = ConcurrentHashMap.newKeySet();
+    private static final Set<CamelContext> INSTALLED = Collections.synchronizedSet(
+            Collections.newSetFromMap(new WeakHashMap<>()));
 
     private ForwardedCredentialHeaders() {
     }
@@ -77,9 +78,18 @@ public final class ForwardedCredentialHeaders {
      * @return the removed headers, to restore after the send
      */
     public static Map<String, Object> withhold(Exchange exchange, String stepId) {
-        Map<String, Object> withheld = new LinkedHashMap<>();
-        withhold(exchange, withheld, false, "step " + stepId);
-        return withheld.isEmpty() ? Map.of() : withheld;
+        Map<String, Object> withheld = null;
+        for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
+            Object value = exchange.getMessage().getHeader(name);
+            if (value instanceof byte[] && PlatformRouteConfiguration.isCredentialHeader(name)) {
+                if (withheld == null) {
+                    withheld = new LinkedHashMap<>();
+                }
+                withheld.put(name, exchange.getMessage().removeHeader(name));
+                warn(name, "step " + stepId);
+            }
+        }
+        return withheld == null ? Map.of() : withheld;
     }
 
     /**
@@ -96,106 +106,79 @@ public final class ForwardedCredentialHeaders {
     }
 
     /**
-     * Withholds a consumed record's credential headers and Camel's {@code kafka.*} consumer
-     * headers on every send to an HTTP endpoint of the context. Installs once per context.
+     * Keeps a consumed record's credential headers and Camel's {@code kafka.*} consumer headers
+     * out of every request of the HTTP endpoints the context registers. Installs once per
+     * context and also covers the endpoints already registered.
      * @param context the Camel context
      */
     public static void install(CamelContext context) {
-        ManagementStrategy management = context.getManagementStrategy();
-        synchronized (management) {
-            if (management.getEventNotifiers().stream().noneMatch(OnHttpSend.class::isInstance)) {
-                OnHttpSend notifier = new OnHttpSend();
-                ServiceHelper.startService(notifier);
-                management.addEventNotifier(notifier);
-            }
+        if (INSTALLED.add(context)) {
+            context.getCamelContextExtension().registerEndpointCallback(new FilterHttpEndpoints(context));
         }
     }
 
-    private static void withhold(Exchange exchange, Map<String, Object> withheld, boolean consumerHeaders,
-            String sender) {
-        for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
-            Object value = exchange.getMessage().getHeader(name);
-            boolean credential = value instanceof byte[] && PlatformRouteConfiguration.isCredentialHeader(name);
-            boolean consumer = consumerHeaders
-                    && name.regionMatches(true, 0, KAFKA_CONSUMER_PREFIX, 0, KAFKA_CONSUMER_PREFIX.length());
-            if (credential || consumer) {
-                withheld.put(name, exchange.getMessage().removeHeader(name));
-                if (credential && WARNED.add(sender + "\n" + name.toLowerCase(Locale.ROOT))) {
-                    LOG.warn("Header {} from the consumed Kafka record was not sent by {}. A credential "
-                            + "received with a message must not reach the next receiver; the publishing route "
-                            + "should remove caller headers before it publishes", name, sender);
-                }
-            }
+    private static void warn(String name, String sender) {
+        if (WARNED.add(sender + "\n" + name.toLowerCase(Locale.ROOT))) {
+            LOG.warn("Header {} from the consumed Kafka record was not sent by {}. A credential "
+                    + "received with a message must not reach the next receiver; the publishing route "
+                    + "should remove caller headers before it publishes", name, sender);
         }
-    }
-
-    /** What one send withheld, to restore when that send completes. */
-    private record Withheld(Endpoint endpoint, Map<String, Object> headers) {
-    }
-
-    /** The sends in progress of one exchange; a copy of the exchange gets its own. */
-    private record Sends(Exchange exchange, Deque<Withheld> withheld) {
     }
 
     /**
-     * Withholds the headers while Camel sends to an HTTP endpoint, after it has chosen the
-     * endpoint. Sends nest, for example through {@code interceptSendToEndpoint}, so each send
-     * keeps its own record and restores only its own: an inner send that completes never puts
-     * back what an outer send, still to run, withheld.
+     * Adds the record headers to the header filter of each HTTP endpoint as it is registered,
+     * keeping the endpoint's own filter. An endpoint without a filter sends no headers and is
+     * left alone. An HTTP endpoint whose filter cannot be read or replaced fails, so the route
+     * does not start without it.
      */
-    private static final class OnHttpSend extends EventNotifierSupport {
-        private OnHttpSend() {
-            setIgnoreCamelContextEvents(true);
-            setIgnoreCamelContextInitEvents(true);
-            setIgnoreRouteEvents(true);
-            setIgnoreServiceEvents(true);
-            setIgnoreStepEvents(true);
-            setIgnoreExchangeCreatedEvent(true);
-            setIgnoreExchangeCompletedEvent(true);
-            setIgnoreExchangeFailedEvents(true);
-            setIgnoreExchangeRedeliveryEvents(true);
-            setIgnoreExchangeAsyncProcessingStartedEvents(true);
-        }
-
+    private record FilterHttpEndpoints(CamelContext context) implements EndpointStrategy {
         @Override
-        public boolean isEnabled(CamelEvent event) {
-            return event instanceof CamelEvent.ExchangeSendingEvent || event instanceof CamelEvent.ExchangeSentEvent;
-        }
-
-        @Override
-        public void notify(CamelEvent event) {
-            if (event instanceof CamelEvent.ExchangeSendingEvent sending && isHttpComponent(sending.getEndpoint())) {
-                Exchange exchange = sending.getExchange();
-                Sends sends = exchange.getProperty(WITHHELD, Sends.class);
-                if (sends == null || sends.exchange() != exchange) {
-                    sends = new Sends(exchange, new ArrayDeque<>());
-                    exchange.setProperty(WITHHELD, sends);
-                }
-                Map<String, Object> headers = new LinkedHashMap<>();
-                withhold(exchange, headers, true, "a send in route " + exchange.getFromRouteId());
-                sends.withheld().push(new Withheld(sending.getEndpoint(), headers));
-            } else if (event instanceof CamelEvent.ExchangeSentEvent sent && isHttpComponent(sent.getEndpoint())) {
-                Exchange exchange = sent.getExchange();
-                Sends sends = exchange.getProperty(WITHHELD, Sends.class);
-                if (sends == null || sends.exchange() != exchange
-                        || sends.withheld().stream().noneMatch(w -> w.endpoint() == sent.getEndpoint())) {
-                    return;
-                }
-                // Restoring late is safe, restoring early is not: also put back what a send
-                // that never reported its completion withheld.
-                Withheld last;
-                do {
-                    last = sends.withheld().pop();
-                    restore(exchange, last.headers());
-                } while (last.endpoint() != sent.getEndpoint());
-                if (sends.withheld().isEmpty()) {
-                    exchange.removeProperty(WITHHELD);
-                }
+        public Endpoint registerEndpoint(String uri, Endpoint endpoint) {
+            if (endpoint == null || !hasScheme(endpoint.getEndpointUri(), HTTP_COMPONENTS)) {
+                return endpoint;
             }
+            PropertyConfigurer configurer = endpoint.getComponent() == null ? null
+                    : endpoint.getComponent().getEndpointPropertyConfigurer();
+            if (!(configurer instanceof PropertyConfigurerGetter getter)) {
+                throw unfiltered(endpoint);
+            }
+            Object filter = getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true);
+            if (filter == null || filter instanceof RecordHeaderFilter) {
+                return endpoint;
+            }
+            if (!(filter instanceof HeaderFilterStrategy strategy)
+                    || !configurer.configure(context, endpoint, HEADER_FILTER_STRATEGY, new RecordHeaderFilter(strategy), true)
+                    || !(getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true) instanceof RecordHeaderFilter)) {
+                throw unfiltered(endpoint);
+            }
+            return endpoint;
         }
 
-        private static boolean isHttpComponent(Endpoint endpoint) {
-            return endpoint != null && hasScheme(endpoint.getEndpointUri(), HTTP_COMPONENTS);
+        private static IllegalStateException unfiltered(Endpoint endpoint) {
+            return new IllegalStateException("Cannot add a consumed Kafka record's credential headers and the Kafka "
+                    + "consumer's kafka.* headers to the header filter of " + URISupport.sanitizeUri(endpoint.getEndpointUri())
+                    + "; the endpoint could send them to its receiver");
+        }
+    }
+
+    /** The endpoint's own filter, which also leaves out the consumed record's headers. */
+    private record RecordHeaderFilter(HeaderFilterStrategy filter) implements HeaderFilterStrategy {
+        @Override
+        public boolean applyFilterToCamelHeaders(String name, Object value, Exchange exchange) {
+            if (name != null && name.regionMatches(true, 0, KAFKA_CONSUMER_PREFIX, 0, KAFKA_CONSUMER_PREFIX.length())) {
+                return true;
+            }
+            if (name != null && PlatformRouteConfiguration.isCredentialHeader(name) && (value instanceof byte[]
+                    || exchange != null && exchange.getMessage().getHeader(name) instanceof byte[])) {
+                warn(name, "a send in route " + (exchange == null ? null : exchange.getFromRouteId()));
+                return true;
+            }
+            return filter.applyFilterToCamelHeaders(name, value, exchange);
+        }
+
+        @Override
+        public boolean applyFilterToExternalHeaders(String name, Object value, Exchange exchange) {
+            return filter.applyFilterToExternalHeaders(name, value, exchange);
         }
     }
 }
