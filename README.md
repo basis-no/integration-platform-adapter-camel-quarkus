@@ -332,14 +332,19 @@ named `kafka.*`. One of them, `kafka.HEADERS`, holds the record's whole header
 set. Camel's `http`, `vertx-http` and `netty-http` producers send it to the
 receiver as a header whose value lists the bytes of every record header,
 credentials included. The withholding above does not cover it, and there is
-no 0.3.x fix. Remove the consumer's headers before an HTTP send:
+no 0.3.x fix. Remove that one header before an HTTP send:
 
 ```java
-.removeHeaders("kafka.*")
+.removeHeader("kafka.HEADERS")
 .to("https://receiver.example/orders").id("post-order")
 ```
 
-or upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
+The consumer's other `kafka.*` headers, such as the record key, topic,
+partition, offset and timestamp, still reach the receiver, but they hold no
+other header's value. Do not remove them all with `removeHeaders("kafka.*")`:
+that also removes `kafka.KEY`, which Camel's Kafka producer uses as the key of
+the record that the adapter parks in the DLQ, so a parked record loses its
+key. Alternatively, upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
 4.21.0 or later, such as Quarkus 3.33.4. The withholding above covers only a
 tracked `to` or `toD` through Camel's `http` component, so also remove the
 record's credential headers, such as `Authorization`, before these sends:

@@ -242,10 +242,12 @@ and iteration its own step key. See the
   set, and Camel's `http`, `vertx-http` and `netty-http` producers send it as a
   header whose value lists the bytes of every record header, credentials
   included, so the credential withholding above does not stop it. The record
-  key, topic, partition, offset and timestamp go out too. Remove the headers
-  before the send with `.removeHeaders("kafka.*")`, or upgrade to a Quarkus
-  platform that brings camel-kafka 4.14.8, 4.18.3 or 4.21.0 or later, such as
-  Quarkus 3.33.4 (Camel 4.18.4). The withholding above covers only a tracked
+  key, topic, partition, offset and timestamp go out too. Remove
+  `kafka.HEADERS` before the send with `.removeHeader("kafka.HEADERS")`, or
+  upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
+  4.21.0 or later, such as Quarkus 3.33.4 (Camel 4.18.4). Do not remove all
+  `kafka.*` headers: that also removes `kafka.KEY`, which Camel's Kafka
+  producer uses as the key of the record the adapter parks in the DLQ. The withholding above covers only a tracked
   `to` or `toD` through Camel's `http` component. Remove the record's
   credential headers too before a send through `vertx-http`, which sends them
   as text, and before an `enrich`, `wireTap`, `recipientList`, `routingSlip`
