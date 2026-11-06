@@ -9,6 +9,7 @@ import no.basis.integrationplatform.camel.replay.PostgresKafkaMessageReplayServi
 import no.basis.integrationplatform.camel.store.PostgresMessageStoreSink;
 import org.apache.camel.Exchange;
 import org.apache.camel.Route;
+import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.impl.DefaultCamelContext;
 import org.apache.camel.support.DefaultExchange;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -136,9 +137,10 @@ class TieredPayloadIntegrationTest {
         assertEquals("true", value("replayable::text"));
         String originalExpiry = value("payload_expires_at::text");
 
-        PostgresKafkaMessageReplayService replay = new PostgresKafkaMessageReplayService(
-                dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", objectStore);
-        replay.replay(MESSAGE_ID);
+        try (DefaultCamelContext context = kafkaInput("large-payload-validation", TOPIC)) {
+            new PostgresKafkaMessageReplayService(dataSource, KAFKA.getBootstrapServers(), "bip.%s.in",
+                    objectStore, context, "large-payload-validation").replay(MESSAGE_ID);
+        }
 
         try (KafkaConsumer<String, byte[]> consumer = consumer(TOPIC)) {
             var records = consumer.poll(Duration.ofSeconds(10));
@@ -181,9 +183,10 @@ class TieredPayloadIntegrationTest {
         String originalExpiry = value(INLINE_MESSAGE_ID, "payload_expires_at::text");
         String originalSha256 = value(INLINE_MESSAGE_ID, "payload_sha256");
 
-        PostgresKafkaMessageReplayService replay = new PostgresKafkaMessageReplayService(
-                dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", objectStore);
-        replay.replay(INLINE_MESSAGE_ID);
+        try (DefaultCamelContext context = kafkaInput("large-payload-validation", INLINE_TOPIC)) {
+            new PostgresKafkaMessageReplayService(dataSource, KAFKA.getBootstrapServers(), "bip.%s.in",
+                    objectStore, context, "inline-payload-validation").replay(INLINE_MESSAGE_ID);
+        }
 
         try (KafkaConsumer<String, byte[]> consumer = consumer(INLINE_TOPIC)) {
             var records = consumer.poll(Duration.ofSeconds(10));
@@ -261,6 +264,20 @@ class TieredPayloadIntegrationTest {
                 MessageBoundaryKind.KAFKA,
                 true,
                 objectStore);
+    }
+
+    /** A context whose route of this id consumes the integration's replay topic, as the recording route did. */
+    private static DefaultCamelContext kafkaInput(String routeId, String topic) throws Exception {
+        DefaultCamelContext context = new DefaultCamelContext();
+        context.addRoutes(new RouteBuilder() {
+            @Override
+            public void configure() {
+                from("kafka:" + topic + "?brokers=" + KAFKA.getBootstrapServers())
+                        .routeId(routeId).autoStartup(false).process(e -> { });
+            }
+        });
+        context.start();
+        return context;
     }
 
     private static Exchange exchange(Object body) {
