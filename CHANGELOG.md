@@ -16,11 +16,15 @@
   through internal endpoints such as `direct:` therefore still read them. This
   covers `to`, `toD`, `enrich`, `wireTap`, `recipientList`, `routingSlip`,
   `multicast` and a `ProducerTemplate`. It does not cover other components,
-  such as `rest:`; remove the headers before such a send. Later Camel versions
+  such as `rest:`, nor a `ProducerTemplate` whose event notifier is disabled;
+  remove the headers before such a send. Later Camel versions
   name these headers `CamelKafka*`, and Camel's HTTP producers do not send
   those names. Adapter 0.3.6 withheld only the credential headers themselves,
   and only for Camel's `http` component, so its release note's claim was
-  incomplete.
+  incomplete. That credential withholding still covers a tracked `to` or
+  `toD` only: remove the record's credential headers before an `enrich`,
+  `wireTap`, `recipientList`, `routingSlip` or `ProducerTemplate` send to an
+  HTTP receiver.
   Upgrade: a receiver that read `kafka.*` request headers must get the values
   from headers the route sets itself.
 - A Kafka input is committed only after it completed or the DLQ endpoint

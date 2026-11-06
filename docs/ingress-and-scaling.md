@@ -64,10 +64,18 @@ the routes it calls through internal endpoints such as `direct:`. This covers
 `to`, `toD`, `enrich`, `wireTap`, `recipientList`, `routingSlip`, `multicast`
 and a `ProducerTemplate`. It does not cover other components that call an HTTP
 receiver, such as `rest:`; remove the headers before such a send with
-`removeHeaders("kafka.*")`. Later Camel versions name these headers
-`CamelKafka*`, and Camel's HTTP producers do not send those names. A receiver
-that needs the record key or topic should get it from a header the route sets
-itself.
+`removeHeaders("kafka.*")`. The withholding runs on Camel's exchange sending
+and sent events, so a `ProducerTemplate` whose event notifier is disabled
+(`setEventNotifierEnabled(false)`) sends without it; remove the headers before
+such a send too. Later Camel versions name these headers `CamelKafka*`, and
+Camel's HTTP producers do not send those names. A receiver that needs the
+record key or topic should get it from a header the route sets itself.
+
+The credential withholding above applies to a tracked `to` or `toD` only. An
+`enrich`, `wireTap`, `recipientList`, `routingSlip` or `ProducerTemplate` send
+through Camel's `http` component still sends the record's credential headers
+as byte-array text. Remove them before such a send, for example with
+`removeHeaders("Authorization")`, or keep only the headers the receiver needs.
 
 `vertx-http` sends a record's credential headers as text. Remove them before
 the send unless the receiver should get them. Other record headers still reach
