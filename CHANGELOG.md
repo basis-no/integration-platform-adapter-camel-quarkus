@@ -2,7 +2,32 @@
 
 ## Unreleased
 
-Documentation only; no code, schema or configuration change.
+No Message Store schema change.
+
+### Fixed
+
+- A tracked send in a route that another send calls, such as a `direct:`
+  sub-route, is recorded once per try
+  ([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)).
+  Before, the calling send recorded the sub-route's step again when it
+  completed. A successful call was listed twice as `DELIVERED`. When the
+  sub-route's dead letter channel parked the message after the send failed,
+  the step was recorded `DELIVERED` with no error, so a resend or replay
+  skipped it and the receiver never got the message. With the `postgres` step
+  store, so did any later read of the parked record that carries
+  `x-bip-message-id`, which then recorded the message `COMPLETED`: for example
+  after a commit that failed because a receiver that never answers kept the
+  route busy past the poll interval. When the input route's error handler
+  retried the call instead, each failed try was listed twice as `FAILED`. A
+  calling send now records only its own step, and a `direct:` send records
+  none. Adapter 0.3.5 and 0.3.6 have the fault.
+  Upgrade: a message that 0.3.6 or earlier recorded this way keeps its
+  `DELIVERED` step and is still skipped. The README gives a way to find such
+  messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);
+  resend each one the receiver did not get with the step in `redoSteps`. See
+  [Retry and DLQ](README.md#retry-and-dlq).
+
+### Documentation
 
 - The 0.3 line continues as a maintained series, with its current scope (one
   input topic per integration); further 0.3.x patch releases may follow, also
@@ -23,14 +48,6 @@ Documentation only; no code, schema or configuration change.
   `x-bip-message-id`, while readiness stays `UP`. The README's runbook now
   says to scale the integrations to zero at once in that case. Receivers should
   deduplicate by `Idempotency-Key`
-  ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
-- Known limitation, extended: a failed send in a `direct:` sub-route that was
-  recorded `DELIVERED` is also lost without a resend. Any later read of the
-  parked record, when it carries `x-bip-message-id`, records the message
-  `COMPLETED`, for example after a commit that failed because a receiver that
-  never answers kept the route busy past the poll interval. The README gives a
-  way to find such messages: `COMPLETED` in the Message Store, with a record on
-  the DLQ topic
   ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
 - Known limitation, documented: a `toD` that chooses its component only when
   it sends, through a literal scheme other than `kafka`, such as
