@@ -140,6 +140,21 @@ writes a `bip_message_replay_audit` row, then publishes to the configured input
 topic. It retains the message id and envelope, sets `x-bip-replay=true`, and
 sets `x-bip-attempt` to the previous attempt plus one.
 
+An integration replays only its own messages, to the input that recorded them.
+Before it writes the audit row or publishes anything, the replay service
+refuses a message:
+
+- whose stored integration is not this integration (`app.name`);
+- whose last attempt was recorded by a route that is not a Kafka consumer of
+  this integration's replay topic in the running application: a route that
+  was removed or renamed, consumes another topic or a topic pattern, or is not
+  a Kafka route;
+- whose last attempt is missing, or holds another payload than the message.
+
+The endpoint answers `409 Conflict` with the reason. A message recorded by a
+route that has since changed needs review; send its payload again as a new
+message once it is safe to process.
+
 The caller, typically an operator's tool, supplies operator identity and reason
 through the `x-dashboard-user` and `x-dashboard-reason` headers or the JSON
 request body. The default target pattern is `bip.%s.in`, where `%s` is the

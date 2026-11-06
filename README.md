@@ -72,6 +72,10 @@ Start with the [documentation index](docs/index.md).
   through untracked sends such as `enrich` and through `vertx-http`. See
   [GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)
   for the workaround. Fixed for 0.4.0.
+- 0.4.0-rc1 replays any stored message, also another integration's, to the
+  replay topic named by its row, and does not check that the route that
+  recorded it still consumes that topic. The 0.3.x releases refuse both.
+  Fixed for 0.4.0; see [Manual Replay](docs/retry-dlq-replay.md#manual-replay).
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is
