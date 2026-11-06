@@ -115,6 +115,13 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
 
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
+            try {
+                PlatformRouteConfiguration.prepareDlq(exchange);
+            } catch (RuntimeException e) {
+                exchange.setException(e);
+                callback.done(true);
+                return true;
+            }
             Throwable unrecorded = StepOutcomeFailure.of(exchange);
             if (unrecorded != null) {
                 if (managedKafkaInput(exchange)) {
