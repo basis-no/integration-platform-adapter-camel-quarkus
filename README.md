@@ -64,6 +64,8 @@ Start with the [documentation index](docs/index.md).
 
 - Released versions are on the `0.3` line and use message-store schema
   version 1; see [CHANGELOG.md](CHANGELOG.md).
+- `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
+  releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is
   recorded `DELIVERED` when the sub-route's dead-letter channel parks the
   message, so a resend skips it. Resend with the step in `redoSteps`; see

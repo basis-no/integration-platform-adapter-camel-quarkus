@@ -5,6 +5,7 @@ import no.basis.integrationplatform.camel.step.PostgresStepOutcomeStore;
 import org.apache.kafka.clients.admin.AdminClient;
 import org.apache.kafka.clients.admin.AdminClientConfig;
 import org.apache.kafka.clients.admin.NewTopic;
+import org.apache.kafka.clients.consumer.CloseOptions;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
 import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
@@ -273,7 +274,7 @@ class KafkaReplicaCoordinationTest {
             } catch (Throwable t) {
                 failure.set(t);
             } finally {
-                consumer.close(Duration.ofSeconds(5));
+                consumer.close(CloseOptions.timeout(Duration.ofSeconds(5)));
             }
         }
 
