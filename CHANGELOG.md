@@ -12,9 +12,9 @@
   record key, topic, partition, offset, timestamp and last-record flags.
   Adapter 0.3.6 withheld the record's credential headers only on a tracked
   `to` or `toD` through Camel's `http` component, so its release note's claim
-  was incomplete. `enrich`, `wireTap`, `recipientList`, `routingSlip`,
-  `multicast` and `ProducerTemplate` sends still forwarded them, and
-  `vertx-http` sent them as text.
+  was incomplete. `enrich`, `wireTap`, `recipientList`, `routingSlip` and
+  `ProducerTemplate` sends still forwarded them, and `vertx-http` sent them
+  as text.
   The adapter now withholds both while Camel sends to an `http`, `https`,
   `netty-http`, `vertx-http` or `rest` endpoint, after Camel has chosen the
   endpoint, through any of these EIPs or a `ProducerTemplate`. It restores
