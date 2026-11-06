@@ -1,7 +1,8 @@
 name: Verify published artifacts and create GitHub Release
 
-# No tag-push build/upload. Candidate preparation and approved portal operations
-# use release-candidate.yml. This path only reads existing artifacts and notes.
+# No tag-push build/upload. release-candidate.yml retains the unsigned candidate;
+# signing, upload and publication happen only on the offline release workstation
+# (docs/release-packaging.md). This path only reads public artifacts and notes.
 on:
   workflow_dispatch:
     inputs:
@@ -10,10 +11,10 @@ on:
         description: Existing approved final tag
       candidate_run:
         required: true
-        description: Existing successful candidate inspection run
-      bundle_sha256:
+        description: Existing successful unsigned candidate inspection run
+      signed_entries_sha256:
         required: true
-        description: Reviewed candidate bundle SHA-256
+        description: entries_sha256 from the reviewed offline signing receipt
       signer:
         required: true
         description: Trusted uppercase 40-character signing fingerprint
@@ -29,7 +30,7 @@ concurrency:
 env:
   TAG: ${{ inputs.tag }}
   CANDIDATE_RUN: ${{ inputs.candidate_run }}
-  BUNDLE_SHA256: ${{ inputs.bundle_sha256 }}
+  SIGNED_ENTRIES_SHA256: ${{ inputs.signed_entries_sha256 }}
   SIGNER: ${{ inputs.signer }}
 
 jobs:
@@ -46,7 +47,7 @@ jobs:
         run: |
           version="$(.github/scripts/release-version-from-tag.sh "$TAG")"
           source_commit="$(git rev-parse "refs/tags/$TAG^{}")"
-          python3 .github/scripts/release-candidate.py selection --mode upload --version "$version" --commit "$source_commit" --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --bundle-hash "$BUNDLE_SHA256"
+          python3 .github/scripts/release-candidate.py selection --mode readback --version "$version" --commit "$source_commit" --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --bundle-hash "$SIGNED_ENTRIES_SHA256"
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           echo "SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
       - uses: actions/checkout@v4
@@ -56,7 +57,7 @@ jobs:
           persist-credentials: false
       - uses: actions/download-artifact@v4
         with:
-          name: central-candidate-${{ env.RELEASE_VERSION }}
+          name: unsigned-central-candidate-${{ env.RELEASE_VERSION }}
           path: evidence
           run-id: ${{ inputs.candidate_run }}
           github-token: ${{ github.token }}
@@ -69,8 +70,8 @@ jobs:
           mkdir -m 700 "$GNUPGHOME"
           test -n "$PUBLIC_KEY"
           printf '%s\n' "$PUBLIC_KEY" | gpg --no-options --batch --import
-          python3 .github/scripts/release-candidate.py artifact --mode upload --version "$RELEASE_VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --bundle-hash "$BUNDLE_SHA256" --path evidence
-          python3 .github/scripts/verify-public-release.py --pom source/pom.xml --version "$RELEASE_VERSION" --signer "$SIGNER" --expected-receipt evidence/candidate.json --output public-readback.json
+          python3 -I .github/scripts/sign-candidate.py verify --candidate evidence --version "$RELEASE_VERSION" --source-commit "$SOURCE_COMMIT" --candidate-run "$CANDIDATE_RUN"
+          python3 -I .github/scripts/verify-public-release.py --pom source/pom.xml --version "$RELEASE_VERSION" --signer "$SIGNER" --unsigned-receipt evidence/unsigned.json --entries-sha256 "$SIGNED_ENTRIES_SHA256" --output public-readback.json
       - name: Retain actual artifact readback
         uses: actions/upload-artifact@v4
         with:

@@ -4,7 +4,9 @@ import hashlib
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,6 +27,7 @@ recovery = load('central-recovery')
 evidence = load('release-evidence')
 candidate = load('release-candidate')
 public = load('verify-public-release')
+signer = load('sign-candidate')
 GROUP, ARTIFACT, VERSION = 'org.example', 'adapter', '1.2.3'
 SIGNER = 'A' * 40
 ID = '12345678-1234-1234-1234-123456789abc'
@@ -163,16 +166,95 @@ class Fixtures(unittest.TestCase):
         recovery.recover(self.path, self.receipt, self.state, allow_upload=True, call=call)
         self.assertEqual(len([name for name in calls if name.startswith('/upload')]), 1)
 
+    def test_unsigned_collection_cannot_be_reused_as_signed_candidate(self):
+        output = self.root / 'evidence'
+        output.mkdir()
+        (output / 'provenance.json').write_text(json.dumps({
+            'source_commit': 'a' * 40, 'version': VERSION, 'group': GROUP, 'artifact': ARTIFACT}))
+        target = self.root / 'target'
+        target.mkdir()
+        for name, data in self.blobs.items():
+            if name.endswith(('.pom', '.jar')):
+                (target / Path(name).name).write_bytes(data)
+        (self.root / 'pom.xml').write_bytes(self.blobs[next(n for n in self.blobs if n.endswith('.pom'))])
+        (target / (ARTIFACT + '-' + VERSION + '.pom')).unlink()
+        candidate.unsigned(self.root, VERSION, 'a' * 40, output, '42')
+        receipt = json.loads((output / 'unsigned.json').read_text())
+        self.assertEqual(receipt['qualification'], 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE')
+        self.assertEqual(receipt['candidate_run'], '42')
+        self.assertEqual(len(list((output / 'unsigned').iterdir())), 4)
+        with self.assertRaises(FileNotFoundError):
+            candidate.check_artifact(output, VERSION, 'a' * 40, SIGNER, 'b' * 64)
+
+    def test_unsigned_collection_refuses_symlinks_and_wrong_identity(self):
+        output = self.root / 'evidence'
+        output.mkdir()
+        (output / 'provenance.json').write_text(json.dumps({
+            'source_commit': 'a' * 40, 'version': VERSION, 'group': GROUP, 'artifact': ARTIFACT}))
+        target = self.root / 'target'
+        target.mkdir()
+        for name, data in self.blobs.items():
+            if name.endswith(('.pom', '.jar')):
+                (target / Path(name).name).write_bytes(data)
+        (self.root / 'pom.xml').write_bytes(self.blobs[next(n for n in self.blobs if n.endswith('.pom'))])
+        with self.assertRaises(ValueError):
+            candidate.unsigned(self.root, VERSION, 'b' * 40, output, '42')
+        with self.assertRaises(ValueError):
+            candidate.unsigned(self.root, VERSION, 'a' * 40, output, '')
+        payload = target / (ARTIFACT + '-' + VERSION + '.jar')
+        payload.unlink()
+        payload.symlink_to(self.path)
+        with self.assertRaises(ValueError):
+            candidate.unsigned(self.root, VERSION, 'a' * 40, output, '42')
+        self.assertFalse((output / 'unsigned').exists())
+
+    def test_production_workflows_have_no_signing_or_portal_secret_references(self):
+        workflows = Path(__file__).resolve().parents[1] / 'workflows'
+        for name in ('release-candidate.yml', 'publish-snapshot.yml'):
+            text = (workflows / name).read_text()
+            self.assertNotIn('secrets.', text)
+            self.assertNotIn('gpg-private-key:', text)
+            self.assertNotIn('gpg-passphrase:', text)
+        text = (workflows / 'release-candidate.yml').read_text()
+        self.assertIn('test "$MODE" = inspect', text)
+        self.assertIn('name: unsigned-central-candidate-', text)
+        self.assertNotIn('name: central-candidate-', text)
+        self.assertNotIn('central-recovery.py', text)
+        self.assertIn('-Dgpg.skip=true', text)
+        # Candidate code can write arbitrary Maven cache contents. Never share
+        # its dependency cache with a later trusted signing/publishing runner.
+        self.assertNotIn('cache:', text)
+        self.assertNotIn('actions/cache', text)
+        self.assertIn('--workflow-run "$GITHUB_RUN_ID"', text)
+        snapshot = (workflows / 'publish-snapshot.yml').read_text()
+        self.assertIn('exit 1', snapshot)
+        self.assertNotIn('checkout@', snapshot)
+        self.assertNotIn('mvnw', snapshot)
+        # Post-publication readback only: public key variable, never a signer or portal token.
+        readback = (workflows / 'publish-central.yml').read_text()
+        self.assertNotIn('secrets.', readback)
+        self.assertNotIn('central-recovery.py', readback)
+        self.assertNotIn('mvnw', readback)
+        self.assertNotIn('--detach-sign', readback)
+        self.assertIn('vars.RELEASE_SIGNING_PUBLIC_KEY', readback)
+        self.assertIn('name: unsigned-central-candidate-', readback)
+        self.assertIn('sign-candidate.py verify', readback)
+        self.assertNotIn('sign-candidate.py sign', readback)
+
     def test_candidate_selection_requires_exact_inputs_and_refuses_upload_rerun(self):
         candidate.selection('inspect', VERSION, 'a' * 40, SIGNER)
         candidate.selection('upload', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64)
+        candidate.selection('readback', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64)
         for args in [('inspect', VERSION, 'main', SIGNER),
                      ('inspect', VERSION + '-SNAPSHOT', 'a' * 40, SIGNER),
                      ('upload', VERSION, 'a' * 40, SIGNER),
                      ('upload', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64, '2'),
                      ('publish', VERSION, 'a' * 40, SIGNER, '123', '456', 'b' * 64, '2'),
                      ('resume', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64),
-                     ('publish', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64)]:
+                     ('publish', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64),
+                     ('readback', VERSION, 'a' * 40, SIGNER, '', '', 'b' * 64),
+                     ('readback', VERSION, 'a' * 40, SIGNER, '123', '456', 'b' * 64),
+                     ('readback', VERSION, 'a' * 40, SIGNER, '123', '', '')]:
             with self.assertRaises(ValueError):
                 candidate.selection(*args)
 
@@ -334,6 +416,258 @@ class Fixtures(unittest.TestCase):
             manifest['runtime'] = [name]
             with self.assertRaises(ValueError):
                 evidence.fingerprint(self.root, manifest)
+
+
+def jar(entries):
+    stream = io.BytesIO()
+    with zipfile.ZipFile(stream, 'w') as archive:
+        for name, data in entries.items():
+            archive.writestr(name, data)
+    return stream.getvalue()
+
+
+def gpg(home, *args):
+    return subprocess.run(['gpg', '--no-options', '--batch', *args], env={**os.environ, 'GNUPGHOME': str(home)},
+                          capture_output=True, check=True, timeout=60)
+
+
+def synthetic_key(home, uid):
+    """Throwaway unprotected key in a temporary keyring; never a real signer."""
+    gpg(home, '--pinentry-mode', 'loopback', '--passphrase', '', '--quick-generate-key', uid, 'ed25519', 'sign', '1d')
+    listing = gpg(home, '--with-colons', '--list-secret-keys', uid).stdout.decode()
+    return next(line.split(':')[9] for line in listing.splitlines() if line.startswith('fpr:'))
+
+
+class OfflineSigner(unittest.TestCase):
+    """Real gpg signing with synthetic keys in temporary GNUPGHOME directories."""
+    COMMIT, RUN = 'c' * 40, '4242'
+
+    @classmethod
+    def setUpClass(cls):
+        cls.keys = tempfile.TemporaryDirectory(prefix='signer-keys-')
+        cls.homes = [Path(cls.keys.name) / name for name in ('g', 'o')]
+        for home in cls.homes:
+            home.mkdir(mode=0o700)
+        cls.home, other = cls.homes
+        cls.previous = os.environ.get('GNUPGHOME')
+        os.environ['GNUPGHOME'] = str(cls.home)
+        cls.fingerprint = synthetic_key(cls.home, 'Synthetic Signer <signer@example.invalid>')
+        cls.extra = synthetic_key(cls.home, 'Synthetic Extra <extra@example.invalid>')
+        # Public key only: the workstation can verify but cannot sign as this key.
+        cls.public_only = synthetic_key(other, 'Synthetic Public <public@example.invalid>')
+        exported = gpg(other, '--armor', '--export', cls.public_only).stdout
+        subprocess.run(['gpg', '--no-options', '--batch', '--import'], input=exported, capture_output=True,
+                       env={**os.environ, 'GNUPGHOME': str(cls.home)}, check=True, timeout=60)
+
+    @classmethod
+    def tearDownClass(cls):
+        for home in cls.homes:
+            subprocess.run(['gpgconf', '--homedir', str(home), '--kill', 'all'], capture_output=True, timeout=15)
+        if cls.previous is None:
+            os.environ.pop('GNUPGHOME', None)
+        else:
+            os.environ['GNUPGHOME'] = cls.previous
+        cls.keys.cleanup()
+
+    def setUp(self):
+        self.directory = tempfile.TemporaryDirectory(prefix='signer-case-')
+        self.addCleanup(self.directory.cleanup)
+        self.root = Path(self.directory.name)
+        project = ('<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>{}</groupId>'
+                   '<artifactId>{}</artifactId><version>{}</version></project>')
+        self.pom = self.root / 'trusted-pom.xml'
+        self.pom.write_text(project.format(GROUP, ARTIFACT, VERSION + '-SNAPSHOT'))
+        self.candidate = self.root / 'unsigned-central-candidate'
+        unsigned = self.candidate / 'unsigned'
+        unsigned.mkdir(parents=True)
+        properties = f'groupId={GROUP}\nartifactId={ARTIFACT}\nversion={VERSION}\n'
+        self.payloads = {
+            f'{ARTIFACT}-{VERSION}.pom': project.format(GROUP, ARTIFACT, VERSION).encode(),
+            f'{ARTIFACT}-{VERSION}.jar': jar({'a/A.class': b'fixture',
+                                              f'META-INF/maven/{GROUP}/{ARTIFACT}/pom.properties': properties}),
+            f'{ARTIFACT}-{VERSION}-sources.jar': jar({'a/A.java': b'class A {}'}),
+            f'{ARTIFACT}-{VERSION}-javadoc.jar': jar({'index.html': b'<html></html>'})}
+        for name, data in self.payloads.items():
+            (unsigned / name).write_bytes(data)
+        self.write_receipt()
+        (self.candidate / 'provenance.json').write_text(json.dumps({
+            'source_commit': self.COMMIT, 'version': VERSION, 'group': GROUP, 'artifact': ARTIFACT,
+            'workflow_head': 'd' * 40}))
+        (self.candidate / 'effective-pom.xml').write_text('<project/>')
+        (self.candidate / 'release-notes.md').write_text('Notes.\n')
+        self.output = self.root / 'signed-output'
+
+    def write_receipt(self, **changes):
+        receipt = {'source_commit': self.COMMIT, 'version': VERSION, 'candidate_run': self.RUN,
+                   'qualification': 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE',
+                   'payload_sha256': {name: hashlib.sha256(data).hexdigest() for name, data in self.payloads.items()},
+                   **changes}
+        (self.candidate / 'unsigned.json').write_text(json.dumps(receipt))
+
+    def sign(self, fingerprint=None, **changes):
+        arguments = {'directory': self.candidate, 'version': VERSION, 'commit': self.COMMIT, 'run': self.RUN,
+                     'signer': fingerprint or self.fingerprint, 'output': self.output, 'pom': self.pom, **changes}
+        return signer.sign(**arguments)
+
+    def refused(self, pattern=None, **changes):
+        with self.assertRaisesRegex(ValueError, pattern or '.'):
+            self.sign(**changes)
+        self.assertFalse(self.output.exists(), 'Nothing may be signed or written before verification passes')
+
+    def cli(self, action='sign', *extra):
+        command = [sys.executable, '-I', str(Path(__file__).with_name('sign-candidate.py')), action,
+                   '--candidate', str(self.candidate), '--version', VERSION, '--source-commit', self.COMMIT,
+                   '--candidate-run', self.RUN, '--pom', str(self.pom), *extra]
+        return subprocess.run(command, capture_output=True, text=True, timeout=120,
+                              env={**os.environ, 'GNUPGHOME': str(self.home)})
+
+    def test_happy_path_signs_exact_payloads_and_validates_bundle(self):
+        result = self.cli('verify')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['result'], 'UNSIGNED_CANDIDATE_MATCHES_RECEIPT')
+        result = self.cli('sign', '--signer', self.fingerprint, '--output', str(self.output))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        receipt = json.loads((self.output / 'signing.json').read_text())
+        validation = json.loads((self.output / 'candidate.json').read_text())
+        archive = self.output / 'candidate.zip'
+        self.assertEqual(receipt['result'], 'SIGNED_BUNDLE_VALIDATED_NOT_UPLOADED')
+        self.assertEqual(receipt['signer_fingerprint'], self.fingerprint)
+        self.assertEqual((receipt['version'], receipt['source_commit'], receipt['candidate_run']),
+                         (VERSION, self.COMMIT, self.RUN))
+        self.assertEqual(receipt['bundle_sha256'], hashlib.sha256(archive.read_bytes()).hexdigest())
+        self.assertEqual(receipt['entries_sha256'], validation['entries_sha256'])
+        self.assertEqual(set(receipt['signature_sha256']), {name + '.asc' for name in self.payloads})
+        self.assertIn('gpg', receipt['tools']['gpg'][0].lower())
+        self.assertEqual(sorted(p.name for p in (self.output / 'signed').iterdir()),
+                         sorted([*self.payloads, *(name + '.asc' for name in self.payloads)]))
+        # Independent real-gpg validation and exact payload bytes inside the bundle.
+        bundle.validate(archive, GROUP, ARTIFACT, VERSION, self.fingerprint)
+        root, names = bundle.coordinate(GROUP, ARTIFACT, VERSION)
+        with zipfile.ZipFile(archive) as content:
+            for name in names:
+                self.assertEqual(content.read(name), self.payloads[Path(name).name])
+        with self.assertRaises(ValueError):
+            bundle.validate(archive, GROUP, ARTIFACT, VERSION, self.extra)
+        # The same bundle and receipt feed the workstation upload tool (no network here).
+        state = recovery.recover(archive, self.output / 'candidate.json', self.root / 'deployment.json',
+                                 prepare_upload=True, call=lambda *args: self.fail('Portal accessed'))
+        self.assertEqual(state['bundle_sha256'], receipt['bundle_sha256'])
+        # Post-publication CI readback: public bytes vs unsigned receipt plus signed entries digest.
+        public_files = {}
+        with zipfile.ZipFile(archive) as content:
+            public_files = {name: content.read(name) for name in content.namelist()}
+        def download(url, **kwargs):
+            return io.BytesIO(public_files[url.removeprefix('https://repo.maven.apache.org/maven2/')])
+        with patch.object(public.urllib.request, 'urlopen', side_effect=download):
+            public.verify(self.pom, VERSION, self.fingerprint, None, self.root / 'public.json',
+                          self.candidate / 'unsigned.json', receipt['entries_sha256'])
+            self.assertEqual(json.loads((self.root / 'public.json').read_text())['entries_sha256'],
+                             receipt['entries_sha256'])
+            with self.assertRaises(ValueError):
+                public.verify(self.pom, VERSION, self.fingerprint, None, self.root / 'mismatch.json',
+                              self.candidate / 'unsigned.json', '0' * 64)
+
+    def test_tampered_payload_rejected_before_signing(self):
+        path = self.candidate / 'unsigned' / f'{ARTIFACT}-{VERSION}.jar'
+        path.write_bytes(path.read_bytes() + b'tampered')
+        self.refused('SHA-256')
+        result = self.cli('verify')
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_wrong_signer_rejected(self):
+        self.refused('fingerprint', fingerprint=self.fingerprint.lower())
+        self.refused('fingerprint', fingerprint=self.fingerprint[-16:])
+        # Public key only: gpg cannot sign, and no completed receipt is written.
+        result = self.cli('sign', '--signer', self.public_only, '--output', str(self.output))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.output / 'signing.json').exists())
+        self.assertFalse((self.output / 'candidate.zip').exists())
+
+    def test_signature_by_another_key_rejected_after_signing(self):
+        original = signer.detach_sign
+        def wrong_key(payload, signature, fingerprint):
+            original(payload, signature, self.extra)
+        with patch.object(signer, 'detach_sign', side_effect=wrong_key):
+            with self.assertRaisesRegex(ValueError, 'expected signer'):
+                self.sign()
+        self.assertFalse((self.output / 'candidate.zip').exists())
+        self.assertFalse((self.output / 'signing.json').exists())
+
+    def test_extra_or_missing_files_rejected(self):
+        for extra in ('extra.txt', 'unsigned/extra.jar', 'unsigned/.hidden'):
+            (self.candidate / extra).write_bytes(b'x')
+            self.refused('Unexpected')
+            (self.candidate / extra).unlink()
+        (self.candidate / 'nested').mkdir()
+        self.refused('Unexpected')
+        (self.candidate / 'nested').rmdir()
+        for missing in (f'unsigned/{ARTIFACT}-{VERSION}-javadoc.jar', 'effective-pom.xml', 'unsigned.json'):
+            data = (self.candidate / missing).read_bytes()
+            (self.candidate / missing).unlink()
+            self.refused('Missing')
+            (self.candidate / missing).write_bytes(data)
+        self.sign()
+
+    def test_symlinks_rejected(self):
+        outside = self.root / 'outside'
+        outside.mkdir()
+        for name in (f'unsigned/{ARTIFACT}-{VERSION}.jar', 'provenance.json'):
+            path = self.candidate / name
+            copy = outside / Path(name).name
+            copy.write_bytes(path.read_bytes())
+            path.unlink()
+            path.symlink_to(copy)  # Identical bytes still fail: links are never followed.
+            self.refused('Symbolic link')
+            path.unlink()
+            path.write_bytes(copy.read_bytes())
+        link = self.root / 'linked-candidate'
+        link.symlink_to(self.candidate)
+        self.refused('real directory', directory=link)
+        shutil.move(str(self.candidate / 'unsigned'), str(outside / 'unsigned'))
+        (self.candidate / 'unsigned').symlink_to(outside / 'unsigned')
+        self.refused('Symbolic link')
+
+    def test_receipt_mismatch_rejected(self):
+        self.refused('mismatch', commit='e' * 40)
+        self.refused('mismatch', run='4243')
+        self.refused('Missing|Unexpected', version='1.2.4')
+        self.write_receipt(qualification='RELEASE_ELIGIBLE')
+        self.refused('marker')
+        self.write_receipt(extra='field')
+        self.refused('fields')
+        hashes = {name: hashlib.sha256(data).hexdigest() for name, data in self.payloads.items()}
+        name = f'{ARTIFACT}-{VERSION}.jar'
+        hashes['../' + name] = hashes.pop(name)
+        self.write_receipt(payload_sha256=hashes)
+        self.refused('payload names')
+        self.write_receipt(payload_sha256={**hashes, name: '0' * 64})
+        self.refused('payload names')
+        self.write_receipt()
+        (self.candidate / 'provenance.json').write_text(json.dumps({
+            'source_commit': self.COMMIT, 'version': VERSION, 'group': 'org.other', 'artifact': ARTIFACT}))
+        self.refused('provenance')
+
+    def test_candidate_output_and_trusted_checkout_stay_separate(self):
+        self.refused('separate', output=self.candidate / 'signed')
+        with patch.object(signer, 'CHECKOUT', self.root):
+            self.refused('separate')
+        self.output.mkdir()
+        with self.assertRaisesRegex(ValueError, 'new'):
+            self.sign()
+
+    def test_no_passphrase_input_and_no_candidate_execution(self):
+        command = signer.sign_command(Path('payload'), Path('payload.asc'), self.fingerprint)
+        self.assertEqual(command[:2], ['gpg', '--no-options'])
+        self.assertIn('--detach-sign', command)
+        self.assertEqual(command[command.index('--local-user') + 1], self.fingerprint)
+        self.assertFalse(any('passphrase' in item or 'pinentry' in item or 'loopback' in item for item in command))
+        result = self.cli('sign', '--signer', self.fingerprint, '--output', str(self.output), '--passphrase', 'x')
+        self.assertEqual(result.returncode, 2)
+        self.assertFalse(self.output.exists())
+        source = Path(__file__).with_name('sign-candidate.py').read_text()
+        self.assertNotIn('mvn', source)
+        self.assertNotIn('PASSPHRASE', source)
+        self.assertNotIn('environ', source)
 
 
 if __name__ == '__main__':
