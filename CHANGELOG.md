@@ -15,6 +15,30 @@
   Upgrade from 0.3.6: an application that did not set `basis.traffic.signals`
   now exports the admission counter; set `basis.traffic.signals=none` to keep
   0.3.6's default. An explicit empty value no longer turns counting off.
+- Routes start without Camel's warning that the adapter's intercept strategy
+  "does not return an AsyncProcessor instance". Camel logged it once for each
+  processor that the adapter does not track and that is not asynchronous, such
+  as `validate`, and then bridged that processor to its asynchronous routing
+  engine itself. The adapter now
+  hands back the same bridge, or the processor unchanged when it is already
+  asynchronous, so routes behave and fail as before.
+- A replay that restores an output checkpoint from object storage reads the
+  whole object and checks its size and SHA-256 before it sets any of it as the
+  body, and restores the body with the type it was stored as, as an inline
+  checkpoint does. Before, the route got the object's stream, which was checked
+  only when the route read it to the end, so a route could act on a changed or
+  truncated object first, and a text or JSON body came back as a stream. A
+  changed, truncated, longer or missing object refuses the restore as missing
+  or corrupt, before the route sees any of it.
+  Upgrade: on replay, a route after an output-producing step whose output was
+  stored in object storage gets a `String`, a JSON value or `byte[]` instead of
+  an `InputStream`, and the whole object is held in memory during the restore.
+  An output larger than 2 GiB less a few bytes, which a restore cannot check in
+  memory, can no longer be checkpointed; its capture fails as one above
+  `basis.message-store.payload.object-max-bytes` does.
+  Not changed: an input whose payload is in object storage is still checked
+  against its SHA-256 only when the route reads it to its end
+  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
 - A replay sends a message again only to the integration that recorded it,
   through the Kafka input route that recorded it. Before, `main` republished
   any message in the store to the replay topic of the integration named in its
