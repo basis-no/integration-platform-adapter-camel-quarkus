@@ -154,14 +154,19 @@ per-integration database isolation is enabled, qualify the API with the actual
 runtime and operator reader logins and the deployment's policies. An owner-role
 fixture proves API wiring, but cannot prove those permission boundaries.
 
+The test profiles that turn persistence off (`no-persistence` and
+`no-persistence-no-commit`) do not apply to the Key-Value Store, as in 0.3.6:
+its calls still read and write `bip_key_value` through the default datasource.
+Give a test that must not touch shared state its own database.
+
 Rows belong to one environment and do not move with image promotion. Rollback
 after new state writes must reconcile the latest state before an older
 application resumes; changing the adapter pin alone does not move data back.
 
 ## Qualification fixtures
 
-The ordinary maintenance smoke includes a lazy-CDI check with its datasource
-inactive. A separate `integration-tests/key-value-smoke` fixture boots Quarkus
+The `integration-tests/key-value-smoke` fixture, which is not part of the
+ordinary build, boots Quarkus
 against one isolated PostgreSQL 17 container pinned to a reviewed test image and exercises the injected API,
 integration identity, `bip_contract` metadata preservation and application disposal.
 Its synthetic database binds to loopback and never accepts a supplied JDBC URL.
@@ -174,7 +179,6 @@ resource window.
 These fixtures exercise the API behavior and runtime wiring. They do not
 qualify unimplemented Key-Value Store features or least-privileged database permissions. With Docker
 available and the pinned image cached, install the adapter build under test locally, then run
-`./mvnw -f integration-tests/maintenance-smoke/pom.xml verify` and
 the PostgreSQL fixture with an explicit unique run ID, for example:
 
 ```sh
@@ -184,7 +188,7 @@ run_id="$(uuidgen)"
   -DargLine="-Dbip.test.run-id=$run_id" verify
 ```
 
-The root `PostgresKeyValueStoreTest` supports the maintenance suite's opt-in
+The root `PostgresKeyValueStoreTest` supports an opt-in
 `-Dbip.test.bounded-services=true` mode. Pass that flag and the same unique
 `bip.test.run-id` to Maven and its test fork. This mode uses the frozen cached
 PostgreSQL 16 digest, refuses image pulls, bounds memory and swap to 256 MiB,

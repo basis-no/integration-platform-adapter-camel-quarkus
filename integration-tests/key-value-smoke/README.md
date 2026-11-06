@@ -11,14 +11,14 @@ The PostgreSQL test resource pins its image, loopback binding, resource limits,
 run ownership and cleanup. The HTTP fixture uses a loopback ephemeral test port.
 The explicit selection runs under its own test profile; the default case uses
 no activity configuration at all.
-Existing application database compatibility without KV or metrics is checked by
-`../application-data-smoke` separately.
 
 Install the exact local candidate into the isolated qualification Maven repository
 first, then run this module with the same repository and pinned Java 21 toolchain:
 
 ```sh
-../../mvnw --batch-mode --no-transfer-progress test
+run_id="$(uuidgen)"
+../../mvnw --batch-mode --no-transfer-progress test \
+  -Dbip.test.run-id="$run_id" -DargLine="-Dbip.test.run-id=$run_id"
 ```
 
 Use the qualified artifact matching `adapter.version`, never a floating remote
