@@ -59,7 +59,7 @@ An output checkpoint is checked completely before it is restored; see
 [Output-Producing Side Effects](steps-and-idempotency.md#output-producing-side-effects).
 A missing, expired, oversized or unavailable required object, and a corrupt
 one that is detected, fails processing; success is not recorded and a consumed
-offset is not committed. Until #60 is fixed, a corrupt input that the route
+offset is not committed. Until that is fixed, a corrupt input that the route
 does not read to its end can still complete and be committed.
 
 Object storage failure during required capture also fails the message. The
