@@ -324,6 +324,25 @@ warning that names the header. A `toD` that chooses its component only when it
 sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver,
 as byte-array text unless they are `x-bip-*` headers.
 
+**Known issue
+([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)):**
+on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0, which include
+Camel 4.18.0 from Quarkus 3.32.2, Camel's Kafka consumer also sets headers
+named `kafka.*`. One of them, `kafka.HEADERS`, holds the record's whole header
+set. Camel's `http`, `vertx-http` and `netty-http` producers send it to the
+receiver as a header whose value lists the bytes of every record header,
+credentials included. The withholding above does not cover it, and there is
+no 0.3.x fix. Remove the consumer's headers before an HTTP send:
+
+```java
+.removeHeaders("kafka.*")
+.to("https://receiver.example/orders").id("post-order")
+```
+
+or upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
+4.21.0 or later, such as Quarkus 3.33.4. With adapter 0.3.5 and earlier, also
+remove the record's credential headers, such as `Authorization`.
+
 - the body is the **original consumed payload**, restored from the payload
   captured at route start — not a mid-transformation body, and not a byte array
   the route changed in place. The adapter keeps one copy of a `byte[]` input:

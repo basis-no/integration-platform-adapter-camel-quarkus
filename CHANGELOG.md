@@ -44,7 +44,9 @@ with 0.4.
   to its own receiver as byte-array text (`[66, 101, …]`), which decodes to the
   credential. The adapter logs a warning once per step and header name,
   without the value. The route keeps the header after the send. A credential
-  header the route sets itself is text and is sent as before. A `toD` that
+  header the route sets itself is text and is sent as before. This does not
+  cover Camel's `kafka.HEADERS`, which lists the same bytes; see the known
+  limitation on Kafka consumer headers below. A `toD` that
   chooses its component only when it sends, such as `${header.receiverUrl}` or
   `language:header:receiverUrl`, is treated as an HTTP send. Other HTTP components, such as
   `vertx-http`, are unchanged.
@@ -231,6 +233,21 @@ and iteration its own step key. See the
 
 ### Known limitations
 
+- Found after release
+  ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)):
+  an HTTP send from a Kafka route forwards the Kafka consumer's `kafka.*`
+  headers on camel-kafka 4.0.0 to 4.14.7, 4.15.0 to 4.18.2, and 4.19.0 to
+  4.20.0 (Camel's CVE-2026-49098). Quarkus 3.32.2, which this release is built
+  against, brings Camel 4.18.0. `kafka.HEADERS` holds the record's whole header
+  set, and Camel's `http`, `vertx-http` and `netty-http` producers send it as a
+  header whose value lists the bytes of every record header, credentials
+  included, so the credential withholding above does not stop it. The record
+  key, topic, partition, offset and timestamp go out too. Remove the headers
+  before the send with `.removeHeaders("kafka.*")`, or upgrade to a Quarkus
+  platform that brings camel-kafka 4.14.8, 4.18.3 or 4.21.0 or later, such as
+  Quarkus 3.33.4 (Camel 4.18.4). Adapter 0.3.5 and earlier also send the
+  record's credential headers themselves; remove them too. There is no 0.3.x
+  fix; adapter 0.4.0 will withhold these headers.
 - A step outcome that is not recorded holds back only the input whose attempt
   made the send, with its split parts, loop iterations and branches. A separate
   request the input sends, for example with a `ProducerTemplate`, fails on its
