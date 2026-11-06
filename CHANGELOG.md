@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- Routes start without Camel's warning that the adapter's intercept strategy
+  "does not return an AsyncProcessor instance". Camel logged it once for each
+  processor the adapter does not track, such as `validate`, and then bridged
+  that processor to its asynchronous routing engine itself. The adapter now
+  hands back the same bridge, or the processor unchanged when it is already
+  asynchronous, so routes behave and fail as before.
 - No send to an HTTP receiver forwards a consumed Kafka record's credential
   headers or the Kafka consumer's `kafka.*` and `CamelKafka*` headers
   ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)).

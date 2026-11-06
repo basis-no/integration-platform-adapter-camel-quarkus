@@ -39,6 +39,11 @@ Common fail-fast causes include:
 
 Treat these as configuration errors. Do not bypass them in business routes.
 
+Adapter 0.3.x and 0.4.0-rc1 let Camel log, at route start, that
+`StepTrackingInterceptStrategy` "does not return an AsyncProcessor instance",
+once for each processor the adapter does not track, such as `validate`. The
+warning is harmless: Camel bridges the processor itself. Fixed for 0.4.0.
+
 ## Ambiguous Step Warning
 
 The adapter cannot prove whether the endpoint is a safe read or a durable write.
