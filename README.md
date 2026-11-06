@@ -343,6 +343,48 @@ warning that names the header. A `toD` that chooses its component only when it
 sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver,
 as byte-array text unless they are `x-bip-*` headers.
 
+**Known issue
+([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)):**
+on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0, which include
+Camel 4.18.0 from Quarkus 3.32.2, Camel's Kafka consumer also sets headers
+named `kafka.*`. One of them, `kafka.HEADERS`, holds the record's whole header
+set. Camel's `http`, `vertx-http` and `netty-http` producers send it to the
+receiver as a header whose value lists the bytes of every record header,
+credentials included. The withholding above does not cover it, and there is
+no 0.3.x fix. Remove that one header before an HTTP send:
+
+```java
+.removeHeader("kafka.HEADERS")
+.to("https://receiver.example/orders").id("post-order")
+```
+
+The consumer's other `kafka.*` headers, such as the record key, topic,
+partition, offset and timestamp, still reach the receiver, but they hold no
+other header's value. Do not remove them all with `removeHeaders("kafka.*")`:
+that also removes `kafka.KEY`, which Camel's Kafka producer uses as the key of
+the record that the adapter parks in the DLQ, so a parked record loses its
+key. Alternatively, upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
+4.21.0 or later, such as Quarkus 3.33.4. Those versions name the header
+`CamelKafkaHeaders`, which Camel's own HTTP header filters drop; an endpoint
+with its own `headerFilterStrategy` that lets `Camel*` headers through still
+sends it, so remove `CamelKafkaHeaders` before such a send or make that filter
+drop it. The withholding above covers only a
+tracked `to` or `toD` whose endpoint URI starts with `http:` or `https:`,
+which includes a static `to` through `netty-http`. So also remove the record's
+credential headers, such as `Authorization`, before every other send to an
+HTTP receiver:
+
+- a send through `vertx-http`, which sends them as text, or a `toD` through
+  `netty-http`, which sends them as lists of numbers;
+- an `enrich`, `wireTap`, `recipientList`, `routingSlip` or `ProducerTemplate`
+  send;
+- with adapter 0.3.5 and earlier, every HTTP send.
+
+Adapter 0.4.0, not yet released, will withhold the `kafka.*` headers and the
+record's credential headers on sends to `http`, `https`, `netty-http` and
+`vertx-http` endpoints, through any EIP, with documented limits; see its
+changelog.
+
 - the body is the **original consumed payload**, restored from the payload
   captured at route start — not a mid-transformation body, and not a byte array
   the route changed in place. The adapter keeps one copy of a `byte[]` input:
