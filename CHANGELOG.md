@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Only a managed Kafka input is parked in the DLQ, as in adapter 0.3.6. Before,
+  `main` parked any exchange that reached the adapter's dead letter channel: a
+  request that a Kafka route sent on an exchange of its own, for example with a
+  `ProducerTemplate` to a `direct:` route, became a DLQ record of its own with
+  a parking ERROR, and its failure was handled there, so the caller never saw
+  it and the input completed and was committed. A failed input from a source
+  that is not Kafka was parked into the Kafka DLQ too. Such an exchange now
+  fails back to its caller with its own exception, without a parked record and
+  without the parking ERROR, which 0.3.6 still logs for it.
+  Upgrade: a route that sends requests on exchanges of its own must handle
+  their failures, or let them fail the input; a timer or poller route sees its
+  failure instead of a DLQ record.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,

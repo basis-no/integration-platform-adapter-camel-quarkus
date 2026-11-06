@@ -15,8 +15,9 @@ import org.apache.camel.support.AsyncProcessorSupport;
 import org.apache.camel.support.service.ServiceHelper;
 
 /**
- * Publishes an exhausted exchange to {@code basis.message-store.dlq-uri} and marks it parked
- * only after the endpoint accepted it. The endpoint must report a failed publish as an error:
+ * Publishes an exhausted managed Kafka input to {@code basis.message-store.dlq-uri} and marks
+ * it parked only after the endpoint accepted it. Any other exchange, such as a request a route
+ * sends on an exchange of its own, fails back to its caller with its own failure. The endpoint must report a failed publish as an error:
  * a non-transactional Kafka producer that waits for the broker, which Camel's default
  * {@code requestRequiredAcks=all} does, or the application's own {@code direct:} route. A
  * Kafka DLQ always receives one record per message. A failed publish leaves the exchange
@@ -115,6 +116,18 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
 
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
+            if (!managedKafkaInput(exchange)) {
+                // As in 0.3.6, only a managed Kafka input is parked. A request on an exchange of its
+                // own, or an input from another source, fails back to its caller with its own
+                // failure, without a parked record or the parking ERROR: the caller owns recovery.
+                Throwable original = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
+                Throwable unrecorded = StepOutcomeFailure.of(exchange);
+                exchange.setException(original != null ? original : unrecorded != null ? unrecorded
+                        : new IllegalStateException("Only a managed Kafka input is parked in the DLQ;"
+                                + " the failure goes back to the caller"));
+                callback.done(true);
+                return true;
+            }
             try {
                 PlatformRouteConfiguration.prepareDlq(exchange);
             } catch (RuntimeException e) {
@@ -124,15 +137,9 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
             }
             Throwable unrecorded = StepOutcomeFailure.of(exchange);
             if (unrecorded != null) {
-                if (managedKafkaInput(exchange)) {
-                    // The input is consumed again once step outcomes can be recorded; a parked copy would repeat it.
-                    exchange.setException(new IllegalStateException("Not parked: a step outcome was not checked or "
-                            + "recorded, so the Kafka offset is not committed and the input is consumed again", unrecorded));
-                } else {
-                    // A separate request is not parked either: it fails to its caller with its own failure.
-                    Throwable original = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
-                    exchange.setException(original != null ? original : unrecorded);
-                }
+                // The input is consumed again once step outcomes can be recorded; a parked copy would repeat it.
+                exchange.setException(new IllegalStateException("Not parked: a step outcome was not checked or "
+                        + "recorded, so the Kafka offset is not committed and the input is consumed again", unrecorded));
                 callback.done(true);
                 return true;
             }
