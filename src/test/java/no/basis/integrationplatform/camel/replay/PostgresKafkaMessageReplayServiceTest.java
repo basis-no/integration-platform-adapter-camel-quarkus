@@ -175,7 +175,8 @@ class PostgresKafkaMessageReplayServiceTest {
                 new MessageReplayRequest("message-789", "operator@example.com", "Redo the upload", List.of("sftp"))));
 
         assertEquals("Message message-789 is not replayable with redoSteps: they need"
-                + " basis.message-store.step-outcome-store=postgres, and with noop every step runs on every replay."
+                + " a step outcome store that records delivered steps, such as"
+                + " basis.message-store.step-outcome-store=postgres; with noop every step runs on every replay."
                 + " Resend without redoSteps.", thrown.getMessage());
         assertNothingAuditedOrPublished(TOPIC, published);
     }
@@ -197,6 +198,19 @@ class PostgresKafkaMessageReplayServiceTest {
         assertEquals(2, configured(recording).replay(redo).attempt());
     }
 
+    @Test
+    void theStepStoreIsResolvedOnceForAllRedoRequests() {
+        var redo = new MessageReplayRequest("message-792", "operator@example.com", "Redo the upload", List.of("sftp"));
+        var service = configured(new no.basis.integrationplatform.camel.step.NoopStepOutcomeStore());
+
+        assertThrows(MessageReplayException.class, () -> service.replay(redo));
+        assertThrows(MessageReplayException.class, () -> service.replay(redo));
+
+        assertEquals(1, resolutions.get(), "A dependent store must not be created again for every request");
+    }
+
+    private final java.util.concurrent.atomic.AtomicInteger resolutions = new java.util.concurrent.atomic.AtomicInteger();
+
     @SuppressWarnings("unchecked")
     private PostgresKafkaMessageReplayService configured(no.basis.integrationplatform.camel.step.StepOutcomeStore store) {
         var dataSources = (jakarta.enterprise.inject.Instance<DataSource>) java.lang.reflect.Proxy.newProxyInstance(
@@ -211,7 +225,10 @@ class PostgresKafkaMessageReplayServiceTest {
                         new Class<?>[]{jakarta.enterprise.inject.Instance.class},
                         (proxy, method, args) -> switch (method.getName()) {
                             case "isResolvable" -> store != null;
-                            case "get" -> store;
+                            case "get" -> {
+                                resolutions.incrementAndGet();
+                                yield store;
+                            }
                             default -> throw new UnsupportedOperationException(method.getName());
                         });
         return new PostgresKafkaMessageReplayService(dataSources, java.util.Optional.of(KAFKA.getBootstrapServers()),
