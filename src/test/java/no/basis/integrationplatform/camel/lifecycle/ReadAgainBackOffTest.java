@@ -123,8 +123,7 @@ class ReadAgainBackOffTest {
 
         // The next poll: a slow record of another partition first, then the held-back one.
         journalDown.set(false);
-        Exchange other = begin(policy, 3);
-        other.getMessage().setHeader(KafkaConstants.PARTITION, 1);
+        Exchange other = begin(policy, 3, 1);
         Thread.sleep(1_100);
         policy.onExchangeDone(route(endpoint), other);
         journalDown.set(true);
@@ -219,10 +218,14 @@ class ReadAgainBackOffTest {
     }
 
     private Exchange begin(MessageStoreRoutePolicy policy, long offset) {
+        return begin(policy, offset, 0);
+    }
+
+    private Exchange begin(MessageStoreRoutePolicy policy, long offset, int partition) {
         Exchange exchange = new DefaultExchange(context);
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-" + offset);
         exchange.getMessage().setHeader(KafkaConstants.TOPIC, "input");
-        exchange.getMessage().setHeader(KafkaConstants.PARTITION, 0);
+        exchange.getMessage().setHeader(KafkaConstants.PARTITION, partition);
         exchange.getMessage().setHeader(KafkaConstants.OFFSET, offset);
         exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) commits::incrementAndGet);
         exchange.getMessage().setBody("{}");
