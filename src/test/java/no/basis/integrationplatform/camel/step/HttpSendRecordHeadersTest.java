@@ -290,6 +290,37 @@ class HttpSendRecordHeadersTest {
     }
 
     @Test
+    void anHttpEndpointWhoseFilterCannotBeExtendedDoesNotStart() throws Exception {
+        context.addComponent("https", new org.apache.camel.support.DefaultComponent() {
+            @Override
+            protected org.apache.camel.Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) {
+                return new org.apache.camel.support.DefaultEndpoint(uri, this) {
+                    public org.apache.camel.Producer createProducer() {
+                        throw new UnsupportedOperationException();
+                    }
+
+                    public org.apache.camel.Consumer createConsumer(org.apache.camel.Processor processor) {
+                        throw new UnsupportedOperationException();
+                    }
+                };
+            }
+        });
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record").to("https://receiver.example/orders").id("post-order");
+            }
+        });
+
+        Exception failure = org.junit.jupiter.api.Assertions.assertThrows(Exception.class, context::start);
+        Throwable cause = failure;
+        while (cause.getCause() != null && !(cause instanceof IllegalStateException)) {
+            cause = cause.getCause();
+        }
+        assertTrue(String.valueOf(cause.getMessage()).contains("Cannot add a consumed Kafka record's credential headers"),
+                String.valueOf(cause));
+    }
+
+    @Test
     void aFailedSendRestoresTheHeadersForItsRedelivery() throws Exception {
         failures.set(1);
         context.addRoutes(new RouteBuilder() {
