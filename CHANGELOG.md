@@ -14,9 +14,9 @@
   "does not return an AsyncProcessor instance". Camel logged it once for each
   processor that the adapter does not track and that is not asynchronous, such
   as `validate`, and then bridged that processor to its asynchronous routing
-  engine itself. The adapter now
-  hands back the same bridge, or the processor unchanged when it is already
-  asynchronous, so routes behave and fail as before.
+  engine itself. The adapter now hands back the same bridge, or the processor
+  unchanged when it is already asynchronous, so routes behave and fail as
+  before.
 - A replay that restores an output checkpoint from object storage reads the
   whole object and checks its size and SHA-256 before it sets any of it as the
   body, and restores the body with the type it was stored as, as an inline
