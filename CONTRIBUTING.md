@@ -19,17 +19,28 @@ rules the agents follow; human contributors follow the same rules.
 
 ## Pull requests
 
+- Every problem or feature has an issue before its pull request. Link it in
+  the pull request with `Closes #N`, or `Refs #N` when the pull request does
+  only part of it, and say briefly how the change resolves it. GitHub closes
+  an issue from a keyword only when the pull request merges into the default
+  branch; when a pull request targets a release branch, close its issue by
+  hand once the work is done. Automated dependency updates need no issue.
 - One topic per pull request. Stack pull requests only when one really depends
   on another.
 - Pull requests are squash-merged, and the pull-request title becomes the
   commit message. Write it as a short sentence in the imperative mood.
 - Before asking for review, run `./mvnw verify`, update `CHANGELOG.md` for
   user-visible changes and update the documentation.
-- This adapter and the .NET adapter implement the same Message Store
-  contract. Say in the pull request whether the other adapter needs the same
-  change.
+- This adapter and the .NET adapter implement the same message store
+  (schema, topics and headers). Say in the pull request whether the other
+  adapter needs the same change.
 - Never put customer names, internal hostnames, credentials, personal data or
-  test-run evidence in code, documentation, commits or pull requests.
+  test-run evidence in code, documentation, commits or pull requests. The
+  `Public content` check scans every pull request and every push to `main` and
+  `release/*` for credentials and for private names and hosts. It reports only
+  the file, line and pattern number.
+- Describe the adapter in its own terms. Do not refer to a particular product,
+  service or documentation set that uses it.
 
 ## Security
 

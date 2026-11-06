@@ -6,7 +6,7 @@ import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
-/** Serializes terminal adapter results into contract-compatible JSON. */
+/** Serializes terminal adapter results into status-event JSON. */
 public class MessageStatusEventJson {
     private final ObjectMapper objectMapper;
 
@@ -39,7 +39,7 @@ public class MessageStatusEventJson {
     }
 
     /**
-     * Serializes the contract step array for Postgres JSONB storage.
+     * Serializes the step array for Postgres JSONB storage.
      *
      * @param result terminal adapter result
      * @return JSON step array

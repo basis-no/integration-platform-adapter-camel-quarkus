@@ -54,7 +54,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void producesSameIdempotencyKeyForSameMessageAndStepAcrossRedelivery() {
-        // Given Camel processes the same platform message and external step again after a retry/redelivery.
+        // Given Camel processes the same message and external step again after a retry/redelivery.
         Exchange firstAttempt = exchange("https://vendor.example.com/callback", "notify-vendor");
         firstAttempt.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
         Exchange secondAttempt = exchange("https://vendor.example.com/callback", "notify-vendor");
@@ -73,7 +73,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void producesDifferentIdempotencyKeysForDifferentStepsInSameMessage() {
-        // Given one platform message performs two different external side-effect steps.
+        // Given one message performs two different external side-effect steps.
         Exchange sftpStep = exchange("sftp:vendor/orders", "deliver-file");
         sftpStep.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
         Exchange webhookStep = exchange("https://vendor.example.com/callback", "notify-vendor");
@@ -90,7 +90,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void generatesMessageIdWhenMissing() {
-        // Given a message that has not yet been wrapped in the platform envelope.
+        // Given a message that has not yet been wrapped in the x-bip-* envelope.
         Exchange exchange = exchange("sftp:vendor/orders", "deliver-file");
 
         // When the adapter sees the first external send.
@@ -113,7 +113,7 @@ class DefaultStepTrackerTest {
         tracker.beforeSend(exchange);
         tracker.recordDelivered(exchange);
 
-        // Then the original send may continue, but no platform step is recorded.
+        // Then the original send may continue, but no step is recorded.
         assertEquals(StepRole.INTERNAL.name(),
                 exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class));
         assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
@@ -168,7 +168,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void redoStepsHeaderForcesReexecutionOfDeliveredStep() {
-        // Given the ledger says delivered, but the replay carries an explicit redo request (contract §9, D1).
+        // Given the ledger says delivered, but the replay carries an explicit redo request.
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
@@ -228,7 +228,7 @@ class DefaultStepTrackerTest {
 
     @Test
     void malformedRedoStepsHeaderIsTreatedAsEmptyAndDoesNotFailProcessing() {
-        // Given a hand-crafted, non-JSON redo header (contract §3, D1: warn + treat as empty).
+        // Given a hand-crafted, non-JSON redo header (warn + treat as empty).
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
@@ -412,6 +412,59 @@ class DefaultStepTrackerTest {
                 exchange.getProperty(PlatformExchangeProperties.CURRENT_STEP_ROLE, String.class));
         assertNull(exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
         assertNull(exchange.getMessage().getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
+    }
+
+    @Test
+    void journalsEndpointsWithoutCredentialsAndKeepsStepIdentity() {
+        String endpoint = "sftp://transfer:s3cr3t@files.example.com:22/outbound?username=transfer&password=s3cr3t";
+        Exchange delivered = exchange(endpoint, "send-file");
+        delivered.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        tracker.beforeSend(delivered);
+        tracker.recordDelivered(delivered);
+
+        stepOutcomeStore.alreadyDelivered.add("message-456:send-file");
+        Exchange skipped = exchange(endpoint, "send-file");
+        skipped.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-456");
+        tracker.beforeSend(skipped);
+        tracker.recordSkipped(skipped);
+
+        assertEquals("message-123:send-file", stepOutcomeStore.delivered.getFirst().idempotencyKey());
+        assertFalse(stepOutcomeStore.delivered.getFirst().endpointUri().contains("s3cr3t"));
+        assertTrue(stepOutcomeStore.delivered.getFirst().endpointUri().contains("files.example.com:22/outbound"));
+        assertFalse(steps(skipped).getFirst().endpointUri().contains("s3cr3t"));
+    }
+
+    @Test
+    void fallbackStepIdWarningMasksTheEndpointWithoutChangingTheId() throws Exception {
+        String endpoint = "sftp://transfer:s3cr3t@files.example.com/outbound?password=s3cr3t";
+        try (var logs = no.basis.integrationplatform.camel.LogCapture.of(DefaultStepTracker.class)) {
+            Exchange exchange = exchange(endpoint, null);
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+            tracker.beforeSend(exchange);
+            String digest = java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256")
+                    .digest(endpoint.getBytes(java.nio.charset.StandardCharsets.UTF_8)), 0, 6);
+            assertEquals("message-123:unknown-route:sftp:" + digest, exchange.getMessage().getHeader(PlatformHeaders.IDEMPOTENCY_KEY));
+            String text = logs.records().stream().map(no.basis.integrationplatform.camel.LogCapture::text)
+                    .reduce("", (a, b) -> a + "\n" + b);
+            assertTrue(text.contains("no stable Camel node id"), text);
+            assertFalse(text.contains("s3cr3t"), text);
+        }
+    }
+
+    @Test
+    void skippedStepIsLoggedAtInfoWithoutClaimingDelivery() {
+        stepOutcomeStore.alreadyDelivered.add("message-skipped:send-file");
+        Exchange skipped = exchange("sftp://transfer:s3cr3t@files.example.com/outbound", "send-file");
+        skipped.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-skipped");
+        try (var logs = no.basis.integrationplatform.camel.LogCapture.of(DefaultStepTracker.class)) {
+            tracker.beforeSend(skipped);
+            tracker.recordSkipped(skipped);
+            var info = logs.at(java.util.logging.Level.INFO);
+            assertEquals(1, info.size());
+            String text = no.basis.integrationplatform.camel.LogCapture.text(info.getFirst());
+            assertTrue(text.startsWith("Step send-file SKIPPED for message message-skipped:"), text);
+            assertFalse(text.contains("s3cr3t"), text);
+        }
     }
 
     private Exchange exchange(String endpointUri, String nodeId) {

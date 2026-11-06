@@ -6,11 +6,13 @@ import jakarta.inject.Inject;
 import io.quarkus.runtime.StartupEvent;
 import no.basis.integrationplatform.camel.MessageFailureMode;
 import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.ingress.IngressNormalizationConfig;
 import no.basis.integrationplatform.camel.ingress.IngressReplicaSafety;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
+import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.CamelContext;
 import org.apache.camel.NamedNode;
 import org.apache.camel.spi.RoutePolicy;
@@ -36,6 +38,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
     private final IngressNormalizationConfig ingressNormalizationConfig;
     private final IngressReplicaSafety ingressReplicaSafety;
     private final Set<String> seenNormalizationRoutes = ConcurrentHashMap.newKeySet();
+    @Inject TrafficSignals trafficSignals;
 
     /**
      * Creates the CDI policy factory from adapter configuration and runtime services.
@@ -147,17 +150,27 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
 
     @Override
     public RoutePolicy createRoutePolicy(CamelContext camelContext, String routeId, NamedNode route) {
+        if (PlatformDeadLetterRoute.ROUTE_ID.equals(routeId)) {
+            // The adapter's own parking route is not a message boundary, also with boundary-routes=all.
+            return null;
+        }
         if (ingressNormalizationConfig.includes(routeId)) {
             validateIngressNormalizationRoute(routeId, route);
             seenNormalizationRoutes.add(routeId);
         }
         if (!boundarySelector.includes(routeId, route)) {
-            return null;
+            // Not recorded, but it still reads a replay's redo list, so none of its sends carries it.
+            return new RedoStepsRoutePolicy();
         }
         MessageBoundaryKind boundaryKind = boundarySelector.kind(route);
         validateBoundary(routeId, boundaryKind);
-        return new MessageStoreRoutePolicy(
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
                 sink, integrationName, payloadPolicy, boundaryKind, kafkaCommitEnabled, objectStore);
+        if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
+            policy.setTrafficSignals(trafficSignals);
+            trafficSignals.observeKafkaBoundary();
+        }
+        return policy;
     }
 
     void validateConfiguredNormalizationRoutes(@Observes StartupEvent ignored) {
@@ -181,7 +194,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             throw new IllegalArgumentException(
                     "Ingress normalization route '" + routeId + "' must use routeConfigurationId="
                             + PlatformRouteConfiguration.INGRESS_NORMALIZATION
-                            + " so source failures propagate without platform DLQ parking");
+                            + " so source failures propagate without adapter DLQ parking");
         }
         ingressReplicaSafety.validate(routeId, definition);
         if (boundarySelector.kind(route) == MessageBoundaryKind.HTTP) {

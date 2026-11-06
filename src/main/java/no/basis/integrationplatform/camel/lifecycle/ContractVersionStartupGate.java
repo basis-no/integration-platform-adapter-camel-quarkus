@@ -5,6 +5,7 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.MessageStoreDataSource;
 import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
@@ -18,12 +19,13 @@ import java.sql.SQLException;
 import java.util.function.Supplier;
 
 /**
- * Message-store contract §10 startup gate.
+ * Message-store schema version startup gate.
  *
  * <p>When the adapter runs with the Postgres sink it must refuse to start
- * against a schema provisioned for a different contract major. The provisioned
- * version is recorded in {@code bip_contract} by the platform. An absent table
- * is treated as major 1 during the v1.0 rollout, with a loud warning.</p>
+ * against a schema provisioned for a different store schema version (contract
+ * major). The database operator records the provisioned version in
+ * {@code bip_contract}. An absent table or empty row is treated as major 1,
+ * with a loud warning.</p>
  */
 @ApplicationScoped
 public class ContractVersionStartupGate {
@@ -63,7 +65,13 @@ public class ContractVersionStartupGate {
             @ConfigProperty(name = "basis.message-store.sink", defaultValue = "log") String sinkMode,
             Instance<DataSource> dataSource,
             MessageStoreTestProfileConfig testProfile) {
-        this(testProfile.effectiveSink(sinkMode), () -> dataSource.isResolvable() ? dataSource.get() : null);
+        this(testProfile.effectiveSink(sinkMode), () -> {
+            if (dataSource.isAmbiguous()) {
+                // Otherwise the app reports ready and every journal write fails.
+                throw MessageStoreDataSource.ambiguous("basis.message-store.sink=postgres");
+            }
+            return dataSource.isResolvable() ? dataSource.get() : null;
+        });
     }
 
     ContractVersionStartupGate(String sinkMode, Supplier<DataSource> dataSource) {
@@ -118,14 +126,14 @@ public class ContractVersionStartupGate {
                 }
             }
         }
-        // Platform principle: fail fast over masked errors. Startup failure is
-        // safe under rolling updates (previous pods keep serving) and an adapter
-        // that cannot reach its journal must not consume anyway (contract §10).
+        // Fail fast rather than mask errors. Startup failure is safe under
+        // rolling updates (previous pods keep serving) and an adapter that
+        // cannot reach its journal must not consume anyway.
         throw new IllegalStateException("Message-store contract gate could not read " + CONTRACT_TABLE
                 + " after " + maxAttempts + " attempts ("
                 + (lastFailure == null ? "interrupted" : lastFailure.getMessage())
-                + "). Refusing to start: fix grants/connectivity (sql/postgres/003 grants select on "
-                + CONTRACT_TABLE + " to the runtime role).", lastFailure);
+                + "). Refusing to start: fix grants/connectivity (the runtime role needs select on "
+                + CONTRACT_TABLE + ").", lastFailure);
     }
 
     private void queryAndCheck(DataSource resolved) throws SQLException {
@@ -152,8 +160,8 @@ public class ContractVersionStartupGate {
     }
 
     private void warnAssumingMajorOne(String cause) {
-        LOG.warn("MESSAGE-STORE CONTRACT VERSION UNVERIFIED: {}. Assuming contract major {} per the v1.0"
-                        + " rollout rule (contract §10). Provision the contract metadata"
+        LOG.warn("MESSAGE-STORE CONTRACT VERSION UNVERIFIED: {}. Assuming contract major {}, the"
+                        + " store schema version this adapter implements. Provision the contract metadata"
                         + " (see db/message-store/bip_contract.sql in the adapter JAR) so the"
                         + " adapter can fail fast on schema/contract mismatches.",
                 cause, EXPECTED_CONTRACT_MAJOR);

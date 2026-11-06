@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.ingress.IngressNormalizationConfig;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
@@ -7,7 +8,6 @@ import org.apache.camel.model.RouteDefinition;
 import org.junit.jupiter.api.Test;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
-import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -30,7 +30,8 @@ class MessageStoreRoutePolicyFactoryTest {
 
         assertInstanceOf(MessageStoreRoutePolicy.class,
                 factory.createRoutePolicy(null, "orders", route("kafka:bip.orders.in")));
-        assertNull(factory.createRoutePolicy(null, "transform", route("direct:transform")));
+        // Not recorded: such a route only reads a replay's redo list, so it cannot forward it.
+        assertInstanceOf(RedoStepsRoutePolicy.class, factory.createRoutePolicy(null, "transform", route("direct:transform")));
     }
 
     @Test
@@ -95,7 +96,7 @@ class MessageStoreRoutePolicyFactoryTest {
         RouteDefinition route = route("file:/input");
         route.routeConfigurationId(PlatformRouteConfiguration.INGRESS_NORMALIZATION);
 
-        assertNull(factory.createRoutePolicy(null, "file-to-kafka", route));
+        assertInstanceOf(RedoStepsRoutePolicy.class, factory.createRoutePolicy(null, "file-to-kafka", route));
         factory.validateConfiguredNormalizationRoutes(null);
     }
 
@@ -129,6 +130,51 @@ class MessageStoreRoutePolicyFactoryTest {
                 () -> factory.validateConfiguredNormalizationRoutes(null));
 
         assertTrue(thrown.getMessage().contains("missing-route"));
+    }
+
+    @Test
+    void theDeadLetterRouteIsNotABoundaryEvenWithAllRoutesSelected() throws Exception {
+        try (var context = new org.apache.camel.impl.DefaultCamelContext()) {
+            context.addRoutePolicyFactory(factory("all", true, "dlq"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.start();
+            assertTrue(context.getRoute(PlatformDeadLetterRoute.ROUTE_ID).getRoutePolicyList().isEmpty());
+        }
+    }
+
+    @Test
+    void countsKafkaAdmissionByDefaultOnlyWithAKafkaBoundary() {
+        var withoutKafka = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        MessageStoreRoutePolicyFactory http = factory("receive-order", false, "record-failed");
+        http.trafficSignals = defaultSignals(withoutKafka);
+        http.createRoutePolicy(null, "receive-order", route("platform-http:/orders"));
+        assertTrue(withoutKafka.getMeters().isEmpty(), "An application without a Kafka boundary exports no activity metrics");
+
+        var withKafka = new io.micrometer.core.instrument.simple.SimpleMeterRegistry();
+        MessageStoreRoutePolicyFactory kafka = factory("auto", true, "dlq");
+        kafka.trafficSignals = defaultSignals(withKafka);
+        kafka.createRoutePolicy(null, "orders", route("kafka:bip.orders.in"));
+        kafka.createRoutePolicy(null, "transform", route("direct:transform"));
+        assertEquals(1.0, withKafka.get("integration_traffic_signal_supported")
+                .tag("signal", "record_admitted").gauge().value());
+        assertEquals(0.0, withKafka.get("integration_traffic_signal_supported")
+                .tag("signal", "record_published").gauge().value());
+    }
+
+    @SuppressWarnings("unchecked")
+    private static no.basis.integrationplatform.camel.traffic.TrafficSignals defaultSignals(
+            io.micrometer.core.instrument.MeterRegistry registry) {
+        var registries = (jakarta.enterprise.inject.Instance<io.micrometer.core.instrument.MeterRegistry>)
+                java.lang.reflect.Proxy.newProxyInstance(MessageStoreRoutePolicyFactoryTest.class.getClassLoader(),
+                        new Class<?>[]{jakarta.enterprise.inject.Instance.class},
+                        (proxy, method, args) -> switch (method.getName()) {
+                            case "isResolvable" -> true;
+                            case "get" -> registry;
+                            default -> throw new UnsupportedOperationException(method.getName());
+                        });
+        return new no.basis.integrationplatform.camel.traffic.TrafficSignals(
+                registries, java.util.Optional.empty(), java.util.Optional.empty());
     }
 
     private MessageStoreRoutePolicyFactory factory(String boundaryRoutes, boolean replayEnabled, String failureMode) {

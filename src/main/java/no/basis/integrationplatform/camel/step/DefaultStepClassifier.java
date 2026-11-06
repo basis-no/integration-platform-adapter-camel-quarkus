@@ -34,6 +34,20 @@ public class DefaultStepClassifier implements StepClassifier {
     private final Map<String, StepRole> nodeRoles;
 
     /**
+     * Whether a send to this endpoint is internal by its scheme and never a tracked step.
+     *
+     * @param endpointUri endpoint URI or dynamic URI expression
+     * @return true for internal Camel schemes such as direct, log or seda
+     */
+    public static boolean isInternalScheme(String endpointUri) {
+        if (endpointUri == null) {
+            return false;
+        }
+        int colon = endpointUri.indexOf(':');
+        return INTERNAL_SCHEMES.contains(colon < 0 ? endpointUri : endpointUri.substring(0, colon));
+    }
+
+    /**
      * Builds a classifier from exact Camel node-id lists.
      *
      * @param internalIds comma-separated internal node ids

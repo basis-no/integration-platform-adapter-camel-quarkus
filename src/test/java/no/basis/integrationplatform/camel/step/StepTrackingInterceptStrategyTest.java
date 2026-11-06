@@ -23,12 +23,12 @@ import java.util.Map;
 import java.util.Optional;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
-import java.util.concurrent.CompletionException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class StepTrackingInterceptStrategyTest {
@@ -118,7 +118,7 @@ class StepTrackingInterceptStrategyTest {
     }
 
     @Test
-    void recordsSideEffectFailureAndRethrowsIt() {
+    void recordsSideEffectFailureAndLeavesItOnTheExchange() throws Exception {
         RecordingStore store = new RecordingStore();
         AtomicInteger endpointCalls = new AtomicInteger();
         IllegalStateException failure = new IllegalStateException("write failed");
@@ -133,9 +133,9 @@ class StepTrackingInterceptStrategyTest {
                 });
         Exchange exchange = exchange("POST");
 
-        IllegalStateException thrown = assertThrows(IllegalStateException.class, () -> processor.process(exchange));
+        processor.process(exchange);
 
-        assertEquals(failure, thrown);
+        assertSame(failure, exchange.getException());
         assertEquals(1, endpointCalls.get());
         assertEquals(1, store.failed.size());
         assertEquals(StepStatus.FAILED, steps(exchange).getFirst().status());
@@ -262,11 +262,8 @@ class StepTrackingInterceptStrategyTest {
                 exchange -> exchange.getMessage().setBody("must-not-run"));
         Exchange exchange = exchange("POST");
 
-        CompletionException failure = assertThrows(
-                CompletionException.class,
-                () -> processor.processAsync(exchange).join());
+        assertSame(exchange, processor.processAsync(exchange).join());
 
-        assertTrue(failure.getCause() instanceof StepOutputCheckpointException);
         assertEquals(0, endpointCalls.get());
         assertTrue(exchange.getException() instanceof StepOutputCheckpointException);
     }
@@ -283,12 +280,9 @@ class StepTrackingInterceptStrategyTest {
                 "publish-order",
                 failedFutureDelegate(failure));
 
-        CompletionException thrown = assertThrows(
-                CompletionException.class,
-                () -> processor.processAsync(exchange).join());
+        assertSame(exchange, processor.processAsync(exchange).join());
 
-        assertEquals(failure, thrown.getCause());
-        assertEquals(failure, exchange.getProperty(Exchange.EXCEPTION_CAUGHT));
+        assertSame(failure, exchange.getException());
         assertEquals(1, store.failed.size());
         assertEquals(StepStatus.FAILED, steps(exchange).getFirst().status());
     }
@@ -321,7 +315,7 @@ class StepTrackingInterceptStrategyTest {
     }
 
     @Test
-    void replayStopsBeforeEndpointWhenDeliveredOutputHasNoCheckpoint() {
+    void replayStopsBeforeEndpointWhenDeliveredOutputHasNoCheckpoint() throws Exception {
         RecordingStore store = new RecordingStore();
         store.alreadyDelivered.add("message-123:create-order");
         AtomicInteger endpointCalls = new AtomicInteger();
@@ -331,10 +325,10 @@ class StepTrackingInterceptStrategyTest {
                 endpointCalls,
                 exchange -> exchange.getMessage().setBody("must-not-run"));
 
-        StepOutputCheckpointException failure = assertThrows(
-                StepOutputCheckpointException.class,
-                () -> processor.process(exchange("POST")));
+        Exchange exchange = exchange("POST");
+        processor.process(exchange);
 
+        StepOutputCheckpointException failure = assertInstanceOf(StepOutputCheckpointException.class, exchange.getException());
         assertEquals(0, endpointCalls.get());
         assertTrue(failure.getMessage().contains("no output checkpoint"));
         assertTrue(failure.getMessage().contains("explicit redo"));
@@ -500,7 +494,12 @@ class StepTrackingInterceptStrategyTest {
 
         @Override
         public boolean process(Exchange exchange, org.apache.camel.AsyncCallback callback) {
-            processAsync(exchange).whenComplete((result, failure) -> callback.done(false));
+            processAsync(exchange).whenComplete((result, failure) -> {
+                if (failure != null) {
+                    exchange.setException(failure);
+                }
+                callback.done(false);
+            });
             return false;
         }
 
@@ -508,5 +507,66 @@ class StepTrackingInterceptStrategyTest {
         public CompletableFuture<Exchange> processAsync(Exchange exchange) {
             return future.apply(exchange);
         }
+    }
+
+    @org.junit.jupiter.api.Test
+    void sendWithoutAnExplicitIdFailsRouteCreationByDefault() throws Exception {
+        try (var context = enforcing(false)) {
+            context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
+                public void configure() {
+                    from("direct:in").routeId("deliveries").to("receiver:generated?password=s3cr3t");
+                }
+            });
+            Exception failure = org.junit.jupiter.api.Assertions.assertThrows(Exception.class, context::start);
+            Throwable cause = failure;
+            while (cause.getCause() != null && !(cause instanceof IllegalStateException)) cause = cause.getCause();
+            org.junit.jupiter.api.Assertions.assertTrue(cause.getMessage().startsWith(
+                    "Endpoint send to receiver://generated?password=xxxxxx in route deliveries has no explicit id"), cause.getMessage());
+            org.junit.jupiter.api.Assertions.assertTrue(cause.getMessage().contains(
+                    StepTrackingInterceptStrategy.EMERGENCY_ALLOW_GENERATED_STEP_IDS + "=true"));
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void explicitIdsInternalEndpointsAndWireTapsAreNotChecked() throws Exception {
+        try (var context = enforcing(false)) {
+            context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
+                public void configure() {
+                    from("direct:in").routeId("deliveries")
+                            .to("receiver:named").id("named-send")
+                            .toD("receiver:${header.target}").id("dynamic-send")
+                            .to("direct:internal")
+                            .wireTap("receiver:audit-copy");
+                    from("direct:internal").setBody(constant("internal"));
+                }
+            });
+            context.start();
+            org.junit.jupiter.api.Assertions.assertTrue(context.isStarted());
+        }
+    }
+
+    @org.junit.jupiter.api.Test
+    void emergencyFlagStartsWithAWarning() throws Exception {
+        try (var logs = no.basis.integrationplatform.camel.LogCapture.of(StepTrackingInterceptStrategy.class);
+             var context = enforcing(true)) {
+            context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
+                public void configure() {
+                    from("direct:in").routeId("deliveries").to("receiver:generated");
+                }
+            });
+            context.start();
+            var warnings = logs.at(java.util.logging.Level.WARNING);
+            org.junit.jupiter.api.Assertions.assertEquals(1, warnings.size());
+            org.junit.jupiter.api.Assertions.assertTrue(no.basis.integrationplatform.camel.LogCapture.text(warnings.getFirst())
+                    .contains(StepTrackingInterceptStrategy.EMERGENCY_ALLOW_GENERATED_STEP_IDS + "=true is set"));
+        }
+    }
+
+    private org.apache.camel.impl.DefaultCamelContext enforcing(boolean allowGenerated) {
+        var context = new org.apache.camel.impl.DefaultCamelContext();
+        context.addComponent("receiver", new no.basis.integrationplatform.camel.ReceiverComponent());
+        context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
+                new DefaultStepTracker(new NoopStepOutcomeStore()), allowGenerated));
+        return context;
     }
 }

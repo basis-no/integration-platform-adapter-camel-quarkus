@@ -7,7 +7,7 @@ import java.util.List;
  * Complete terminal message-attempt data passed to a {@code MessageStoreSink}.
  *
  * @param schemaVersion envelope schema version
- * @param messageId stable platform message id
+ * @param messageId stable message id
  * @param correlationId optional business correlation id
  * @param contentType captured payload content type
  * @param sourceSystem optional source-system identity
@@ -23,7 +23,7 @@ import java.util.List;
  * @param replayDisabledReason reason replay is unavailable
  * @param integration integration name
  * @param routeId Camel boundary route id
- * @param attempt platform attempt number
+ * @param attempt message attempt number
  * @param autoRedelivered whether Camel automatically redelivered the exchange
  * @param autoRedeliveryCount completed automatic redeliveries
  * @param autoRedeliveryMax configured maximum automatic redeliveries
@@ -63,11 +63,11 @@ public record MessageAttemptResult(
      * Creates a metadata-only result without automatic-redelivery diagnostics.
      *
      * @param schemaVersion envelope schema version
-     * @param messageId stable platform message id
+     * @param messageId stable message id
      * @param correlationId optional business correlation id
      * @param integration integration name
      * @param routeId Camel boundary route id
-     * @param attempt platform attempt number
+     * @param attempt message attempt number
      * @param occurredAt terminal outcome time
      * @param status terminal message status
      * @param steps observed durable step outcomes
@@ -116,7 +116,7 @@ public record MessageAttemptResult(
      * Creates an inline-payload result without an external payload reference.
      *
      * @param schemaVersion envelope schema version
-     * @param messageId stable platform message id
+     * @param messageId stable message id
      * @param correlationId optional business correlation id
      * @param contentType captured payload content type
      * @param sourceSystem optional source-system identity
@@ -130,7 +130,7 @@ public record MessageAttemptResult(
      * @param replayDisabledReason reason replay is unavailable
      * @param integration integration name
      * @param routeId Camel boundary route id
-     * @param attempt platform attempt number
+     * @param attempt message attempt number
      * @param autoRedelivered whether Camel automatically redelivered the exchange
      * @param autoRedeliveryCount completed automatic redeliveries
      * @param autoRedeliveryMax configured maximum automatic redeliveries

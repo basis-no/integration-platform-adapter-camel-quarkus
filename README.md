@@ -4,26 +4,27 @@ Camel Quarkus runtime adapter for message auditing, Kafka recovery and controlle
 It keeps message-store persistence, retry and DLQ behavior, Kafka manual
 commit, replay, and replay-aware side-effect tracking out of business routes.
 
-The adapter implements message-store contract `v1.0.0-rc2`. It is
-self-contained: the documentation in [`docs/`](docs/index.md) describes the
-tables, topics and headers it uses, and the schema it expects ships in
-`src/main/resources/db/message-store/`.
+The adapter is self-contained: the documentation in [`docs/`](docs/index.md)
+describes the tables, topics and headers it uses, and the schema it expects
+ships in `src/main/resources/db/message-store/`. With the Postgres sink it
+checks at startup that `bip_contract` records store schema version 1.
 
 ## Installation
 
-The certified release is available from Maven Central:
+Releases are available from Maven Central:
 
 ```xml
 <dependency>
   <groupId>no.basis.integrationplatform</groupId>
   <artifactId>integration-platform-adapter-camel-quarkus</artifactId>
-  <version>0.3.1</version>
+  <version>0.3.6</version>
 </dependency>
 ```
 
-Platform templates pin the supported version and supply production runtime
-configuration. Integration repositories should not copy message-store routes,
-database writes, Kafka commit processors, or DLQ plumbing into business YAML.
+Pin the adapter version in the integration's build and let the deployment
+supply production runtime configuration. Integration repositories should not
+copy message-store routes, database writes, Kafka commit processors, or DLQ
+plumbing into business YAML.
 
 ## What It Provides
 
@@ -32,10 +33,12 @@ database writes, Kafka commit processors, or DLQ plumbing into business YAML.
 - standard retry and terminal DLQ handling;
 - stable `x-bip-*` envelope and idempotency headers;
 - durable delivered-step tracking and controlled replay;
-- Postgres-backed audit and dashboard read models;
+- Postgres-backed audit and message read models for operator tools;
 - inline or S3-compatible replay payload storage;
 - safe normalization of file, polling, and acknowledged queues into Kafka;
-- guarded local test profiles.
+- guarded local test profiles;
+- Kafka activity counters through the application's Micrometer registry;
+- a Key-Value Store for small integration-scoped JSON cursors and markers.
 
 The guarantee is controlled **at-least-once** processing, not distributed
 exactly-once delivery across Kafka, Postgres, and external systems. See
@@ -55,20 +58,56 @@ Start with the [documentation index](docs/index.md).
 | Use Kafka, files, polls, JMS, HTTP, or multiple replicas | [Ingress and scaling](docs/ingress-and-scaling.md) |
 | Configure Postgres-inline and S3 payload storage | [Payload storage](docs/payload-storage.md) |
 | Run local tests or deliberately suppress commits | [Testing](docs/testing.md) |
+| Count Kafka admissions and publications for activity alerts | [Kafka activity metrics](docs/activity-metrics.md) |
+| Keep polling cursors and markers between runs and replicas | [Key-Value Store](docs/key-value-store.md) |
 | Publish a snapshot for remote acceptance or make a final release | [Releasing](docs/releasing.md) |
 | Find every property, default, environment variable, and safety note | [Configuration reference](docs/configuration.md) |
 | Diagnose startup, replay, persistence, or consumer problems | [Troubleshooting](docs/troubleshooting.md) |
 
 ## Current Status
 
-- Camel adapter `0.3.1` is the certified/template baseline for contract
-  `v1.0.0-rc2`.
+- Released versions are on the `0.3` line and use message-store schema
+  version 1; see [CHANGELOG.md](CHANGELOG.md).
+- Security: adapter 0.3.1 to 0.3.6 and 0.4.0-rc1 can forward a consumed
+  Kafka record's credentials to an HTTP receiver, through Camel's
+  `kafka.HEADERS` on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0.
+  The record's credential headers themselves reach the receiver too: on
+  0.3.5 and earlier and 0.4.0-rc1 through every HTTP send, and on 0.3.6
+  through untracked sends such as `enrich` and through `vertx-http`. See
+  [GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)
+  for the workaround. Fixed for 0.4.0.
+- 0.4.0-rc1 restores an output checkpoint from object storage as a stream
+  that is checked only when the route reads it to its end. Fixed for 0.4.0;
+  see [Output-Producing Side Effects](docs/steps-and-idempotency.md#output-producing-side-effects).
+  An input in object storage is still checked that way
+  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+- 0.4.0-rc1 replays any stored message, also another integration's, to the
+  replay topic named by its row, and does not check that the route that
+  recorded it still consumes that topic. The 0.3.x releases refuse both.
+  Fixed for 0.4.0; see [Manual Replay](docs/retry-dlq-replay.md#manual-replay).
+- 0.3.x and 0.4.0-rc1 let Camel warn at route start that the adapter's
+  intercept strategy "does not return an AsyncProcessor instance", once per
+  untracked processor such as `validate`. Harmless; fixed for 0.4.0. See
+  [Troubleshooting](docs/troubleshooting.md#route-fails-at-startup).
+- 0.4.0-rc1 gives an application's own `onException` handler the consumed
+  input instead of the message the route left, and logs that a handled message
+  is being parked. 0.3.6 fixed it, and so does 0.4.0; see
+  [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
+  releases are built against Quarkus 3.32.2 (Camel 4.18.0).
+- Known limitation of 0.3.x: a failed send in a `direct:` sub-route is
+  recorded `DELIVERED` when the sub-route's dead-letter channel parks the
+  message, so a resend skips it. Resend with the step in `redoSteps`; see
+  [Sends in a sub-route](docs/steps-and-idempotency.md#sends-in-a-sub-route).
+  Fixed for 0.4.0.
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3
   payload storage, output-side-effect checkpoints, non-Kafka ingress
-  normalization, and replica-safety validation.
+  normalization, replica-safety validation, Kafka activity counters with
+  admission counting on by default (opt-in in 0.3.6), and the 0.3.6 Key-Value
+  Store.
 - The `0.4` features have extensive local unit and Testcontainers coverage but
-  are not the certified platform baseline until the stacked changes are merged,
-  released, and the remote acceptance campaign is complete.
+  are not released until the stacked changes are merged, released, and the
+  remote acceptance campaign is complete.
 - Direct Postgres mode is the production path. The Kafka status sink requires a
   separate lifecycle consumer to materialize the Postgres read model.
 
@@ -82,7 +121,8 @@ JDK 21 is required. Use the repository Maven wrapper:
 ```
 
 Behavior and configuration changes must update the relevant local documentation.
-Cross-runtime semantic changes require a coordinated contract change.
+Changes to shared message-store semantics must stay compatible with the .NET
+adapter.
 
 Use locally built `X.Y.Z-SNAPSHOT` artifacts for acceptance; snapshot
 publication is suspended. Create a `vX.Y.Z` tag only after acceptance is
@@ -91,17 +131,17 @@ offline by the release manager from reviewed tooling; the production key never
 exists in GitHub.
 See [Releasing](docs/releasing.md) for the full workflow and checklist.
 
-## License and Support
+## License
 
-Apache-2.0. Production support is provided to platform customers through their
-platform agreement; other issues and pull requests are handled best-effort.
+Apache-2.0. Issues and pull requests are welcome and handled best-effort.
 
-## Managed payload capture profile
+## Payload capture modes
 
-The managed runtime keeps the v1 Kafka consumer, Postgres lifecycle journal,
-step-outcome ledger, retry/DLQ handling and admin adapter active independently
-of payload storage. `BASIS_MESSAGE_STORE_PAYLOAD_MODE=metadata-only` processes
-messages but records no replay payload: lifecycle rows remain, with
+With the production Postgres sink and step-outcome store configured, the Kafka
+consumer, Postgres lifecycle journal, step-outcome ledger, retry/DLQ handling
+and replay admin endpoint stay active independently of payload storage.
+`BASIS_MESSAGE_STORE_PAYLOAD_MODE=metadata-only` processes messages but records
+no replay payload: lifecycle rows remain, with
 `replayable=false` and a reason. `postgres-inline` restores payload capture
 for subsequent deliveries subject to the existing size and retention policy.
 
@@ -117,9 +157,8 @@ Runtime stop/start remains deployment replica state. Do not disable the sink
 or step ledger to implement payload capture off: durable recording before
 commit remains mandatory. Missing or failed journal persistence must still
 prevent successful acknowledgement. No new adapter package or database schema
-is required for this profile; published .NET 0.3.0 and Camel 0.3.1 already
-implement the required payload modes. A coordinated managed projection release
-is required; do not infer fleet adoption from this documentation change.
+is required for these modes; published .NET 0.3.0 and Camel 0.3.1 already
+implement them.
 
 ### Runtime security bindings
 
@@ -127,7 +166,7 @@ Operators can supply one authenticated TLS broker binding for input, DLQ, replay
 and the optional Kafka status sink. Existing installations keep their plaintext
 default until configured. Application persistence uses a separate named
 datasource and scoped migration identity; the default datasource remains the
-platform Message Store. See the [configuration reference](docs/configuration.md).
+adapter's message store. See the [configuration reference](docs/configuration.md).
 
 ## How this project is developed
 
@@ -142,4 +181,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for branches and pull requests.
 
 This repository starts from a fresh history. Versions up to 0.3.5 were
 developed in an earlier private repository, so this repository has no tags or
-release pages for them. Their notes are in [CHANGELOG.md](CHANGELOG.md).
+release pages for them. Their notes are in [CHANGELOG.md](CHANGELOG.md),
+together with those of 0.3.6, the first release with a tag and a release page
+here.

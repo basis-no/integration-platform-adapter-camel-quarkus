@@ -9,6 +9,7 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Duration;
 import java.time.Instant;
 
 /** Transactionally upserts terminal attempts and current message state in Postgres. */
@@ -55,10 +56,11 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 payload_bytes = excluded.payload_bytes,
                 payload_ref = excluded.payload_ref,
                 payload_sha256 = excluded.payload_sha256,
-                payload_expires_at = coalesce(
-                    bip_message_log.payload_expires_at,
-                    excluded.payload_expires_at
-                ),
+                payload_expires_at = case
+                    when excluded.payload_storage = 's3_object'
+                        then coalesce(bip_message_log.payload_expires_at, excluded.payload_expires_at)
+                    else excluded.payload_expires_at
+                end,
                 payload_deleted_at = excluded.payload_deleted_at,
                 replayable = excluded.replayable,
                 replay_disabled_reason = excluded.replay_disabled_reason,
@@ -72,7 +74,12 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 occurred_at = excluded.occurred_at,
                 error = excluded.error,
                 updated_at = current_timestamp
+            where excluded.last_attempt >= bip_message_log.last_attempt
             returning payload_expires_at
+            """;
+
+    private static final String MESSAGE_LOG_EXPIRY_SQL = """
+            select payload_expires_at from bip_message_log where message_id = ?
             """;
 
     private static final String UPSERT_MESSAGE_ATTEMPT_SQL = """
@@ -129,21 +136,70 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 error = excluded.error
             """;
 
+    // The earliest outcome recorded for this message by this integration: its first receipt.
+    private static final String FIRST_RECEIPT_SQL = """
+            select min(occurred_at) from bip_message_attempt where message_id = ? and integration = ?
+            """;
+
     private final DataSource dataSource;
+    private final Duration retention;
     private final MessageStatusEventJson serializer;
 
     /**
      * Creates a direct Postgres outcome sink.
      *
-     * @param dataSource platform message-store datasource
+     * @param dataSource message-store datasource
      */
     public PostgresMessageStoreSink(DataSource dataSource) {
         this(dataSource, new MessageStatusEventJson());
     }
 
+    /**
+     * Creates the sink.
+     * @param dataSource message-store datasource
+     * @param retention configured payload retention; a replay's new inline expiry is capped at
+     *        first receipt plus twice this duration
+     */
+    public PostgresMessageStoreSink(DataSource dataSource, Duration retention) {
+        this(dataSource, new MessageStatusEventJson(), retention);
+    }
+
     PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer) {
+        this(dataSource, serializer, null);
+    }
+
+    PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Duration retention) {
         this.dataSource = dataSource;
         this.serializer = serializer;
+        this.retention = retention;
+    }
+
+    /**
+     * An inline payload is captured again on every attempt with an expiry of capture time
+     * plus retention, so a replay resets retention. The reset is capped at first receipt plus
+     * twice the retention. First receipt is the earliest outcome this integration recorded for
+     * the message. Without a configured retention, the attempt's own expiry minus its outcome
+     * time stands in for it. An object payload keeps its first expiry, with its object.
+     */
+    private Instant cappedInlineExpiry(Connection connection, MessageAttemptResult result) throws SQLException {
+        Instant requested = result.payloadExpiresAt();
+        if (requested == null || !"postgres_inline".equals(result.payloadStorage())) {
+            return requested;
+        }
+        Instant firstReceipt = result.occurredAt();
+        try (PreparedStatement statement = connection.prepareStatement(FIRST_RECEIPT_SQL)) {
+            statement.setString(1, result.messageId());
+            statement.setString(2, result.integration());
+            try (ResultSet earliest = statement.executeQuery()) {
+                Timestamp recorded = earliest.next() ? earliest.getTimestamp(1) : null;
+                if (recorded != null && recorded.toInstant().isBefore(firstReceipt)) {
+                    firstReceipt = recorded.toInstant();
+                }
+            }
+        }
+        Duration window = retention != null ? retention : Duration.between(result.occurredAt(), requested);
+        Instant cap = firstReceipt.plus((window.isNegative() ? Duration.ZERO : window).multipliedBy(2));
+        return requested.isAfter(cap) ? cap : requested;
     }
 
     @Override
@@ -152,7 +208,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             boolean previousAutoCommit = connection.getAutoCommit();
             connection.setAutoCommit(false);
             try {
-                Instant payloadExpiresAt = upsertMessageLog(connection, result);
+                Instant payloadExpiresAt = upsertMessageLog(connection, result, cappedInlineExpiry(connection, result));
                 upsertMessageAttempt(connection, result, payloadExpiresAt);
                 connection.commit();
             } catch (Exception e) {
@@ -201,7 +257,8 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
         }
     }
 
-    private Instant upsertMessageLog(Connection connection, MessageAttemptResult result) throws SQLException {
+    private Instant upsertMessageLog(Connection connection, MessageAttemptResult result, Instant requestedExpiry)
+            throws SQLException {
         try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_LOG_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.correlationId());
@@ -213,7 +270,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             setBytesOrNull(statement, 8, result.payloadBytes());
             statement.setString(9, result.payloadRef());
             statement.setString(10, result.payloadSha256());
-            setTimestampOrNull(statement, 11, result.payloadExpiresAt());
+            setTimestampOrNull(statement, 11, requestedExpiry);
             setTimestampOrNull(statement, 12, result.payloadDeletedAt());
             statement.setBoolean(13, result.replayable());
             statement.setString(14, result.replayDisabledReason());
@@ -227,8 +284,22 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             statement.setTimestamp(22, Timestamp.from(result.occurredAt()));
             statement.setString(23, result.error());
             try (ResultSet resultSet = statement.executeQuery()) {
-                resultSet.next();
-                Timestamp payloadExpiresAt = resultSet.getTimestamp(1);
+                if (resultSet.next()) {
+                    Timestamp payloadExpiresAt = resultSet.getTimestamp(1);
+                    return payloadExpiresAt == null ? null : payloadExpiresAt.toInstant();
+                }
+            }
+        }
+        // A late outcome from an older attempt leaves the newer summary unchanged. Its history
+        // row keeps its own capped inline expiry; an object payload keeps the summary's expiry.
+        if (!"s3_object".equals(result.payloadStorage())) {
+            return requestedExpiry;
+        }
+        try (PreparedStatement statement = connection.prepareStatement(MESSAGE_LOG_EXPIRY_SQL)) {
+            statement.setString(1, result.messageId());
+            try (ResultSet current = statement.executeQuery()) {
+                current.next();
+                Timestamp payloadExpiresAt = current.getTimestamp(1);
                 return payloadExpiresAt == null ? null : payloadExpiresAt.toInstant();
             }
         }

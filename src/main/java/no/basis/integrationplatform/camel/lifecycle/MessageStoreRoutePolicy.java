@@ -1,5 +1,7 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.KafkaRecordHeaders;
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
@@ -8,11 +10,16 @@ import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
 import no.basis.integrationplatform.camel.payload.PayloadStorageException;
+import no.basis.integrationplatform.camel.step.DefaultStepTracker;
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
+import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.Exchange;
+import org.apache.camel.ExchangePropertyKey;
 import org.apache.camel.Route;
 import org.apache.camel.component.kafka.KafkaConstants;
 import org.apache.camel.component.kafka.consumer.KafkaManualCommit;
+import org.apache.camel.support.EndpointHelper;
 import org.apache.camel.support.RoutePolicySupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -23,13 +30,20 @@ import java.io.SequenceInputStream;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.Instant;
+import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /** Records terminal lifecycle outcomes and owns the Kafka acknowledgement boundary. */
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
+    private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
+    private static final String ENVELOPE_PREFIX = "x-bip-";
+    private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
+    private static final List<String> ENVELOPE_HEADERS = List.of(PlatformHeaders.ATTEMPT, PlatformHeaders.SCHEMA_VERSION,
+            PlatformHeaders.CONTENT_TYPE, PlatformHeaders.SOURCE_SYSTEM, PlatformHeaders.TARGET_SYSTEM);
 
     private final MessageStoreSink sink;
     private final String integrationName;
@@ -37,6 +51,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private final MessageBoundaryKind boundaryKind;
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
+    private TrafficSignals trafficSignals;
 
     /**
      * Creates a Kafka policy using the default payload policy.
@@ -92,20 +107,42 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         this.objectStore = objectStore;
     }
 
+    void setTrafficSignals(TrafficSignals trafficSignals) {
+        this.trafficSignals = trafficSignals;
+    }
+
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
-        ensureMessageId(exchange);
+        normalizeKafkaEnvelopeHeaders(exchange);
+        // A replay's redo list is for this attempt only; the route must not forward it.
+        DefaultStepTracker.captureRedoSteps(exchange);
+        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
+        exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
+        captureInputEnvelope(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             captureKafkaManualCommit(exchange);
         }
+        if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null) {
+            // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
+            StepOutcomeFailure.begin(exchange);
+        }
         capturePayloadMetadata(exchange);
+        if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
+            trafficSignals.recordAdmitted(exchange);
+        }
     }
 
     @Override
     public void onExchangeDone(Route route, Exchange exchange) {
+        if (boundaryKind == MessageBoundaryKind.KAFKA && parkingDidNotPublish(exchange)) {
+            // Neither completed nor parked: keep the exchange failed, so that it is recorded
+            // FAILED, not committed, and read again.
+            exchange.setException(new IllegalStateException(
+                    "The DLQ parking route did not publish; the message was not parked"));
+        }
         if (recordingSuppressed(exchange)) {
-            commitKafkaOffsetIfPresent(exchange);
             LOG.debug("Skipped message-store recording for an ineligible exchange on route {}", route.getRouteId());
+            acknowledge(exchange);
             return;
         }
 
@@ -113,7 +150,6 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
         try {
             sink.record(result);
-            commitKafkaOffsetIfPresent(exchange);
         } catch (Exception e) {
             String consequence = boundaryKind == MessageBoundaryKind.KAFKA
                     ? "Kafka offset was not committed"
@@ -132,20 +168,33 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             }
             throw failure;
         }
+        try {
+            acknowledge(exchange);
+        } catch (Exception e) {
+            IllegalStateException failure = new IllegalStateException(
+                    "Message outcome was recorded but Kafka offset commit failed", e);
+            exchange.setException(failure);
+            throw failure;
+        }
     }
 
     private MessageAttemptResult result(Route route, Exchange exchange) {
         boolean dlqParked = dlqParked(exchange);
         Throwable failure = failure(exchange, dlqParked);
-        MessageStatus status = status(dlqParked, failure);
+        // The input is consumed again, also when a route handled the failure.
+        Throwable unrecorded = StepOutcomeFailure.of(exchange);
+        MessageStatus status = unrecorded != null ? MessageStatus.FAILED : status(dlqParked, failure);
+        if (failure == null) {
+            failure = unrecorded;
+        }
 
         return new MessageAttemptResult(
                 schemaVersion(exchange),
-                ensureMessageId(exchange),
-                exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class),
-                exchange.getMessage().getHeader(PlatformHeaders.CONTENT_TYPE, String.class),
-                exchange.getMessage().getHeader(PlatformHeaders.SOURCE_SYSTEM, String.class),
-                exchange.getMessage().getHeader(PlatformHeaders.TARGET_SYSTEM, String.class),
+                messageId(exchange),
+                correlationId(exchange),
+                envelope(exchange, PlatformHeaders.CONTENT_TYPE, String.class),
+                envelope(exchange, PlatformHeaders.SOURCE_SYSTEM, String.class),
+                envelope(exchange, PlatformHeaders.TARGET_SYSTEM, String.class),
                 payloadStorage(exchange),
                 payloadSizeBytes(exchange),
                 payloadBytes(exchange),
@@ -178,6 +227,32 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private List<StepResult> steps(Exchange exchange) {
         List<StepResult> steps = exchange.getProperty(PlatformExchangeProperties.STEPS, List.class);
         return steps == null ? List.of() : List.copyOf(steps);
+    }
+
+    /**
+     * Commits a Kafka input that completed or whose DLQ parking was confirmed. An input that
+     * is still failed was neither, and an input whose attempt could not check or record a step
+     * outcome must be consumed again: its offset is not committed, and its exchange stays
+     * failed, so the Kafka consumer reads the record again.
+     */
+    private void acknowledge(Exchange exchange) {
+        Throwable unrecorded = StepOutcomeFailure.of(exchange);
+        if (boundaryKind == MessageBoundaryKind.KAFKA && unrecorded != null) {
+            LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed again",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), unrecorded);
+            if (exchange.getException() == null) {
+                // The route handled the failure; the Kafka consumer reads the record again only from a failed exchange.
+                exchange.setException(new IllegalStateException(
+                        "A step outcome was not checked or recorded; Kafka offset was not committed", unrecorded));
+            }
+            return;
+        }
+        if (boundaryKind == MessageBoundaryKind.KAFKA && exchange.getException() != null && !dlqParked(exchange)) {
+            LOG.error("Message {} failed without confirmed DLQ parking; its Kafka offset was not committed",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+            return;
+        }
+        commitKafkaOffsetIfPresent(exchange);
     }
 
     private void commitKafkaOffsetIfPresent(Exchange exchange) {
@@ -220,10 +295,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
         if (!payloadPolicy.replayEnabled()) {
             metadataOnly(exchange, "replay disabled by policy");
+            keepForParking(exchange, body);
             return;
         }
         if (payloadPolicy.mode() == PayloadMode.METADATA_ONLY) {
             metadataOnly(exchange, "payload storage mode is metadata-only");
+            keepForParking(exchange, body);
             return;
         }
         if (bytes == null && body instanceof InputStream input && payloadPolicy.mode() == PayloadMode.TIERED) {
@@ -240,15 +317,36 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         if (bytes.length > payloadPolicy.inlineThresholdBytes()) {
             metadataOnly(exchange, "payload exceeds max inline size");
+            keepForParking(exchange, body);
             return;
         }
 
+        // A route may change a byte array body in place; replay and parking keep the consumed input.
+        byte[] captured = body instanceof byte[] ? bytes.clone() : bytes;
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_STORAGE, PayloadMode.POSTGRES_INLINE.storageValue());
-        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, bytes);
-        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SHA256, sha256(bytes));
+        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, captured);
+        exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SHA256, sha256(captured));
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_EXPIRES_AT,
                 Instant.now().plus(payloadPolicy.retention()));
         exchange.setProperty(PlatformExchangeProperties.REPLAYABLE, true);
+    }
+
+    /**
+     * DLQ parking sends the consumed input also when replay storage does not keep it. Only a
+     * managed Kafka input is parked, so other inputs keep no copy. A String cannot change and
+     * is kept as it is; another body type is parked as the route left it.
+     */
+    private void keepForParking(Exchange exchange, Object body) {
+        if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) == null) {
+            return;
+        }
+        if (body == null) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, new byte[0]);
+        } else if (body instanceof byte[] bytes) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, bytes.clone());
+        } else if (body instanceof String) {
+            exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, body);
+        }
     }
 
     private void metadataOnly(Exchange exchange, String reason) {
@@ -266,7 +364,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             int probeSize = Math.toIntExact(payloadPolicy.inlineThresholdBytes() + 1);
             byte[] probe = input.readNBytes(probeSize);
             if (probe.length <= payloadPolicy.inlineThresholdBytes()) {
-                exchange.getMessage().setBody(probe);
+                // The route gets its own array, so the capture stays the consumed input.
+                exchange.getMessage().setBody(probe.clone());
                 exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, (long) probe.length);
                 exchange.setProperty(PlatformExchangeProperties.PAYLOAD_STORAGE, PayloadMode.POSTGRES_INLINE.storageValue());
                 exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, probe);
@@ -384,6 +483,47 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return null;
     }
 
+    // A route or aggregation strategy can replace the message without the x-bip-* headers
+    // (a grouped split, removeHeaders). The outcome still belongs to the consumed input, and a
+    // replay stays its own attempt instead of overwriting attempt 1's history row.
+    private String messageId(Exchange exchange) {
+        String current = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
+        String input = exchange.getProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, String.class);
+        if ((current == null || current.isBlank()) && input != null) {
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, input);
+        }
+        return ensureMessageId(exchange);
+    }
+
+    private String correlationId(Exchange exchange) {
+        String current = exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class);
+        return current != null ? current : exchange.getProperty(INPUT_CORRELATION_ID, String.class);
+    }
+
+    private void captureInputEnvelope(Exchange exchange) {
+        Map<String, Object> envelope = new HashMap<>();
+        for (String name : ENVELOPE_HEADERS) {
+            Object value = exchange.getMessage().getHeader(name);
+            if (value != null) {
+                envelope.put(name, value);
+            }
+        }
+        exchange.setProperty(INPUT_ENVELOPE, Map.copyOf(envelope));
+    }
+
+    @SuppressWarnings("unchecked")
+    private <T> T envelope(Exchange exchange, String name, Class<T> type) {
+        T current = exchange.getMessage().getHeader(name, type);
+        if (current != null) {
+            return current;
+        }
+        Map<String, Object> input = exchange.getProperty(INPUT_ENVELOPE, Map.class);
+        Object captured = input == null ? null : input.get(name);
+        return captured == null ? null : exchange.getContext().getTypeConverter().convertTo(type, exchange, captured);
+    }
+
+    // Kafka exposes header values as bytes; receivers and the journal need the owned text.
+    // The x-bip-* headers are UTF-8 text, independent of the payload charset.
     private String ensureMessageId(Exchange exchange) {
         String messageId = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
         if (messageId != null && !messageId.isBlank()) {
@@ -395,17 +535,32 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return messageId;
     }
 
+    private void normalizeKafkaEnvelopeHeaders(Exchange exchange) {
+        // Kafka exposes bytes, but the x-bip-* headers are UTF-8 text. An HTTP component
+        // would send a byte array as its list of numbers, so keep the owned headers as text,
+        // independent of the payload charset. A Kafka producer sends the same bytes again.
+        if (KafkaRecordHeaders.topic(exchange.getMessage()) == null) {
+            return;
+        }
+        for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
+            if (name.regionMatches(true, 0, ENVELOPE_PREFIX, 0, ENVELOPE_PREFIX.length())
+                    && exchange.getMessage().getHeader(name) instanceof byte[] bytes) {
+                exchange.getMessage().setHeader(name, new String(bytes, StandardCharsets.UTF_8));
+            }
+        }
+    }
+
     private int schemaVersion(Exchange exchange) {
-        Integer version = exchange.getMessage().getHeader(PlatformHeaders.SCHEMA_VERSION, Integer.class);
+        Integer version = envelope(exchange, PlatformHeaders.SCHEMA_VERSION, Integer.class);
         return version == null ? 1 : version;
     }
 
     private int attempt(Exchange exchange) {
-        Integer attempt = exchange.getMessage().getHeader(PlatformHeaders.ATTEMPT, Integer.class);
+        Integer attempt = envelope(exchange, PlatformHeaders.ATTEMPT, Integer.class);
         return attempt == null || attempt < 1 ? 1 : attempt;
     }
 
-    // Contract §5 retry diagnostics. The redelivery headers survive on the
+    // Retry diagnostics. The redelivery headers survive on the
     // retry-then-success path but are stripped by Camel's error handler before
     // a dead-letter delivery, so the properties captured during redelivery
     // (PlatformRouteConfiguration#captureRedeliveryDiagnostics) take precedence.
@@ -493,6 +648,19 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     private boolean dlqParked(Exchange exchange) {
         return Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
+    }
+
+    /**
+     * Whether the dead-letter channel handed the exchange to the adapter's dead-letter route,
+     * which did not publish it. Camel then treats the failure as handled. It happens to an
+     * exchange that its route stopped before it failed: Camel skips both the adapter's
+     * preparation and the dead-letter route for a stopped exchange.
+     */
+    private static boolean parkingDidNotPublish(Exchange exchange) {
+        String sentTo = exchange.getProperty(ExchangePropertyKey.TO_ENDPOINT, String.class);
+        return sentTo != null && exchange.getException() == null
+                && !Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class))
+                && EndpointHelper.matchEndpoint(exchange.getContext(), sentTo, "direct:" + PlatformDeadLetterRoute.ROUTE_ID);
     }
 
     private boolean recordingSuppressed(Exchange exchange) {

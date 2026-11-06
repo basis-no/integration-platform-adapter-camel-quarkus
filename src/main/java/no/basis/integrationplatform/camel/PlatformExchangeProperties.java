@@ -4,6 +4,8 @@ package no.basis.integrationplatform.camel;
 public final class PlatformExchangeProperties {
     /** Collected per-attempt durable step outcomes. */
     public static final String STEPS = "basis.messageStore.steps";
+    /** The consumed input's message id, captured when a recorded exchange begins. */
+    public static final String INPUT_MESSAGE_ID = "basis.messageStore.inputMessageId";
     /** Current intercepted stable step id. */
     public static final String CURRENT_STEP_ID = "basis.messageStore.currentStepId";
     /** Current intercepted side-effect idempotency key. */
@@ -16,6 +18,8 @@ public final class PlatformExchangeProperties {
     public static final String REDO_STEPS = "basis.messageStore.redoSteps";
     /** Whether the current step has a delivered ledger outcome. */
     public static final String STEP_ALREADY_DELIVERED = "basis.messageStore.stepAlreadyDelivered";
+    /** The attempt's first failure to check or record a step outcome; see {@code StepOutcomeFailure}. */
+    public static final String STEP_OUTCOME_FAILURE = "basis.messageStore.stepOutcomeFailure";
     /** Current replay-semantic step role. */
     public static final String CURRENT_STEP_ROLE = "basis.messageStore.currentStepRole";
     /** Idempotency key injected by the adapter on the current send. */
@@ -30,6 +34,11 @@ public final class PlatformExchangeProperties {
     public static final String PAYLOAD_SIZE_BYTES = "basis.messageStore.payloadSizeBytes";
     /** Captured inline payload bytes. */
     public static final String PAYLOAD_BYTES = "basis.messageStore.payloadBytes";
+    /**
+     * The consumed input of a managed Kafka input for DLQ parking, kept as a byte array or
+     * String only when {@link #PAYLOAD_BYTES} does not keep it for replay.
+     */
+    public static final String PARKING_PAYLOAD = "basis.messageStore.parkingPayload";
     /** Captured immutable external payload reference. */
     public static final String PAYLOAD_REF = "basis.messageStore.payloadRef";
     /** Captured payload SHA-256 checksum. */

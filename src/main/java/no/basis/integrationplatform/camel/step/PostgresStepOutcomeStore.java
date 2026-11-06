@@ -114,7 +114,7 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     /**
      * Creates a Postgres step-outcome store.
      *
-     * @param dataSource platform message-store datasource
+     * @param dataSource message-store datasource
      */
     public PostgresStepOutcomeStore(DataSource dataSource) {
         this.dataSource = dataSource;

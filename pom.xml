@@ -12,8 +12,7 @@
   <name>Camel Quarkus Adapter</name>
   <description>Camel Quarkus runtime adapter for message-store integration:
     Kafka consume with manual commit, retry/DLQ, step and
-    idempotency ledger, journaling and message resend, per message-store
-    contract v1.</description>
+    idempotency ledger, journaling and message resend.</description>
   <url>https://github.com/basis-no/integration-platform-adapter-camel-quarkus</url>
 
   <licenses>
@@ -44,7 +43,7 @@
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
     <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
     <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
-    <quarkus.platform.version>3.32.2</quarkus.platform.version>
+    <quarkus.platform.version>3.33.4</quarkus.platform.version>
     <compiler-plugin.version>3.15.0</compiler-plugin.version>
     <surefire-plugin.version>3.5.4</surefire-plugin.version>
     <jandex-plugin.version>3.5.0</jandex-plugin.version>
@@ -78,6 +77,11 @@
   </dependencyManagement>
 
   <dependencies>
+    <!-- Existing Quarkus/Micrometer API only; export stays optional without a registry. -->
+    <dependency>
+      <groupId>io.micrometer</groupId>
+      <artifactId>micrometer-core</artifactId>
+    </dependency>
     <dependency>
       <groupId>io.quarkus</groupId>
       <artifactId>quarkus-arc</artifactId>
@@ -110,6 +114,11 @@
       <groupId>org.apache.camel</groupId>
       <artifactId>camel-kafka</artifactId>
     </dependency>
+    <!-- The dead-letter route consumes from direct:, in every application. -->
+    <dependency>
+      <groupId>org.apache.camel.quarkus</groupId>
+      <artifactId>camel-quarkus-direct</artifactId>
+    </dependency>
     <dependency>
       <groupId>org.slf4j</groupId>
       <artifactId>slf4j-api</artifactId>
@@ -138,11 +147,6 @@
     </dependency>
     <dependency>
       <groupId>org.apache.camel</groupId>
-      <artifactId>camel-direct</artifactId>
-      <scope>test</scope>
-    </dependency>
-    <dependency>
-      <groupId>org.apache.camel</groupId>
       <artifactId>camel-core-languages</artifactId>
       <scope>test</scope>
     </dependency>
@@ -166,6 +170,21 @@
       <groupId>org.postgresql</groupId>
       <artifactId>postgresql</artifactId>
       <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-http</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-vertx-http</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-netty-http</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-rest</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-yaml-dsl</artifactId><scope>test</scope>
     </dependency>
   </dependencies>
 
@@ -215,7 +234,7 @@
 
   <profiles>
     <!-- Signed, source+javadoc-complete publication to Maven Central via the
-         Sonatype Central Portal (ADR-003). Activated by the publish workflow;
+         Sonatype Central Portal. Activated by the publish workflow;
          plain builds never need GPG. -->
     <profile>
       <id>release</id>

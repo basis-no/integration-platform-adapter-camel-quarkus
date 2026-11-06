@@ -66,19 +66,58 @@ Follow the [release-manager runbook](release-packaging.md#release-manager-runboo
 
 Resume by the saved deployment state; never rebuild, re-sign or start a second
 upload to repair a failed publication stage. The tools reject release-candidate,
-milestone, snapshot and malformed versions. Afterward, update integration
-templates and contract certification pins to the final version. A later defect
-is fixed in a new patch release such as `0.4.1`; published Central artifacts are
-never replaced.
+milestone, snapshot and malformed versions. Afterward, integrations can pin the final version. A later defect is fixed in
+a new patch release such as `0.4.1`; published Central artifacts are never
+replaced.
+
+## Release session checks
+
+These checks come from earlier releases. They change nothing in the release
+order above.
+
+- Run the whole release in one shell session, or set the release variables
+  again in every new one. A step run in a second terminal without them can act
+  on the wrong version, file or commit.
+- Turn off pagers for the session, `export GIT_PAGER=cat GH_PAGER=cat`, so
+  that `git` and `gh` print their whole output instead of waiting in a pager.
+- Before the upload, check the portal token without uploading anything: a
+  status request (`POST /api/v1/publisher/status?id=<random UUID>`) with the
+  same token answers `401` when the token is refused and `404` when it is
+  accepted.
+- An upload that fails before Central returns a deployment ID, for example
+  with `401` for a mis-entered token, leaves the state file at
+  `upload-started`. The recovery tool then refuses to upload again, as
+  designed. Establish in the Central portal that no deployment exists for the
+  bundle, keep that state file with the release evidence, and run the upload
+  again with a new state file. Never delete or edit the old one to retry.
+- Central's status of a finished deployment can say "Deployment components
+  info not found" with an empty `purls` list. That alone is not a failure: the
+  readback of the public bytes decides.
+- Create the signed tag with the signing key's own user id, independent of the
+  global git configuration:
+
+  ```sh
+  git -c user.name="<key user id name>" -c user.email="<key user id email>" \
+      -c gpg.format=openpgp -c gpg.program=gpg \
+      tag -s v0.4.0 <source-commit> -m "Release 0.4.0"
+  ```
+
+  GitHub refuses a push that would publish an email address the pushing
+  account keeps private (`GH007`); a refused tag is local only, so delete it
+  and create it again with the right identity. GitHub shows a tag signed with
+  a key that is not on a GitHub account as unverified; the readback, not that
+  badge, verifies the release.
 
 ## Release checklist
 
 - Adapter tests and strict Javadocs pass.
 - The release workstation signed the reviewed unsigned candidate offline and
   `signing.json` names the reviewed `main` commit and expected signer.
-- Contract certification and schema upgrade regression pass.
+- Schema upgrade regression passes, and shared message-store changes are
+  compatible with the .NET adapter.
 - Validation integration passes the documented acceptance campaign.
-- Required platform schema and configuration changes are deployed first.
+- Required message-store schema and deployment configuration changes are
+  deployed first.
 - Documentation and changelog describe the shipped behavior.
 - The final tag points to the accepted commit and has not been used before.
 
@@ -95,7 +134,7 @@ Verify the actual Central artifacts and GitHub Release body before marking the
 release complete. A failed release-page step does not authorize another Maven
 upload: repair the page from the existing tag and its reviewed notes. Existing
 release bodies are compared, never overwritten automatically. Creating a release
-page does not establish platform certification or customer deployment.
+page does not establish acceptance or any deployment.
 
 Historical backfills must use an existing tag (`gh release create --verify-tag`),
 reviewed historical notes and `--latest=false`; never create a replacement tag,

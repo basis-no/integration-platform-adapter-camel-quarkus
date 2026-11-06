@@ -8,6 +8,8 @@ import jakarta.enterprise.inject.Produces;
 import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import no.basis.integrationplatform.camel.MessageStoreDataSource;
+
 import javax.sql.DataSource;
 import java.util.Optional;
 
@@ -35,11 +37,13 @@ public class MessageStoreSinkProducer {
             @ConfigProperty(name = "kafka.bootstrap.servers") Optional<String> bootstrapServers,
             @ConfigProperty(name = "basis.message-store.status-topic",
                     defaultValue = KafkaMessageStoreSink.DEFAULT_STATUS_TOPIC) String statusTopic,
+            @ConfigProperty(name = "basis.message-store.payload.retention-days", defaultValue = "30") long retentionDays,
             Instance<DataSource> dataSource,
             MessageStoreTestProfileConfig testProfile) {
         String effectiveSink = testProfile.effectiveSink(sink);
         return switch (effectiveSink) {
-            case POSTGRES_SINK -> new PostgresMessageStoreSink(requiredDataSource(dataSource));
+            case POSTGRES_SINK -> new PostgresMessageStoreSink(requiredDataSource(dataSource),
+                    java.time.Duration.ofDays(retentionDays));
             case KAFKA_SINK -> new KafkaMessageStoreSink(
                     KafkaMessageStoreSink.kafkaProducer(requiredKafkaBootstrapServers(bootstrapServers.orElse(""))),
                     statusTopic,
@@ -58,10 +62,7 @@ public class MessageStoreSinkProducer {
     }
 
     private DataSource requiredDataSource(Instance<DataSource> dataSource) {
-        if (dataSource.isResolvable()) {
-            return dataSource.get();
-        }
-        throw new IllegalStateException("basis.message-store.sink=postgres requires a JDBC DataSource");
+        return MessageStoreDataSource.require(dataSource, "basis.message-store.sink=postgres");
     }
 
     private String requiredKafkaBootstrapServers(String bootstrapServers) {
