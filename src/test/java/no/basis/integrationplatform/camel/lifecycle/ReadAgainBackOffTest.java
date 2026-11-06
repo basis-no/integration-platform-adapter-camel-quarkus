@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.lifecycle;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
+import org.apache.camel.CamelContext;
 import org.apache.camel.Exchange;
 import org.apache.camel.Route;
 import org.apache.camel.component.kafka.KafkaConstants;
@@ -21,6 +22,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * A Kafka record whose outcome was not made durable is read again at once the first time, and
@@ -87,6 +89,48 @@ class ReadAgainBackOffTest {
         }
 
         assertEquals(List.of(1_000L, 2_000L, 4_000L, 5_000L, 5_000L), waits);
+    }
+
+    @Test
+    void anAttemptThatUsedHalfThePollIntervalWaitsNoLonger() throws Exception {
+        MessageStoreRoutePolicy policy = policy();
+        // The consumer's own property overrides Camel's named option.
+        KafkaEndpoint endpoint = context.getEndpoint(
+                "kafka:input?brokers=localhost:1&additionalProperties.max.poll.interval.ms=2000", KafkaEndpoint.class);
+        assertEquals(2_000, MessageStoreRoutePolicy.maxPollIntervalMs(route(endpoint)));
+        readFailingToRecord(policy, route(endpoint), 7);
+
+        Exchange slow = begin(policy, 7);
+        Thread.sleep(1_100);
+        assertThrows(IllegalStateException.class, () -> policy.onExchangeDone(route(endpoint), slow));
+        assertEquals(List.of(), waits, "An attempt that took half the poll interval leaves no time to wait");
+
+        readFailingToRecord(policy, route(endpoint), 7);
+        assertEquals(1, waits.size());
+        assertTrue(waits.getFirst() > 900 && waits.getFirst() <= 1_000, "Capped at half the interval: " + waits);
+    }
+
+    @Test
+    void theWaitEndsWhenTheContextStopsOrTheThreadIsInterrupted() {
+        CamelContext stopping = (CamelContext) Proxy.newProxyInstance(getClass().getClassLoader(),
+                new Class<?>[]{CamelContext.class}, (proxy, method, args) -> switch (method.getName()) {
+                    case "isStopping" -> true;
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+        Route route = (Route) Proxy.newProxyInstance(getClass().getClassLoader(), new Class<?>[]{Route.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getCamelContext" -> stopping;
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+        long started = System.nanoTime();
+        MessageStoreRoutePolicy.sleepUnlessStopping(route, 30_000);
+        assertTrue(System.nanoTime() - started < java.util.concurrent.TimeUnit.SECONDS.toNanos(1));
+
+        Thread.currentThread().interrupt();
+        started = System.nanoTime();
+        MessageStoreRoutePolicy.sleepUnlessStopping(route(null), 30_000);
+        assertTrue(Thread.interrupted(), "The interrupt is kept for the consumer");
+        assertTrue(System.nanoTime() - started < java.util.concurrent.TimeUnit.SECONDS.toNanos(1));
     }
 
     @Test

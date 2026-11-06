@@ -61,6 +61,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     static final long FIRST_BACK_OFF_MS = 1_000;
     static final long MAX_BACK_OFF_MS = 30_000;
     private static final long DEFAULT_MAX_POLL_INTERVAL_MS = 300_000;
+    private static final int MAX_HELD_BACK_PARTITIONS = 1_024;
     private static final String RECORD_POSITION = "basis.messageStore.recordPosition";
 
     /** Waits before a record is handed back to its consumer to be read again. */
@@ -306,11 +307,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     /**
      * A Kafka record whose outcome was not made durable is read again, and its partition
      * waits. The first time it is read again at once, so a passing glitch costs nothing; after
-     * that each read waits 1 s, doubling, at most 30 s and half the consumer's
-     * {@code max.poll.interval.ms}, so that a Message Store outage or a DLQ that refuses the
-     * record does not run the route, and its sends, several times a second. The wait runs on the
-     * consumer thread and ends early when the context stops. A committed outcome on the
-     * partition resets it. A record without its position is read again at once, as before.
+     * that each read waits 1 s, doubling, at most 30 s, so that a Message Store outage or a DLQ
+     * that refuses the record does not run the route, and its sends, several times a second.
+     * A re-read record is the first of its poll, so the wait is also kept to half the consumer's
+     * {@code max.poll.interval.ms} less the time this attempt has taken. The consumer waits for
+     * it, also when the policy runs on a completion thread, and the wait ends early when the
+     * context stops. A committed outcome on the partition resets it. A record without its
+     * position is read again at once, as before.
      */
     private void backOffBeforeReadingAgain(Route route, Exchange exchange) {
         String position = exchange.getProperty(RECORD_POSITION, String.class);
@@ -318,14 +321,22 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             return;
         }
         long offset = Long.parseLong(position.substring(position.lastIndexOf('@') + 1));
+        if (heldBack.size() >= MAX_HELD_BACK_PARTITIONS && !heldBack.containsKey(partition(position))) {
+            // Partitions that moved away or whose topic went keep no state for ever.
+            heldBack.clear();
+        }
         long[] state = heldBack.compute(partition(position),
                 (key, previous) -> previous != null && previous[0] == offset
                         ? new long[]{offset, previous[1] + 1} : new long[]{offset, 1});
         if (state[1] < 2) {
             return;
         }
+        long elapsed = Math.max(0, System.currentTimeMillis() - exchange.getClock().getCreated());
         long wait = Math.min(Math.min(MAX_BACK_OFF_MS, FIRST_BACK_OFF_MS << Math.min(state[1] - 2, 16)),
-                maxPollIntervalMs(route) / 2);
+                maxPollIntervalMs(route) / 2 - elapsed);
+        if (wait <= 0) {
+            return;
+        }
         LOG.info("Message {} at {} could not be made durable {} times in a row; reading it again in {} ms",
                 exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), position, state[1], wait);
         sleeper.sleep(route, wait);
@@ -335,10 +346,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return position.substring(0, position.lastIndexOf('@'));
     }
 
-    private static long maxPollIntervalMs(Route route) {
+    /** The consumer's effective poll interval: an additional property overrides the named option. */
+    static long maxPollIntervalMs(Route route) {
         try {
             if (route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka) {
-                Integer configured = kafka.getConfiguration().getMaxPollIntervalMs();
+                var configuration = kafka.getConfiguration();
+                Object override = configuration.getAdditionalProperties() == null ? null
+                        : configuration.getAdditionalProperties().get("max.poll.interval.ms");
+                if (override != null) {
+                    long value = Long.parseLong(override.toString().trim());
+                    if (value > 0) {
+                        return value;
+                    }
+                }
+                Integer configured = configuration.getMaxPollIntervalMs();
                 if (configured != null && configured > 0) {
                     return configured;
                 }
@@ -349,7 +370,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return DEFAULT_MAX_POLL_INTERVAL_MS;
     }
 
-    private static void sleepUnlessStopping(Route route, long millis) {
+    static void sleepUnlessStopping(Route route, long millis) {
         long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
         try {
             for (long left = millis; left > 0; left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())) {

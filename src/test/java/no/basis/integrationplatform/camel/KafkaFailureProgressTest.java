@@ -262,7 +262,8 @@ class KafkaFailureProgressTest {
         }
         // Read at once, again at once, then after 1 s, 2 s and 4 s: before, about two reads a second.
         assertTrue(reads.get() >= 3 && reads.get() <= 6, "Reads in the first eight seconds: " + reads.get());
-        assertTrue(System.nanoTime() - closed < TimeUnit.SECONDS.toNanos(10), "Stopping does not wait out the back-off");
+        // By then the adapter is in its 8 s wait, which stopping ends.
+        assertTrue(System.nanoTime() - closed < TimeUnit.SECONDS.toNanos(5), "Stopping does not wait out the back-off");
     }
 
     /** Binds the Kafka component defaults from the adapter's application.properties, as the runtime does. */

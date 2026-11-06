@@ -96,10 +96,14 @@ write, a step outcome check or write, or the DLQ publish failed, is not
 committed and is read again. The first time, it is read again at once. If the
 same record comes back with its outcome still not durable, the adapter waits
 before handing it back: 1 second, doubling on each further read, at most 30
-seconds and at most half the consumer's `max.poll.interval.ms`. A committed
-outcome on the partition, or a later record, starts again at once. The wait
-runs on the consumer thread, so the consumer keeps its partitions, and it ends
-early when the application stops. Before, the record was read again at once
+seconds. The wait is also kept to half the consumer's effective
+`max.poll.interval.ms` (an `additionalProperties` value overrides the named
+option) less the time the attempt itself took, so that the consumer polls again
+within its interval. A committed outcome on the partition, or a later record,
+starts again at once. The consumer waits for it, also when the route completes
+on another thread, so the consumer's other partitions wait too, as they do
+after any record that is read again. The wait ends early when the application
+stops. Before, the record was read again at once
 for as long as the failure lasted, several times a second, and each read ran
 the route again, including sends that the step store did not skip and another
 DLQ record for a message that was parked. A record whose topic, partition and
