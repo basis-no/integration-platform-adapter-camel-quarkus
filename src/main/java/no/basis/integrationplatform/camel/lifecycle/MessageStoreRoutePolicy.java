@@ -35,6 +35,8 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /** Records terminal lifecycle outcomes and owns the Kafka acknowledgement boundary. */
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
@@ -52,6 +54,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
     private TrafficSignals trafficSignals;
+    // Per topic partition: the offset of the record held back last, and how often in a row.
+    private final Map<String, long[]> heldBack = new ConcurrentHashMap<>();
+    private Sleeper sleeper = MessageStoreRoutePolicy::sleepUnlessStopping;
+
+    static final long FIRST_BACK_OFF_MS = 1_000;
+    static final long MAX_BACK_OFF_MS = 30_000;
+    private static final long DEFAULT_MAX_POLL_INTERVAL_MS = 300_000;
+    private static final String RECORD_POSITION = "basis.messageStore.recordPosition";
+
+    /** Waits before a record is handed back to its consumer to be read again. */
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(Route route, long millis);
+    }
 
     /**
      * Creates a Kafka policy using the default payload policy.
@@ -111,6 +127,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         this.trafficSignals = trafficSignals;
     }
 
+    void setSleeper(Sleeper sleeper) {
+        this.sleeper = sleeper;
+    }
+
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
         normalizeKafkaEnvelopeHeaders(exchange);
@@ -121,6 +141,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         captureInputEnvelope(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             captureKafkaManualCommit(exchange);
+            captureRecordPosition(exchange);
         }
         if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null) {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
@@ -142,7 +163,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         if (recordingSuppressed(exchange)) {
             LOG.debug("Skipped message-store recording for an ineligible exchange on route {}", route.getRouteId());
-            acknowledge(exchange);
+            acknowledge(route, exchange);
             return;
         }
 
@@ -166,10 +187,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 exchange.getMessage().setHeader(Exchange.CONTENT_TYPE, "text/plain");
                 exchange.getMessage().setBody("Message outcome could not be recorded");
             }
+            if (boundaryKind == MessageBoundaryKind.KAFKA) {
+                backOffBeforeReadingAgain(route, exchange);
+            }
             throw failure;
         }
         try {
-            acknowledge(exchange);
+            acknowledge(route, exchange);
         } catch (Exception e) {
             IllegalStateException failure = new IllegalStateException(
                     "Message outcome was recorded but Kafka offset commit failed", e);
@@ -235,7 +259,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
      * outcome must be consumed again: its offset is not committed, and its exchange stays
      * failed, so the Kafka consumer reads the record again.
      */
-    private void acknowledge(Exchange exchange) {
+    private void acknowledge(Route route, Exchange exchange) {
         Throwable unrecorded = StepOutcomeFailure.of(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA && unrecorded != null) {
             LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed again",
@@ -245,14 +269,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 exchange.setException(new IllegalStateException(
                         "A step outcome was not checked or recorded; Kafka offset was not committed", unrecorded));
             }
+            backOffBeforeReadingAgain(route, exchange);
             return;
         }
         if (boundaryKind == MessageBoundaryKind.KAFKA && exchange.getException() != null && !dlqParked(exchange)) {
             LOG.error("Message {} failed without confirmed DLQ parking; its Kafka offset was not committed",
                     exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+            backOffBeforeReadingAgain(route, exchange);
             return;
         }
         commitKafkaOffsetIfPresent(exchange);
+        String position = exchange.getProperty(RECORD_POSITION, String.class);
+        if (position != null) {
+            heldBack.remove(partition(position));
+        }
     }
 
     private void commitKafkaOffsetIfPresent(Exchange exchange) {
@@ -271,6 +301,75 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
         manualCommit.commit();
         LOG.debug("Committed Kafka offset for message {}", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+    }
+
+    /**
+     * A Kafka record whose outcome was not made durable is read again, and its partition
+     * waits. The first time it is read again at once, so a passing glitch costs nothing; after
+     * that each read waits 1 s, doubling, at most 30 s and half the consumer's
+     * {@code max.poll.interval.ms}, so that a Message Store outage or a DLQ that refuses the
+     * record does not run the route, and its sends, several times a second. The wait runs on the
+     * consumer thread and ends early when the context stops. A committed outcome on the
+     * partition resets it. A record without its position is read again at once, as before.
+     */
+    private void backOffBeforeReadingAgain(Route route, Exchange exchange) {
+        String position = exchange.getProperty(RECORD_POSITION, String.class);
+        if (position == null) {
+            return;
+        }
+        long offset = Long.parseLong(position.substring(position.lastIndexOf('@') + 1));
+        long[] state = heldBack.compute(partition(position),
+                (key, previous) -> previous != null && previous[0] == offset
+                        ? new long[]{offset, previous[1] + 1} : new long[]{offset, 1});
+        if (state[1] < 2) {
+            return;
+        }
+        long wait = Math.min(Math.min(MAX_BACK_OFF_MS, FIRST_BACK_OFF_MS << Math.min(state[1] - 2, 16)),
+                maxPollIntervalMs(route) / 2);
+        LOG.info("Message {} at {} could not be made durable {} times in a row; reading it again in {} ms",
+                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), position, state[1], wait);
+        sleeper.sleep(route, wait);
+    }
+
+    private static String partition(String position) {
+        return position.substring(0, position.lastIndexOf('@'));
+    }
+
+    private static long maxPollIntervalMs(Route route) {
+        try {
+            if (route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka) {
+                Integer configured = kafka.getConfiguration().getMaxPollIntervalMs();
+                if (configured != null && configured > 0) {
+                    return configured;
+                }
+            }
+        } catch (RuntimeException unavailable) {
+            // Not a Kafka route the policy can inspect: Kafka's default applies.
+        }
+        return DEFAULT_MAX_POLL_INTERVAL_MS;
+    }
+
+    private static void sleepUnlessStopping(Route route, long millis) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+        try {
+            for (long left = millis; left > 0; left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())) {
+                if (route.getCamelContext() != null && route.getCamelContext().isStopping()) {
+                    return;
+                }
+                Thread.sleep(Math.min(100, left));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void captureRecordPosition(Exchange exchange) {
+        Object topic = KafkaRecordHeaders.topic(exchange.getMessage());
+        Object partition = KafkaRecordHeaders.partition(exchange.getMessage());
+        Object offset = KafkaRecordHeaders.offset(exchange.getMessage());
+        if (topic instanceof String name && partition instanceof Number p && offset instanceof Number o) {
+            exchange.setProperty(RECORD_POSITION, name + "/" + p.intValue() + "@" + o.longValue());
+        }
     }
 
     private void captureKafkaManualCommit(Exchange exchange) {

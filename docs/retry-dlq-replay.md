@@ -89,6 +89,22 @@ that the DLQ endpoint can never accept, for example one above the DLQ topic's
 size limit, keeps its partition waiting until an operator fixes the DLQ or
 moves the consumer group past it.
 
+### Reading a record again
+
+A Kafka record whose outcome could not be made durable, because the outcome
+write, a step outcome check or write, or the DLQ publish failed, is not
+committed and is read again. The first time, it is read again at once. If the
+same record comes back with its outcome still not durable, the adapter waits
+before handing it back: 1 second, doubling on each further read, at most 30
+seconds and at most half the consumer's `max.poll.interval.ms`. A committed
+outcome on the partition, or a later record, starts again at once. The wait
+runs on the consumer thread, so the consumer keeps its partitions, and it ends
+early when the application stops. Before, the record was read again at once
+for as long as the failure lasted, several times a second, and each read ran
+the route again, including sends that the step store did not skip and another
+DLQ record for a message that was parked. A record whose topic, partition and
+offset the adapter did not see at the start is read again at once, as before.
+
 `basis.message-store.dlq-uri` must name one fixed endpoint that reports a
 failed publish as an error: a `kafka:` endpoint whose producer waits for the
 broker and is not transactional, or the application's own `direct:` route. A

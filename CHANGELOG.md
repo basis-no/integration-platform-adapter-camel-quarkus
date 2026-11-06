@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A Kafka record whose outcome could not be made durable is read again with a
+  growing wait. Before, while the outcome write, a step outcome or the DLQ
+  publish kept failing, for example during a Message Store outage, the record
+  was read again at once, several times a second, and every read ran the route
+  again: a send the step store did not skip (with the default `noop` store, or
+  for a record without `x-bip-message-id`) reached its receiver again, and a
+  parked message got another DLQ record. Now the first read again is at once,
+  then each further read of the same record waits 1 s, doubling, at most 30 s
+  and half the consumer's `max.poll.interval.ms`; a committed outcome resets
+  it. The outcome is still not committed and the partition still waits, as
+  before. No setting.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,
