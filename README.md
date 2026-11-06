@@ -340,8 +340,11 @@ no 0.3.x fix. Remove the consumer's headers before an HTTP send:
 ```
 
 or upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
-4.21.0 or later, such as Quarkus 3.33.4. With adapter 0.3.5 and earlier, also
-remove the record's credential headers, such as `Authorization`.
+4.21.0 or later, such as Quarkus 3.33.4. Remove the record's credential
+headers, such as `Authorization`, too, before a send through `vertx-http`:
+that component sends them as text, and the withholding above covers only
+Camel's `http` component. With adapter 0.3.5 and earlier, remove them before
+every HTTP send.
 
 - the body is the **original consumed payload**, restored from the payload
   captured at route start — not a mid-transformation body, and not a byte array
