@@ -15,6 +15,41 @@ matters. Generate public API documentation separately:
 ./mvnw -DskipTests javadoc:javadoc
 ```
 
+### Restricted writer against the message recovery SQL
+
+`RestrictedLoginWriterIT` runs the journal writer, the delivered-step store and
+the replay service under separate runtime, operator and reader logins against
+the optional message recovery SQL. It covers closure and history across late
+callbacks and an explicit reopen, a removed payload that a writer cannot bring
+back, retained history and delivered identity, replay admission refusals, an
+uncertain replay that blocks payload removal, and a writer blocked behind an
+operator's removal. It is not part of `./mvnw test`: it needs an explicit
+selector and these inputs, from one reviewed provisioning revision, each with
+its SHA-256:
+
+- a directory with `002_adapter_v1_message_store.sql`,
+  `004_contract_metadata.sql`, `005_tiered_payload_storage.sql`,
+  `006_step_output_checkpoints.sql`, `011_message_recovery.sql` and
+  `012_message_recovery_grants.psql`;
+- a local `psql` executable, which runs the grants script;
+- the cached PostgreSQL 17 image the test pins, and a fresh UUID as run id.
+
+```sh
+./mvnw test -Dtest=RestrictedLoginWriterIT -Dsurefire.failIfNoSpecifiedTests=false \
+  -Dbip.test.run-id="$(uuidgen)" -Dbip.test.recovery-sql-dir="$sql_dir" \
+  -Dbip.test.sha256.002_adapter_v1_message_store.sql=… \
+  -Dbip.test.sha256.004_contract_metadata.sql=… \
+  -Dbip.test.sha256.005_tiered_payload_storage.sql=… \
+  -Dbip.test.sha256.006_step_output_checkpoints.sql=… \
+  -Dbip.test.sha256.011_message_recovery.sql=… \
+  -Dbip.test.sha256.012_message_recovery_grants.psql=… \
+  -Dbip.test.psql="$psql_path" -Dbip.test.psql-sha256=…
+```
+
+It tests the classes of the build. To qualify an exact packaged adapter JAR
+instead, put it on the test classpath and add `-Dbip.test.adapter-version` and
+`-Dbip.test.adapter-sha256`.
+
 ## Integration Testing Defaults
 
 Prefer these repeatable approaches:
