@@ -45,6 +45,15 @@ The adapter cannot prove whether the endpoint is a safe read or a durable write.
 Give the send a stable node id and classify that exact id. Do not suppress the
 warning by guessing from the id text.
 
+## A Resend Skips a Step That Failed
+
+On adapter 0.3.x, a failed send in a `direct:` sub-route is recorded
+`DELIVERED` when the sub-route's dead-letter channel parks the message, so a
+resend skips it and the receiver never gets the message. Resend with the step
+in `redoSteps`; see
+[Sends in a Sub-Route](steps-and-idempotency.md#sends-in-a-sub-route). This is
+fixed for 0.4.0. A message parked before the upgrade still needs the redo.
+
 ## Replay Is Disabled
 
 Inspect `payload_storage`, `replayable`, `replay_disabled_reason`, expiry, and

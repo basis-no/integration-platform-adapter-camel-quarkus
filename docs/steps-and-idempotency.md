@@ -101,6 +101,33 @@ effect and before Postgres records `DELIVERED`. The receiver or business design
 must still make the key safe, for example with a unique database constraint,
 deterministic filename, stable event id, or API idempotency support.
 
+## Sends in a Sub-Route
+
+A tracked send in a route that another send calls, such as a `direct:`
+sub-route, records its outcome once per try, like a send in the input route.
+The calling `to("direct:…")` is internal and records nothing. When the
+sub-route's dead-letter channel parks the message after the send failed, the
+step stays `FAILED`, so a resend or replay sends it again. The same holds when
+the sub-route has no error handler of its own and the input route's handler
+retries the call.
+
+**Known limitation of adapter 0.3.x** (seen on 0.3.5 and 0.3.6, fixed for
+0.4.0): the calling send also recorded the sub-route's step when it completed.
+A successful call is listed twice as `DELIVERED`. When the sub-route's
+dead-letter channel parks the message, the calling send sees no failure and
+records the step `DELIVERED` with no error: the attempt's steps list `FAILED`
+for each try and then `DELIVERED`. A resend or replay then skips the send, so
+the receiver never gets the message. To recover such a message on 0.3.x, or
+after upgrading, use either of these:
+
+- Resend it with the step in `redoSteps`, together with any step whose output
+  it uses; see [Redo Steps](retry-dlq-replay.md#redo-steps).
+- Check at the receiver whether it got the message before you treat the resend
+  as delivered.
+
+A message that 0.3.x parked keeps its `DELIVERED` row after the upgrade, so its
+resend needs the redo too.
+
 ## When a Step Outcome Cannot Be Recorded
 
 The adapter checks the ledger before a side-effect send and records the outcome

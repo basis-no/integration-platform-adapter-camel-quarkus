@@ -239,7 +239,22 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     record EndpointSend(String endpointUri, String nodeId) {
     }
 
-    private record Send(java.util.Map<String, Object> withheld) {
+    /**
+     * A send in progress: the credential headers it withheld, and its own step, which a send
+     * it makes in turn, such as a tracked send in a {@code direct:} route, replaces on the
+     * exchange.
+     */
+    private record Send(java.util.Map<String, Object> withheld, java.util.Map<String, Object> step) {
+        void restoreStep(Exchange exchange) {
+            for (String name : DefaultStepTracker.CURRENT_STEP_PROPERTIES) {
+                Object value = step.get(name);
+                if (value == null) {
+                    exchange.removeProperty(name);
+                } else {
+                    exchange.setProperty(name, value);
+                }
+            }
+        }
     }
 
     /** Fails the exchange. An exchange that already failed keeps its exception unchanged, since it may be shared. */
@@ -331,10 +346,27 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 stepTracker.recordSkipped(exchange);
                 return null;
             }
-            return new Send(withholdCredentials(exchange));
+            return new Send(withholdCredentials(exchange), currentStep(exchange));
         }
 
-        /** Records the send's outcome. Never throws: a failure fails the exchange. */
+        private static java.util.Map<String, Object> currentStep(Exchange exchange) {
+            java.util.Map<String, Object> step = new java.util.HashMap<>();
+            for (String name : DefaultStepTracker.CURRENT_STEP_PROPERTIES) {
+                Object value = exchange.getProperty(name);
+                if (value != null) {
+                    step.put(name, value);
+                }
+            }
+            return step;
+        }
+
+        /**
+         * Records the send's outcome. Never throws: a failure fails the exchange. A send that
+         * ran another tracked send, for example through a {@code direct:} route, records its
+         * own step, not the one the inner send left on the exchange: the inner send recorded
+         * that one already, and an error handler in the inner route may have handled its
+         * failure.
+         */
         private void completed(Exchange exchange, Send send) {
             try {
                 warnAboutPublishedCredentials(exchange);
@@ -343,6 +375,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 markFailed(exchange, failure);
             }
             try {
+                send.restoreStep(exchange);
                 if (exchange.getException() == null) {
                     stepOutcome(exchange, () -> stepTracker.recordDelivered(exchange));
                 } else {
