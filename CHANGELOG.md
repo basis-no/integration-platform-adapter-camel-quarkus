@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+- The adapter refuses to start against a Message Store that lacks a table or
+  column it writes, with the Postgres sink or the Postgres step store. Before,
+  it started against a store provisioned for an earlier adapter version, for
+  example one without `bip_message_log.payload_ref` or the
+  `bip_step_outcome.checkpoint_*` columns, and then failed every outcome
+  write: each Kafka record was read and processed again and again, calling
+  its receivers each time. One catalog query at startup checks the tables and
+  columns of the schema files the adapter ships; the error names what is
+  missing and the `alter table … add column if not exists …` statements that
+  add it. `bip_message_replay_audit` is checked only when replay is enabled,
+  and `bip_step_outcome` only with the Postgres step store. The Postgres sink
+  or step store without a JDBC DataSource also refuses startup, instead of
+  failing only after the first message was processed.
+  Upgrade: bring a store provisioned for 0.3.x to the shipped schema before
+  starting this version; the startup error lists the statements.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,
