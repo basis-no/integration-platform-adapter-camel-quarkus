@@ -22,8 +22,9 @@
   the release manager's gpg-agent, verifies each signature against the pinned
   fingerprint and assembles the validated Central bundle with a signing receipt.
   Upload and publication run from the release workstation with
-  `central-recovery.py`; the production key and portal token never exist in
-  GitHub. Post-publication readback compares public bytes with the unsigned
+  `central-recovery.py`; the primary release key never exists in GitHub, and
+  the only signing material there is the protected tag path's dedicated CI
+  subkey and environment-scoped Central token (below). Post-publication readback compares public bytes with the unsigned
   receipt and the signed-entries digest. Snapshot publication stays suspended;
   acceptance uses locally built artifacts.
 

@@ -325,10 +325,13 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
 
 ## Key custody
 
-- The release key, its secret subkeys and its revocation certificate exist only
-  in the release workstation's GnuPG keyring and, as a passphrase-protected
-  export, in the team password manager backup. Never copy them to GitHub, CI,
-  agent or development hosts, shared drives, tickets or chat.
+- The primary release key, its revocation certificate and every secret subkey
+  except the dedicated CI signing subkey exist only in the release workstation's
+  GnuPG keyring and, as a passphrase-protected export, in the team password
+  manager backup. Never copy them to GitHub, CI, agent or development hosts,
+  shared drives, tickets or chat. The CI signing subkey and its Central token
+  exist only as secrets of the protected release environments; see
+  [Protected-tag release in CI](#protected-tag-release-in-ci).
 - The passphrase is entered only through pinentry and stored only in the team
   password manager. Never put it in files, scripts, environment variables, shell
   history or command arguments, and never use loopback pinentry or agent presets

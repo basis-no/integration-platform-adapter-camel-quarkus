@@ -177,7 +177,9 @@ jobs:
           }
           reviewed "$GITHUB_SHA" || { echo "Release commit is not on a reviewed branch." >&2; exit 1; }
           reviewed "$TOOLING" || { echo "TRUSTED_TOOLING_SHA is not on a reviewed branch." >&2; exit 1; }
-          # A portal write is never repeated by a re-run; resume from the saved state instead.
+          # A portal write is never repeated by a re-run, also when an earlier attempt died before
+          # it kept its state: an operator resumes from Central and the saved state instead.
+          test "${GITHUB_RUN_ATTEMPT:-1}" = 1 || { echo "Attempt $GITHUB_RUN_ATTEMPT of this run: a re-run never uploads; recover with an operator." >&2; exit 1; }
           count="$(gh api "$repo/actions/runs/$GITHUB_RUN_ID/artifacts?name=central-deployment-$version" --jq .total_count)"
           test "$count" = 0 || { echo "This run already has deployment state; resume it, never upload again." >&2; exit 1; }
       - name: Check out only the release tools at the pinned commit
@@ -288,6 +290,7 @@ jobs:
           gh api "$repo/environments/release-publish/deployment-branch-policies" | jq -e '
             .total_count >= 1 and all(.branch_policies[]; .type == "tag")' > /dev/null \
             || { echo "Environment release-publish must allow release tags only." >&2; exit 1; }
+          test "${GITHUB_RUN_ATTEMPT:-1}" = 1 || { echo "Attempt $GITHUB_RUN_ATTEMPT of this run: a re-run never publishes; recover with an operator." >&2; exit 1; }
           count="$(gh api "$repo/actions/runs/$GITHUB_RUN_ID/artifacts?name=central-publish-$version" --jq .total_count)"
           test "$count" = 0 || { echo "This run already attempted publication; inspect and resume, never repeat." >&2; exit 1; }
       - name: Check out only the release tools at the pinned commit
@@ -319,7 +322,7 @@ jobs:
           python3 -I tooling/.github/scripts/central-recovery.py --bundle deployment/signed/candidate.zip --receipt deployment/signed/candidate.json --state deployment/state/deployment.json --publish --approval-reference "environment release-publish, run $GITHUB_RUN_ID"
           test "$(jq -r .phase deployment/state/deployment.json)" = PUBLISHED
       - name: Retain publication state, also after a failure
-        if: always() && (steps.publish.outcome == 'success' || steps.publish.outcome == 'failure')
+        if: always() && steps.publish.outcome != 'skipped'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: central-publish-${{ env.VERSION }}
