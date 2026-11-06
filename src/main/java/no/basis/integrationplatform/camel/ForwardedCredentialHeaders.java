@@ -10,6 +10,8 @@ import org.apache.camel.support.service.ServiceHelper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayDeque;
+import java.util.Deque;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
@@ -30,16 +32,18 @@ import java.util.concurrent.ConcurrentHashMap;
  * <p>
  * A tracked {@code to} or {@code toD} through Camel's http component withholds the credential
  * headers around the send. {@link #install} withholds both kinds while Camel sends to an
- * {@code http}, {@code https}, {@code netty-http}, {@code vertx-http} or {@code rest}
- * endpoint, after it has chosen the endpoint, through any EIP or a {@code ProducerTemplate},
- * and restores them when the send completes, also after a failure. That runs on Camel's
- * exchange sending events, so a {@code ProducerTemplate} with its event notifier disabled is
- * not covered.
+ * {@code http}, {@code https}, {@code netty-http} or {@code vertx-http} endpoint, after it has
+ * chosen the endpoint, through any EIP or a {@code ProducerTemplate}, and restores them when
+ * the send completes, also after a failure. That runs on Camel's exchange sending events, so
+ * a {@code ProducerTemplate} with its event notifier disabled is not covered, and Camel sends
+ * on when a notifier fails. A {@code rest:} send is not covered either.
  */
 public final class ForwardedCredentialHeaders {
     private static final Logger LOG = LoggerFactory.getLogger(ForwardedCredentialHeaders.class);
     private static final Set<String> HTTP_SCHEMES = Set.of("http", "https");
-    private static final Set<String> HTTP_COMPONENTS = Set.of("http", "https", "netty-http", "rest", "vertx-http");
+    // A rest: producer binds headers into its path and query after the send event, so it is
+    // not covered here.
+    private static final Set<String> HTTP_COMPONENTS = Set.of("http", "https", "netty-http", "vertx-http");
     private static final String KAFKA_CONSUMER_PREFIX = "kafka.";
     private static final String WITHHELD = "basis.messageStore.withheldRecordHeaders";
     private static final Set<String> WARNED = ConcurrentHashMap.newKeySet();
@@ -125,7 +129,20 @@ public final class ForwardedCredentialHeaders {
         }
     }
 
-    /** Withholds the headers while Camel sends to an HTTP endpoint, after it has chosen the endpoint. */
+    /** What one send withheld, to restore when that send completes. */
+    private record Withheld(Endpoint endpoint, Map<String, Object> headers) {
+    }
+
+    /** The sends in progress of one exchange; a copy of the exchange gets its own. */
+    private record Sends(Exchange exchange, Deque<Withheld> withheld) {
+    }
+
+    /**
+     * Withholds the headers while Camel sends to an HTTP endpoint, after it has chosen the
+     * endpoint. Sends nest, for example through {@code interceptSendToEndpoint}, so each send
+     * keeps its own record and restores only its own: an inner send that completes never puts
+     * back what an outer send, still to run, withheld.
+     */
     private static final class OnHttpSend extends EventNotifierSupport {
         private OnHttpSend() {
             setIgnoreCamelContextEvents(true);
@@ -146,22 +163,33 @@ public final class ForwardedCredentialHeaders {
         }
 
         @Override
-        @SuppressWarnings("unchecked")
         public void notify(CamelEvent event) {
             if (event instanceof CamelEvent.ExchangeSendingEvent sending && isHttpComponent(sending.getEndpoint())) {
                 Exchange exchange = sending.getExchange();
-                Map<String, Object> withheld = exchange.getProperty(WITHHELD, Map.class);
-                if (withheld == null) {
-                    withheld = new LinkedHashMap<>();
+                Sends sends = exchange.getProperty(WITHHELD, Sends.class);
+                if (sends == null || sends.exchange() != exchange) {
+                    sends = new Sends(exchange, new ArrayDeque<>());
+                    exchange.setProperty(WITHHELD, sends);
                 }
-                withhold(exchange, withheld, true, "a send in route " + exchange.getFromRouteId());
-                if (!withheld.isEmpty()) {
-                    exchange.setProperty(WITHHELD, withheld);
-                }
+                Map<String, Object> headers = new LinkedHashMap<>();
+                withhold(exchange, headers, true, "a send in route " + exchange.getFromRouteId());
+                sends.withheld().push(new Withheld(sending.getEndpoint(), headers));
             } else if (event instanceof CamelEvent.ExchangeSentEvent sent && isHttpComponent(sent.getEndpoint())) {
-                Map<String, Object> withheld = (Map<String, Object>) sent.getExchange().removeProperty(WITHHELD);
-                if (withheld != null) {
-                    restore(sent.getExchange(), withheld);
+                Exchange exchange = sent.getExchange();
+                Sends sends = exchange.getProperty(WITHHELD, Sends.class);
+                if (sends == null || sends.exchange() != exchange
+                        || sends.withheld().stream().noneMatch(w -> w.endpoint() == sent.getEndpoint())) {
+                    return;
+                }
+                // Restoring late is safe, restoring early is not: also put back what a send
+                // that never reported its completion withheld.
+                Withheld last;
+                do {
+                    last = sends.withheld().pop();
+                    restore(exchange, last.headers());
+                } while (last.endpoint() != sent.getEndpoint());
+                if (sends.withheld().isEmpty()) {
+                    exchange.removeProperty(WITHHELD);
                 }
             }
         }

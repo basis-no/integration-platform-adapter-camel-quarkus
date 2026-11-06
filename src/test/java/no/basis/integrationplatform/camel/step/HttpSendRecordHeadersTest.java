@@ -10,6 +10,8 @@ import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
@@ -105,18 +107,16 @@ class HttpSendRecordHeadersTest {
 
     @Test
     void everyEipThatSendsToHttpWithholdsThemAndSendsTheRoutesOwnCredential() throws Exception {
-        received = new CountDownLatch(7);
+        received = new CountDownLatch(6);
         context.addRoutes(new RouteBuilder() {
             public void configure() {
-                restConfiguration().producerComponent("http").host(receiver.substring("http://".length()));
-                from("direct:record").routeId("record")
+                from("direct:record").routeId("eips")
                         .enrich(receiver + "/enrich")
                         .wireTap(receiver + "/tap")
                         .recipientList(constant(receiver + "/list"))
                         .routingSlip(constant(receiver + "/slip"))
                         .multicast().to(receiver + "/multicast").id("post-multicast").end()
                         .process(e -> e.getContext().createProducerTemplate().send(receiver + "/template", e))
-                        .to("rest:post:rest").id("post-rest")
                         .process(e -> {
                             seen.add(e.getMessage().getHeader("kafka.HEADERS"));
                             seen.add(e.getMessage().getHeader("Authorization"));
@@ -130,9 +130,9 @@ class HttpSendRecordHeadersTest {
             assertTrue(received.await(10, TimeUnit.SECONDS), "Received: " + requests);
             assertTrue(logs.at(Level.WARNING).stream().noneMatch(r -> LogCapture.text(r).contains("synthetic")),
                     "The value is never logged");
-            assertTrue(logs.at(Level.WARNING).stream().anyMatch(r -> LogCapture.text(r).contains("a send in route record")));
+            assertTrue(logs.at(Level.WARNING).stream().anyMatch(r -> LogCapture.text(r).contains("a send in route eips")));
         }
-        assertEquals(Set.of("/enrich", "/tap", "/list", "/slip", "/multicast", "/template", "/rest"),
+        assertEquals(Set.of("/enrich", "/tap", "/list", "/slip", "/multicast", "/template"),
                 Set.copyOf(requests.stream().map(Request::path).toList()));
         assertNoRecordHeaders();
         for (Request request : requests) {
@@ -164,6 +164,52 @@ class HttpSendRecordHeadersTest {
         sendRecord(Map.of());
 
         assertEquals(java.util.Arrays.asList(null, "Bearer synthetic-caller"), authorization);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"", "vertx-http:"})
+    void aNestedSendDoesNotPutBackWhatTheOuterSendWithheld(String component) throws Exception {
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                interceptSendToEndpoint(".*/outer").to(component + receiver + "/inner");
+                from("direct:record").routeId("record")
+                        .to(component + receiver + "/outer").id("post-outer")
+                        .process(e -> {
+                            seen.add(e.getMessage().getHeader("kafka.HEADERS"));
+                            seen.add(e.getMessage().getHeader("Authorization"));
+                        });
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/inner", "/outer"), requests.stream().map(Request::path).toList());
+        assertNoRecordHeaders();
+        assertSame(recordHeaders, seen.get(0), "The route still sees the headers after both sends");
+        assertArrayEquals(CALLER_AUTHORIZATION, (byte[]) seen.get(1));
+    }
+
+    @Test
+    void aRestSendStillBindsTheConsumerHeadersIntoItsPathAndQuery() throws Exception {
+        List<String> uris = Collections.synchronizedList(new ArrayList<>());
+        server.removeContext("/");
+        server.createContext("/", x -> {
+            x.getRequestBody().readAllBytes();
+            uris.add(x.getRequestURI().toString());
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                restConfiguration().producerComponent("http").host(receiver.substring("http://".length()));
+                from("direct:record").routeId("record")
+                        .to("rest:post:orders/{kafka.TOPIC}?queryParameters=key={kafka.KEY}").id("post-rest");
+            }
+        });
+        context.start();
+        sendRecord(Map.of());
+
+        assertEquals(List.of("/orders/orders-in?key=record-key"), uris, "A rest: send is not covered, so it binds as before");
     }
 
     @Test

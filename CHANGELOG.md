@@ -16,8 +16,8 @@
   `ProducerTemplate` sends still forwarded them, and `vertx-http` sent them
   as text.
   The adapter now withholds both while Camel sends to an `http`, `https`,
-  `netty-http`, `vertx-http` or `rest` endpoint, after Camel has chosen the
-  endpoint, through any of these EIPs or a `ProducerTemplate`. It restores
+  `netty-http` or `vertx-http` endpoint, after Camel has chosen the endpoint,
+  through any of these EIPs or a `ProducerTemplate`. It restores
   them when the send completes, also after a failure. The route, a `toD` URI,
   and routes it calls through internal endpoints such as `direct:` therefore
   still read them. A credential header is withheld only while it still holds
@@ -25,7 +25,12 @@
   Each withheld credential header logs a warning once per step or route and
   header name, without the value. The withholding runs on Camel's exchange
   sending events, so a `ProducerTemplate` whose event notifier is disabled
-  sends without it; remove the headers before such a send.
+  sends without it, and Camel sends on if the withholding fails. A `rest:`
+  send is not covered: its producer binds headers into the path and query
+  after the send starts
+  ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53)).
+  Remove `kafka.HEADERS` and the record's credential headers before such a
+  send.
   Upgrade: a receiver that got a caller's credential forwarded from the
   record, for example through `vertx-http` or an `enrich`, no longer gets it
   and may answer 401. To forward a credential deliberately, set the header in
