@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- A send through an HTTP producer no longer forwards the Kafka consumer's
+  `kafka.*` headers
+  ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)).
+  This covers `http`, `https`, `netty-http`, `vertx-http`, and a `toD` that
+  chooses its component only when it sends. On camel-kafka 4.0.0 to 4.14.7,
+  4.15.0 to 4.18.2, and 4.19.0 to 4.20.0 (Camel's CVE-2026-49098), the consumer
+  sets `kafka.HEADERS` to the record's whole header set. The HTTP producer sent
+  it as a header whose value lists the bytes of every record header,
+  credentials included. It also sent the record key, topic, partition, offset,
+  timestamp and last-record flags. The adapter withholds these headers while it
+  sends and restores them afterwards, so the route keeps them. Sends to
+  internal endpoints such as `direct:` still carry them. Later Camel versions
+  name them `CamelKafka*`, and Camel's HTTP producers do not send those names.
+  Adapter 0.3.6 withheld only the credential headers themselves, so its
+  release note's claim was incomplete.
+  Upgrade: a receiver that read `kafka.*` request headers must get the values
+  from headers the route sets itself.
 - A Kafka input is committed only after it completed or the DLQ endpoint
   accepted its record. Before, a failed DLQ publish was recorded as `DLQ` and
   the offset committed, so the message was acknowledged without being parked;
@@ -106,7 +123,9 @@
   a consumed Kafka record's bytes; it logs a warning once per step and header
   name, without the value. A `toD` that chooses its component only when it
   sends, such as `${header.receiverUrl}` or `language:header:receiverUrl`, is
-  treated as an HTTP send. Same rule as adapter 0.3.6.
+  treated as an HTTP send. Same rule as adapter 0.3.6. In 0.3.6 this did not
+  cover Camel's `kafka.HEADERS`, which lists the same bytes; see the first
+  entry above.
 - When it creates a route, the adapter logs a warning for each HTTP timeout
   option that Camel 4's `http` component accepts without applying it, and names
   the replacement. The call otherwise waits for the component's timeout, three

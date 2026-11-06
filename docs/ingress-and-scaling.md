@@ -49,8 +49,24 @@ reported per route; one more line then says that further names are not logged. A
 send through Camel's `http` component does not forward credential-like
 headers that still hold a consumed record's bytes, and logs a warning that names
 the header, never its value. A `toD` that chooses its component only when it
-sends, such as `${header.receiverUrl}`, is treated as an HTTP send. Other record headers still reach the receiver, as
-byte-array text unless they are `x-bip-*` headers.
+sends, such as `${header.receiverUrl}`, is treated as an HTTP send.
+
+No send through an HTTP producer forwards Camel's Kafka consumer headers named
+`kafka.*`. This covers `http`, `https`, `netty-http`, `vertx-http`, and such a
+`toD`. On camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0, these headers
+include `kafka.HEADERS`, which lists the bytes of every record header,
+credentials included. They also include the record key, topic, partition,
+offset and timestamp. The adapter withholds them while it sends and restores
+them afterwards. The route, and the routes it calls through internal endpoints
+such as `direct:`, keep them. Later Camel versions name these headers
+`CamelKafka*`, and Camel's HTTP producers do not send those names. A receiver
+that needs the record key or topic should get it from a header the route sets
+itself.
+
+`vertx-http` sends a record's credential headers as text. Remove them before
+the send unless the receiver should get them. Other record headers still reach
+the receiver, as byte-array text through Camel's `http` component, unless they
+are `x-bip-*` headers.
 
 ## Non-Kafka Normalization
 

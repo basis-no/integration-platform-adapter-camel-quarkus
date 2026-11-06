@@ -7,6 +7,7 @@ import no.basis.integrationplatform.camel.LogCapture;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteBuilder;
 import org.apache.camel.impl.DefaultCamelContext;
+import org.apache.kafka.common.header.internals.RecordHeaders;
 import org.junit.jupiter.api.Test;
 
 import java.net.InetSocketAddress;
@@ -89,6 +90,56 @@ class ForwardedCredentialHeadersTest {
     }
 
     @Test
+    void httpSendWithholdsTheKafkaConsumersMetadataAndASubRouteStillSeesIt() throws Exception {
+        List<Headers> received = new ArrayList<>();
+        List<Object> seen = new ArrayList<>();
+        HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        server.createContext("/", x -> {
+            received.add(x.getRequestHeaders());
+            x.sendResponseHeaders(200, -1);
+            x.close();
+        });
+        server.start();
+        var recordHeaders = new RecordHeaders();
+        recordHeaders.add("Authorization", CALLER_AUTHORIZATION);
+        try (var context = new DefaultCamelContext()) {
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(new NoStepTracker()));
+            String receiver = "http://127.0.0.1:" + server.getAddress().getPort();
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:record").routeId("record")
+                            .to(receiver + "/orders").id("post-order")
+                            .process(e -> seen.add(e.getMessage().getHeader("kafka.HEADERS")))
+                            .to("direct:sub");
+                    from("direct:sub").routeId("sub")
+                            .process(e -> seen.add(e.getMessage().getHeader("kafka.KEY")));
+                }
+            });
+            context.start();
+            try (var producer = context.createProducerTemplate()) {
+                producer.send("direct:record", e -> {
+                    // As Camel 4.18.0's Kafka consumer sets them; later versions name them CamelKafka*.
+                    e.getMessage().setHeader("kafka.HEADERS", recordHeaders);
+                    e.getMessage().setHeader("kafka.KEY", "record-key");
+                    e.getMessage().setHeader("kafka.TOPIC", "orders-in");
+                    e.getMessage().setHeader("kafka.OFFSET", 42L);
+                    e.getMessage().setHeader("CamelKafkaHeaders", recordHeaders);
+                    e.getMessage().setHeader("X-Route-Header", "route-value");
+                    e.getMessage().setBody("{}");
+                });
+            }
+            assertEquals(1, received.size());
+            assertTrue(received.getFirst().keySet().stream().map(String::toLowerCase)
+                    .noneMatch(name -> name.startsWith("kafka.") || name.startsWith("camelkafka")), received.getFirst().keySet().toString());
+            assertEquals("route-value", received.getFirst().getFirst("X-Route-Header"), "Other headers are sent as before");
+            assertEquals(List.of(recordHeaders, "record-key"), seen,
+                    "The route, and a sub-route it calls, still see the consumer's headers after the send");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
     void aSendThatPicksItsComponentAtSendTimeIsTreatedAsHttp() throws Exception {
         List<Object> seen = new ArrayList<>();
         List<String> picked = new ArrayList<>();
@@ -144,6 +195,28 @@ class ForwardedCredentialHeadersTest {
         assertFalse(ForwardedCredentialHeaders.isHttp("kafka:bip.orders.in"));
         assertFalse(ForwardedCredentialHeaders.isHttp("sql:select 1"));
         assertFalse(ForwardedCredentialHeaders.isHttp(null));
+    }
+
+    @Test
+    void withholdsTheKafkaConsumersMetadataFromEveryHttpProducer() throws Exception {
+        assertTrue(ForwardedCredentialHeaders.isHttpProducer("https://receiver.example/orders"));
+        assertTrue(ForwardedCredentialHeaders.isHttpProducer("vertx-http:https://receiver.example/orders"));
+        assertTrue(ForwardedCredentialHeaders.isHttpProducer(" netty-http:http://receiver.example/orders"));
+        assertFalse(ForwardedCredentialHeaders.isHttpProducer("kafka:bip.orders.in"));
+        assertFalse(ForwardedCredentialHeaders.isHttpProducer("direct:sub"));
+        assertFalse(ForwardedCredentialHeaders.isHttpProducer(null));
+
+        try (var context = new DefaultCamelContext()) {
+            var exchange = new org.apache.camel.support.DefaultExchange(context);
+            exchange.getMessage().setHeader("kafka.HEADERS", new RecordHeaders());
+            exchange.getMessage().setHeader("Authorization", CALLER_AUTHORIZATION);
+            var withheld = ForwardedCredentialHeaders.withholdKafkaMetadata(exchange);
+            assertEquals(java.util.Set.of("kafka.HEADERS"), withheld.keySet());
+            assertArrayEquals(CALLER_AUTHORIZATION, exchange.getMessage().getHeader("Authorization", byte[].class),
+                    "A producer that sends the bytes as text keeps the record's credential header, which a route can rely on");
+            ForwardedCredentialHeaders.restore(exchange, withheld);
+            assertTrue(exchange.getMessage().getHeader("kafka.HEADERS") instanceof RecordHeaders);
+        }
     }
 
     private static final class NoStepTracker implements StepTracker {
