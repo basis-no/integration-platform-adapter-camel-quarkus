@@ -260,6 +260,13 @@ delivered outcome. On replay, the adapter verifies and restores the checkpoint
 before downstream logic continues. Missing, expired, corrupt, unsupported, or
 policy-disabled output fails closed rather than continuing with the wrong body.
 
+A checkpoint in object storage is read completely, and its size and SHA-256
+are checked, before any of it is set on the exchange, so it is held in memory
+once during the restore. The restored body has the type it was stored as, for
+an inline checkpoint and an object-backed one alike: text as a `String`, a
+JSON-compatible value as the value read back from JSON (for example a `Map`),
+and bytes or a stream as `byte[]`.
+
 Explicit redo executes the operation again with the same idempotency key and
 replaces the checkpoint after success. Output checkpoints require the Postgres
 step store; tiered payload mode keeps large response bodies replayable.

@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A replay that restores an output checkpoint from object storage reads the
+  whole object and checks its size and SHA-256 before it sets any of it as the
+  body, and restores the body with the type it was stored as, as an inline
+  checkpoint does. Before, the route got the object's stream, which was checked
+  only when the route read it to the end, so a route could act on a changed or
+  truncated object first, and a text or JSON body came back as a stream. A
+  changed, truncated, longer or missing object refuses the restore as missing
+  or corrupt, before the route sees any of it.
+  Upgrade: on replay, a route after an output-producing step whose output was
+  stored in object storage gets a `String`, a JSON value or `byte[]` instead of
+  an `InputStream`, and the object is held in memory during the restore.
 - No send to an HTTP receiver forwards a consumed Kafka record's credential
   headers or the Kafka consumer's `kafka.*` and `CamelKafka*` headers
   ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)).

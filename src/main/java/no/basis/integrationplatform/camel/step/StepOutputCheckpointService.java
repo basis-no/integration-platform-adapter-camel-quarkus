@@ -24,10 +24,15 @@ import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
 
-/** Captures and restores durable outputs for safely skipped replay steps. */
+/**
+ * Captures and restores durable outputs for safely skipped replay steps. A restore verifies the
+ * whole stored output before it sets any of it on the exchange.
+ */
 @ApplicationScoped
 public class StepOutputCheckpointService {
     private static final ObjectMapper JSON = new ObjectMapper();
+    // The largest array the JVM allocates, less the byte that detects a longer object.
+    private static final long MAX_RESTORED_OBJECT_BYTES = Integer.MAX_VALUE - 9L;
 
     private final PayloadObjectStore objectStore;
     private final PayloadCapturePolicy policy;
@@ -261,16 +266,7 @@ public class StepOutputCheckpointService {
                 throw new StepOutputCheckpointException("Inline checkpoint checksum mismatch");
             }
         } else if (StepOutputCheckpoint.S3_OBJECT.equals(checkpoint.storage())) {
-            PayloadReference reference = new PayloadReference(
-                    1,
-                    PayloadReference.STORAGE,
-                    checkpoint.bodyRef(),
-                    checkpoint.bodySizeBytes(),
-                    checkpoint.bodySha256(),
-                    checkpoint.contentType(),
-                    checkpoint.expiresAt().toString());
-            objectStore.verify(reference);
-            return objectStore.open(reference);
+            bytes = verifiedObject(checkpoint);
         } else {
             throw new StepOutputCheckpointException("Unsupported checkpoint storage: " + checkpoint.storage());
         }
@@ -283,6 +279,36 @@ public class StepOutputCheckpointService {
             default -> throw new StepOutputCheckpointException(
                     "Unsupported checkpoint body encoding: " + checkpoint.bodyEncoding());
         };
+    }
+
+    /**
+     * Reads an object-backed checkpoint completely and checks its size and SHA-256 before any
+     * of it is restored, so that a route never sees bytes of a changed or truncated object.
+     */
+    private byte[] verifiedObject(StepOutputCheckpoint checkpoint) throws Exception {
+        long size = checkpoint.bodySizeBytes();
+        if (size < 0 || size > MAX_RESTORED_OBJECT_BYTES) {
+            throw new StepOutputCheckpointException("Object checkpoint of " + size
+                    + " bytes is larger than the " + MAX_RESTORED_OBJECT_BYTES + " bytes that can be verified in memory");
+        }
+        PayloadReference reference = new PayloadReference(
+                1,
+                PayloadReference.STORAGE,
+                checkpoint.bodyRef(),
+                size,
+                checkpoint.bodySha256(),
+                checkpoint.contentType(),
+                checkpoint.expiresAt().toString());
+        objectStore.verify(reference);
+        byte[] bytes;
+        try (InputStream object = objectStore.open(reference)) {
+            // One byte more than recorded, so that a longer object is noticed.
+            bytes = object.readNBytes(Math.toIntExact(size + 1));
+        }
+        if (bytes.length != size || !sha256(bytes).equals(checkpoint.bodySha256())) {
+            throw new StepOutputCheckpointException("Object checkpoint checksum mismatch");
+        }
+        return bytes;
     }
 
     private EncodedBody encodeBody(Object body, String contentType) throws Exception {
