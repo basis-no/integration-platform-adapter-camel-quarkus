@@ -76,7 +76,10 @@ The withholding at the endpoint runs on Camel's exchange sending and sent
 events, so a `ProducerTemplate` whose event notifier is disabled
 (`setEventNotifierEnabled(false)`) sends without it. Other components that call
 an HTTP receiver are not covered either. Remove the headers before such a send,
-with `removeHeaders("kafka.*")` and, for example, `removeHeaders("Authorization")`.
+with `removeHeader("kafka.HEADERS")` and, for example,
+`removeHeaders("Authorization")`. Do not remove all `kafka.*` headers: that also
+removes `kafka.KEY`, which Camel's Kafka producer uses as the key of the record
+the adapter parks in the DLQ.
 Other record headers still reach the receiver, as byte-array text through
 Camel's `http` component, unless they are `x-bip-*` headers.
 

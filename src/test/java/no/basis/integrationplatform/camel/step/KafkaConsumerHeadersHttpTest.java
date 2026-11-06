@@ -149,6 +149,95 @@ class KafkaConsumerHeadersHttpTest {
         }
     }
 
+    /**
+     * The headers are back once the failed send completes, so the parked DLQ record keeps the
+     * input's key, which Camel's Kafka producer takes from {@code kafka.KEY}, and the input is
+     * committed after parking as before.
+     */
+    @ParameterizedTest
+    @ValueSource(strings = {"", "vertx-http:"})
+    void aParkedRecordKeepsItsKeyAfterAFailedHttpSend(String component) throws Exception {
+        String input = "input-" + UUID.randomUUID();
+        String dlq = "dlq-" + UUID.randomUUID();
+        String group = "group-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        var received = new CopyOnWriteArrayList<String>();
+        HttpServer receiver = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        receiver.createContext("/", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            exchange.getRequestHeaders().keySet().forEach(name -> received.add(name.toLowerCase(Locale.ROOT)));
+            exchange.sendResponseHeaders(500, -1);
+            exchange.close();
+        });
+        receiver.start();
+        try (var admin = AdminClient.create(Map.<String, Object>of("bootstrap.servers", brokers));
+             var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(input, 1, (short) 1), new NewTopic(dlq, 1, (short) 1)))
+                    .all().get(20, TimeUnit.SECONDS);
+            var outcomes = new CopyOnWriteArrayList<String>();
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "kafka:" + dlq + "?brokers=" + brokers);
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.getCamelContextExtension().addInterceptStrategy(
+                    new StepTrackingInterceptStrategy(new DefaultStepTracker(new NoopStepOutcomeStore())));
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(row -> outcomes.add(row.status().name()),
+                    "order-pipeline", "postgres-inline", 100_000, 30, true, "dlq", "auto"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            String url = component + "http://127.0.0.1:" + receiver.getAddress().getPort() + "/orders";
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=" + group
+                            + "&autoOffsetReset=earliest&allowManualCommit=true&autoCommitEnable=false&pollTimeoutMs=100")
+                            .routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .to(url).id("post-order");
+                }
+            });
+            var producerProperties = new HashMap<String, Object>(Map.of("bootstrap.servers", brokers));
+            producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            try (var producer = new KafkaProducer<String, String>(producerProperties)) {
+                var record = new ProducerRecord<>(input, "record-key", "{}");
+                record.headers().add(new RecordHeader("Authorization", CREDENTIAL.getBytes(StandardCharsets.UTF_8)));
+                record.headers().add(new RecordHeader(PlatformHeaders.MESSAGE_ID, "message-1".getBytes(StandardCharsets.UTF_8)));
+                producer.send(record).get(10, TimeUnit.SECONDS);
+            }
+            context.start();
+
+            var consumerProperties = new HashMap<String, Object>(Map.of("bootstrap.servers", brokers,
+                    "group.id", "check-" + UUID.randomUUID(), "auto.offset.reset", "earliest"));
+            consumerProperties.put("key.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            consumerProperties.put("value.deserializer", "org.apache.kafka.common.serialization.StringDeserializer");
+            var parked = new java.util.ArrayList<org.apache.kafka.clients.consumer.ConsumerRecord<String, String>>();
+            try (var consumer = new org.apache.kafka.clients.consumer.KafkaConsumer<String, String>(consumerProperties)) {
+                consumer.subscribe(List.of(dlq));
+                long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(30);
+                while (parked.isEmpty() && System.nanoTime() < deadline) {
+                    consumer.poll(java.time.Duration.ofMillis(200)).forEach(parked::add);
+                }
+            }
+            assertEquals(1, parked.size(), "The input is parked once");
+            assertEquals("record-key", parked.getFirst().key(), "The parked record keeps the input's key");
+            assertEquals("message-1", new String(parked.getFirst().headers().lastHeader(PlatformHeaders.MESSAGE_ID).value(),
+                    StandardCharsets.UTF_8));
+            assertTrue(received.stream().noneMatch(name -> name.startsWith("kafka.") || name.equals("authorization")),
+                    "The receiver got " + received);
+
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            long committed = -1;
+            while ((outcomes.isEmpty() || committed != 1) && System.nanoTime() < deadline) {
+                var position = admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
+                        .get(5, TimeUnit.SECONDS).get(new TopicPartition(input, 0));
+                committed = position == null ? -1 : position.offset();
+                Thread.sleep(50);
+            }
+            assertEquals(List.of("DLQ"), outcomes);
+            assertEquals(1, committed, "The input is committed after parking, as before");
+        } finally {
+            receiver.stop(0);
+        }
+    }
+
     /** How Camel's http component writes a byte array header: its list of numbers, as in {@code [66, 101]}. */
     private static String byteList(String value) {
         return Arrays.toString(value.getBytes(StandardCharsets.UTF_8)).replace("[", "").replace("]", "");
