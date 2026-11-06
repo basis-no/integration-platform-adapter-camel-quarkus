@@ -121,7 +121,7 @@ public final class ForwardedCredentialHeaders {
                 return;
             }
             if (filter == null) {
-                filter = new FilterHttpEndpoints(context);
+                filter = new FilterHttpEndpoints();
                 INSTALLED.put(context, filter);
                 // Camel keeps the callback, and runs it on the registered endpoints once.
                 context.getCamelContextExtension().registerEndpointCallback(filter);
@@ -151,12 +151,8 @@ public final class ForwardedCredentialHeaders {
      * does not start without it.
      */
     private static final class FilterHttpEndpoints implements EndpointStrategy {
-        private final CamelContext context;
+        // No reference to the context, which is the weak key of INSTALLED.
         private volatile boolean caughtUp;
-
-        private FilterHttpEndpoints(CamelContext context) {
-            this.context = context;
-        }
 
         @Override
         public Endpoint registerEndpoint(String uri, Endpoint registered) {
@@ -180,7 +176,8 @@ public final class ForwardedCredentialHeaders {
                     return registered;
                 }
                 if (!(filter instanceof HeaderFilterStrategy strategy)
-                        || !configurer.configure(context, endpoint, HEADER_FILTER_STRATEGY, new RecordHeaderFilter(strategy), true)
+                        || !configurer.configure(endpoint.getCamelContext(), endpoint, HEADER_FILTER_STRATEGY,
+                                new RecordHeaderFilter(strategy), true)
                         || !(getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true) instanceof RecordHeaderFilter)) {
                     throw unfiltered(endpoint);
                 }
