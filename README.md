@@ -72,6 +72,11 @@ Start with the [documentation index](docs/index.md).
   through untracked sends such as `enrich` and through `vertx-http`. See
   [GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)
   for the workaround. Fixed for 0.4.0.
+- 0.4.0-rc1 restores an output checkpoint from object storage as a stream
+  that is checked only when the route reads it to its end. Fixed for 0.4.0;
+  see [Output-Producing Side Effects](docs/steps-and-idempotency.md#output-producing-side-effects).
+  An input in object storage is still checked that way
+  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is

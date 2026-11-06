@@ -12,7 +12,13 @@
   or corrupt, before the route sees any of it.
   Upgrade: on replay, a route after an output-producing step whose output was
   stored in object storage gets a `String`, a JSON value or `byte[]` instead of
-  an `InputStream`, and the object is held in memory during the restore.
+  an `InputStream`, and the whole object is held in memory during the restore.
+  An output larger than 2 GiB less a few bytes, which a restore cannot check in
+  memory, can no longer be checkpointed; its capture fails as one above
+  `basis.message-store.payload.object-max-bytes` does.
+  Not changed: an input whose payload is in object storage is still checked
+  against its SHA-256 only when the route reads it to its end
+  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
 - No send to an HTTP receiver forwards a consumed Kafka record's credential
   headers or the Kafka consumer's `kafka.*` and `CamelKafka*` headers
   ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)).

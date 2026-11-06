@@ -260,10 +260,14 @@ delivered outcome. On replay, the adapter verifies and restores the checkpoint
 before downstream logic continues. Missing, expired, corrupt, unsupported, or
 policy-disabled output fails closed rather than continuing with the wrong body.
 
-A checkpoint in object storage is read completely, and its size and SHA-256
-are checked, before any of it is set on the exchange, so it is held in memory
-once during the restore. The restored body has the type it was stored as, for
-an inline checkpoint and an object-backed one alike: text as a `String`, a
+A checkpoint in object storage is read completely into memory, and its size
+and SHA-256 are checked, before any of it is set on the exchange. A restore
+therefore needs heap for the whole output, and for its decoded text or JSON
+value as well. An output is stored in object storage only up to
+`basis.message-store.payload.object-max-bytes` and at most 2 GiB less a few
+bytes, the largest output a restore can check in memory; a larger output fails
+its capture. The restored body has the type it was stored as, for an inline
+checkpoint and an object-backed one alike: text as a `String`, a
 JSON-compatible value as the value read back from JSON (for example a `Map`),
 and bytes or a stream as `byte[]`.
 

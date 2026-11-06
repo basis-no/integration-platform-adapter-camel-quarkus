@@ -181,7 +181,7 @@ public class StepOutputCheckpointService {
                 (long) bytes.length,
                 body.contentType(),
                 expiresAt,
-                policy.objectMaxBytes());
+                objectMaxBytes());
         return checkpoint(reference, body.encoding(), headers, properties);
     }
 
@@ -220,7 +220,7 @@ public class StepOutputCheckpointService {
                 null,
                 body.contentType(),
                 expiresAt,
-                policy.objectMaxBytes());
+                objectMaxBytes());
         exchange.getMessage().setBody(objectStore.open(reference));
         return checkpoint(reference, StepOutputCheckpoint.BYTES_BODY, headers, properties);
     }
@@ -279,6 +279,11 @@ public class StepOutputCheckpointService {
             default -> throw new StepOutputCheckpointException(
                     "Unsupported checkpoint body encoding: " + checkpoint.bodyEncoding());
         };
+    }
+
+    /** An output is stored only up to the size that a restore can verify. */
+    private long objectMaxBytes() {
+        return Math.min(policy.objectMaxBytes(), MAX_RESTORED_OBJECT_BYTES);
     }
 
     /**
