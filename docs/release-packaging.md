@@ -1,33 +1,110 @@
 # Release packaging and recovery
 
-Releases move through three separated stages: unsigned candidate inspection in
-CI, offline signing on the release workstation, and upload/publication from that
-workstation followed by public readback in CI. Do not rebuild, retag or replace
-an existing stable release.
+Releases move through separated stages: an unsigned candidate build, signing,
+upload and publication, and public readback. Two paths implement them with the
+same tools. On the public repository, a protected tag runs all stages in CI,
+with signing and publication behind environment approvals
+([protected-tag release](#protected-tag-release-in-ci)). Otherwise the release
+manager signs and uploads offline on the release workstation
+([offline release signing](#offline-release-signing)). Do not rebuild, retag or
+replace an existing stable release.
+
+## Protected-tag release in CI
+
+`release.yml` starts only for a pushed `vX.Y.Z` tag. Only release managers can
+create such tags (tag ruleset: no update, no deletion). Each job has its own
+`permissions:`; every action is pinned by commit SHA.
+
+| Job | Environment | Token and secrets | Executes |
+| --- | --- | --- | --- |
+| `build` | none | `contents: read`; no secrets, no OIDC | tag source, wrapper, plugins, tests (`-Prelease -Dgpg.skip=true clean verify`) |
+| `attest` | none | `id-token`/`attestations: write`; no secrets | no checkout; `sha256sum`, `attest-build-provenance` |
+| `sign-upload` | `release` | CI signing subkey, Central token | release tools at `TRUSTED_TOOLING_SHA`: `sign-candidate.py`, `central-bundle.py`, `central-recovery.py --allow-upload` |
+| `publish` | `release-publish` | Central token | release tools at `TRUSTED_TOOLING_SHA`: `central-recovery.py --publish` |
+
+1. **`build`** checks that the tag points at the clean `X.Y.Z-SNAPSHOT` source
+   commit and that the commit is on `main` or `release/0.3`, validates the
+   changelog section, builds the unsigned candidate and retains it as
+   `unsigned-central-candidate-X.Y.Z`, in the same layout as unsigned
+   inspection. It uses no shared Maven cache.
+2. **`attest`** downloads the candidate without checking out the repository,
+   rejects links and special files, records the SHA-256 of all eight files and
+   creates GitHub build provenance for them. It is the only job that can request
+   an OIDC token, and it runs no project code. On a public repository the
+   provenance is also recorded in the public Sigstore transparency log.
+3. **`sign-upload`** waits for a required reviewer of `release`. It first fails
+   closed unless the environment still has required reviewers with
+   self-review prevented, no administrator bypass and a tag-only deployment
+   rule; the tag still points at the built commit; the release commit and
+   `TRUSTED_TOOLING_SHA` are both on a reviewed branch; and the run has no
+   earlier deployment state. It then checks out only `.github/scripts` (plus
+   root files such as the trusted `pom.xml`) at `TRUSTED_TOOLING_SHA`, never the
+   tag. It verifies the candidate against the recorded checksums, the build
+   provenance and `sign-candidate.py verify`. It imports the CI signing subkey
+   into a throwaway keyring on `/dev/shm` and refuses a secret that holds the
+   primary key or belongs to another fingerprint. It runs `sign-candidate.py
+   sign` unchanged and requires `tool_checkout` to be the clean pinned commit.
+   It records upload intent, uploads once in `USER_MANAGED` mode and stops at
+   `VALIDATED`. The signed bundle, receipts and `deployment.json` are retained
+   as `central-deployment-X.Y.Z`, also after a failure.
+4. **`publish`** waits for a required reviewer of `release-publish`, repeats the
+   environment check, checks that the deployment belongs to this tag, run and
+   tool commit, and publishes that deployment by its saved ID. The updated state
+   is retained as `central-publish-X.Y.Z`. The run summary shows the
+   `release-page.yml` command for readback and the GitHub Release.
+
+Reviewers approve `sign-upload` only after reviewing the `build` evidence
+(`provenance.json`, `effective-pom.xml`, `release-notes.md`, the build log) and
+the checksums in the `attest` summary, and approve `publish` only after
+reviewing the `VALIDATED` deployment in the Central portal against
+`signing.json`. A reviewer cannot approve a run they started.
+
+Recovery never repeats a portal write. A re-run of `sign-upload` or `publish`
+refuses once the run holds deployment or publication state. Download that
+artifact and resume on the release workstation with `central-recovery.py`, as
+in [upload, validation and publication](#upload-validation-and-publication-are-separate).
+A polling timeout leaves the deployment on Central; resume with the same state
+file and without `--allow-upload`.
+
+`TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
+administrators change. Set it to a reviewed commit on `main` or `release/0.3`
+whose `.github/scripts` are the tools to trust, and change it only through a
+reviewed change. The jobs never execute tools from the tag.
+
+The CI signing subkey is a separate, passphrase-less signing subkey of the
+release key, stored only as the `RELEASE_SIGNING_SUBKEY` secret of environment
+`release` (see [key custody](#key-custody)). The Central token pair is stored as
+`RELEASE_CENTRAL_TOKEN_USERNAME` and `RELEASE_CENTRAL_TOKEN_PASSWORD` in both
+environments. These names never existed as repository secrets, so a job outside
+the environments resolves them to empty values instead of a stale repository
+secret.
 
 ## Offline release signing
 
-The production signing key and the Central portal token **never exist in
-GitHub**: not as repository or organization secrets, not in CI runners, and not
-on agent or development hosts. GitHub holds only the public key, in the
-`RELEASE_SIGNING_PUBLIC_KEY` repository variable, for post-publication readback.
-Signing and Central upload are performed by a human release manager on a trusted
-release workstation, using GnuPG and the trusted release tools from a checkout of
-reviewed `main`. That human step is also the release gate.
+Use this path while the repository is private, or whenever the protected
+environments are not configured. Here the signing key and the Central portal
+token **never exist in GitHub**: not as repository, organization or environment
+secrets, not in CI runners, and not on agent or development hosts. GitHub holds
+only the public key, in the `RELEASE_SIGNING_PUBLIC_KEY` repository variable,
+for post-publication readback. Signing and Central upload are performed by a
+human release manager on a trusted release workstation, using GnuPG and the
+trusted release tools from a checkout of reviewed `main`. That human step is
+also the release gate.
 
 The reason is structural. A source commit, Maven wrapper, plugin, test or
 dependency can execute arbitrary code, and no step cleanup or log masking protects
-a key while that code runs. The repository has no enforceable protected
-environment or branch protection, so no workflow can hold a production credential
-safely. Do not add signing or portal secrets to any workflow, and do not dispatch
-historical workflow revisions that used them.
+a key while that code runs. Without an enforceable protected environment no
+workflow can hold a production credential safely. Do not add signing or portal
+secrets to repository secrets or to any workflow other than the protected jobs
+of `release.yml`, and do not dispatch historical workflow revisions that used
+them.
 
 | Stage | Where | Credentials | Executes |
 | --- | --- | --- | --- |
 | Unsigned inspection | `release-candidate.yml`, fresh runner | none (read-only runner token) | candidate source, wrapper, plugins, tests |
 | Offline signing | release workstation | release key via gpg-agent | `gpg`, `sign-candidate.py`, `central-bundle.py` from reviewed `main` |
 | Upload and publication | release workstation | per-release Central token | `central-recovery.py` from reviewed `main` |
-| Public readback and notes | `publish-central.yml`, fresh runner | public key only | `verify-public-release.py`, `release-notes.py` |
+| Public readback and notes | `release-page.yml`, fresh runner | public key only | `verify-public-release.py`, `release-notes.py` |
 
 The signer treats the downloaded candidate as **data**. It never checks out the
 candidate source and never runs Maven, the wrapper, tests, plugins, hooks or any
@@ -41,9 +118,17 @@ passphrase and a Central token, and credential-bearing Maven builds could read
 them. There is no evidence of misuse, but treat them as exposed: delete those
 repository secrets, revoke that Central token, disable the affected historical
 workflows in Actions administration, and do not move the former CI key to the
-workstation. Sign the next release with a workstation key established through
+workstation. Sign the next release with a key established through
 [key rotation](#key-rotation), then retire the former key as superseded.
 Workflow-file changes alone neither revoke secrets nor disable older revisions.
+
+Older revisions of `publish-central.yml` on tags and branches start on any `v*`
+tag push and read the former repository secrets. This line therefore keeps
+readback in `release-page.yml` and has no `publish-central.yml`, so the
+**Publish to Maven Central** workflow can stay disabled in Actions
+administration; disabling it stops every revision on every ref. With the
+repository secrets deleted, those revisions also find no credentials, and the
+tag ruleset limits who can push a tag at all.
 
 ## Unsigned candidate before a tag
 
@@ -64,7 +149,7 @@ release manager reviews it before signing.
 
 Unsigned inspection cannot satisfy upload or readback on its own: Central rejects
 unsigned payloads, `central-recovery.py` requires a validated 24-entry signed
-bundle receipt, and `publish-central.yml` requires the signed-entries digest that
+bundle receipt, and `release-page.yml` requires the signed-entries digest that
 only the offline signer produces. Do not create a final tag from unsigned
 inspection alone.
 
@@ -192,7 +277,7 @@ mkdir -p "$RELEASE" && cd "$RELEASE"
     runner and then creates or compares the GitHub Release:
 
     ```sh
-    gh workflow run publish-central.yml --ref main -f tag="v$VERSION" \
+    gh workflow run release-page.yml --ref "v$VERSION" -f tag="v$VERSION" \
       -f candidate_run="$RUN" -f signer="$SIGNER" -f signed_entries_sha256=<entries_sha256>
     ```
 
@@ -226,7 +311,7 @@ Javadoc bytes, signatures and checksums. GitHub notes are a separate gate: repai
 them from the existing tag without another package upload. A mismatch in existing
 notes requires review, never automatic overwrite.
 
-`publish-central.yml` has only a manual trigger and only the public key. It
+`release-page.yml` has only a manual trigger and only the public key. It
 downloads the unsigned candidate artifact from the given run, checks it with
 `sign-candidate.py verify`, and verifies that the public payloads match that
 receipt's hashes, that every signature verifies against the pinned signer, and
@@ -254,6 +339,16 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
   shell session and are revoked after publication.
 - If the key or its backup may be compromised, publish its revocation
   certificate to both keyservers below, stop releases and rotate.
+- For the [protected-tag release](#protected-tag-release-in-ci), the primary key
+  is certify-only and stays offline. On the release workstation, add a
+  dedicated signing subkey for CI with a one-year expiry, export only that
+  subkey (`gpg --armor --export-secret-subkeys CI_SUBKEY_FINGERPRINT!`) from a
+  temporary copy of the keyring in which its passphrase was removed, and paste
+  the export only into the `RELEASE_SIGNING_SUBKEY` secret of environment
+  `release`. Delete the temporary copy. The workflow refuses an export that
+  contains the primary secret key. Revoke and replace the CI subkey on its
+  expiry, on any doubt about the environment, or when a reviewer leaves; the
+  primary key and its other subkeys stay valid.
 
 ## Key rotation
 
