@@ -249,9 +249,10 @@ and iteration its own step key. See the
   `kafka.*` headers: that also removes `kafka.KEY`, which Camel's Kafka
   producer uses as the key of the record the adapter parks in the DLQ. The withholding above covers only a tracked
   `to` or `toD` through Camel's `http` component. Remove the record's
-  credential headers too before a send through `vertx-http`, which sends them
-  as text, and before an `enrich`, `wireTap`, `recipientList`, `routingSlip`
-  or `ProducerTemplate` send to an HTTP receiver. Adapter 0.3.5 and earlier
+  credential headers too before every other send to an HTTP receiver: a send
+  through `vertx-http`, which sends them as text, or `netty-http`, also a
+  tracked one, and an `enrich`, `wireTap`, `recipientList`, `routingSlip` or
+  `ProducerTemplate` send. Adapter 0.3.5 and earlier
   also send them through every tracked send to Camel's `http` component, as
   byte-array text; remove them there too.
   There is no 0.3.x fix. Adapter 0.4.0, not yet released, will withhold the
