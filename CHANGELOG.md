@@ -46,6 +46,35 @@
   `setHeader("Authorization", header("Authorization").convertToString())`. A
   receiver that read `kafka.*` request headers must get the values from
   headers the route sets itself.
+- Build and test against Quarkus 3.33.4 (Camel 4.18.4, Camel Quarkus 3.33.3)
+  instead of Quarkus 3.32.2 (Camel 4.18.0). Camel 4.18.3 and later include
+  Camel's fix for
+  [CVE-2026-49098](https://camel.apache.org/security/CVE-2026-49098.html):
+  camel-kafka's exchange headers are named `CamelKafka*` instead of `kafka.*`,
+  so Camel's HTTP header filters drop them. The adapter reads Kafka record
+  headers under both names and compiles in no other camel-kafka header name,
+  so it also runs on Camel 4.18.0. Other updates that come with the platform
+  include kafka-clients 4.1.2, Jackson 2.21.7, Netty 4.1.138, Vert.x 4.5.34
+  and the AWS SDK 2.42.7.
+  Upgrade: an integration that moves to this Quarkus line and reads a Kafka
+  header by its old literal name, such as `kafka.KEY` or `kafka.TOPIC` in a
+  YAML route, must use the new name, such as `CamelKafkaKey` or
+  `CamelKafkaTopic`. A Java route that uses `KafkaConstants` gets the new
+  names when it is compiled.
+- A tracked send in a route that another send calls, such as a `direct:`
+  sub-route, is recorded once per try. Before, the calling send recorded the
+  sub-route's step again when it completed. A successful call was listed twice
+  as `DELIVERED`. When the sub-route's dead-letter channel parked the message
+  after the send failed, the step was recorded `DELIVERED` with no error, so a
+  resend or replay skipped it and the receiver never got the message. When the
+  input route's error handler retried the call instead, each failed try was
+  listed twice as `FAILED`. A calling send now records only its own step, and
+  a `direct:` send records none. Adapter 0.3.5 and 0.3.6 have the same fault,
+  and no 0.3.x release fixes it; see
+  [Steps and idempotency](docs/steps-and-idempotency.md#sends-in-a-sub-route)
+  for the workaround.
+  Upgrade: a message that 0.3.x parked in this shape keeps its `DELIVERED`
+  step; resend it with the step in `redoSteps`.
 - A Kafka input is committed only after it completed or the DLQ endpoint
   accepted its record. Before, a failed DLQ publish was recorded as `DLQ` and
   the offset committed, so the message was acknowledged without being parked;

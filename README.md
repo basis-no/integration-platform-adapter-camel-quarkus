@@ -72,6 +72,13 @@ Start with the [documentation index](docs/index.md).
   through untracked sends such as `enrich` and through `vertx-http`. See
   [GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)
   for the workaround. Fixed for 0.4.0.
+- `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
+  releases are built against Quarkus 3.32.2 (Camel 4.18.0).
+- Known limitation of 0.3.x: a failed send in a `direct:` sub-route is
+  recorded `DELIVERED` when the sub-route's dead-letter channel parks the
+  message, so a resend skips it. Resend with the step in `redoSteps`; see
+  [Sends in a sub-route](docs/steps-and-idempotency.md#sends-in-a-sub-route).
+  Fixed for 0.4.0.
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3
   payload storage, output-side-effect checkpoints, non-Kafka ingress
   normalization, and replica-safety validation.
