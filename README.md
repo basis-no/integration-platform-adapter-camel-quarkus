@@ -72,6 +72,11 @@ Start with the [documentation index](docs/index.md).
   through untracked sends such as `enrich` and through `vertx-http`. See
   [GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)
   for the workaround. Fixed for 0.4.0.
+- 0.4.0-rc1 restores an output checkpoint from object storage as a stream
+  that is checked only when the route reads it to its end. Fixed for 0.4.0;
+  see [Output-Producing Side Effects](docs/steps-and-idempotency.md#output-producing-side-effects).
+  An input in object storage is still checked that way
+  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
 - 0.4.0-rc1 replays any stored message, also another integration's, to the
   replay topic named by its row, and does not check that the route that
   recorded it still consumes that topic. The 0.3.x releases refuse both.
