@@ -37,7 +37,8 @@ plumbing into business YAML.
 - Postgres-backed audit and message read models for operator tools;
 - inline or S3-compatible replay payload storage;
 - safe normalization of file, polling, and acknowledged queues into Kafka;
-- guarded local test profiles.
+- guarded local test profiles;
+- Kafka activity counters through the application's Micrometer registry.
 
 The guarantee is controlled **at-least-once** processing, not distributed
 exactly-once delivery across Kafka, Postgres, and external systems. See
@@ -57,6 +58,7 @@ Start with the [documentation index](docs/index.md).
 | Use Kafka, files, polls, JMS, HTTP, or multiple replicas | [Ingress and scaling](docs/ingress-and-scaling.md) |
 | Configure Postgres-inline and S3 payload storage | [Payload storage](docs/payload-storage.md) |
 | Run local tests or deliberately suppress commits | [Testing](docs/testing.md) |
+| Count Kafka admissions and publications for activity alerts | [Kafka activity metrics](docs/activity-metrics.md) |
 | Publish a snapshot for remote acceptance or make a final release | [Releasing](docs/releasing.md) |
 | Find every property, default, environment variable, and safety note | [Configuration reference](docs/configuration.md) |
 | Diagnose startup, replay, persistence, or consumer problems | [Troubleshooting](docs/troubleshooting.md) |
@@ -95,7 +97,8 @@ Start with the [documentation index](docs/index.md).
   Fixed for 0.4.0.
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3
   payload storage, output-side-effect checkpoints, non-Kafka ingress
-  normalization, and replica-safety validation.
+  normalization, replica-safety validation, and Kafka activity counters with
+  admission counting on by default (opt-in in 0.3.6).
 - The `0.4` features have extensive local unit and Testcontainers coverage but
   are not released until the stacked changes are merged, released, and the
   remote acceptance campaign is complete.

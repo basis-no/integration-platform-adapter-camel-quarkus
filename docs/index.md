@@ -19,8 +19,9 @@ GitHub and in any static documentation site.
 2. [Ingress and scaling](ingress-and-scaling.md)
 3. [Payload storage](payload-storage.md)
 4. [Configuration reference](configuration.md)
-5. [Troubleshooting](troubleshooting.md)
-6. [Releasing](releasing.md)
+5. [Kafka activity metrics](activity-metrics.md)
+6. [Troubleshooting](troubleshooting.md)
+7. [Releasing](releasing.md)
 
 ## Sources of Truth
 

@@ -17,6 +17,7 @@ import no.basis.integrationplatform.camel.HttpTimeoutOptions;
 import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PublishedCredentialHeaders;
+import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.AsyncCallback;
 import org.apache.camel.AsyncProcessor;
 import org.apache.camel.CamelContext;
@@ -44,6 +45,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private static final Logger LOG = LoggerFactory.getLogger(StepTrackingInterceptStrategy.class);
 
     private final StepTracker stepTracker;
+    private final TrafficSignals trafficSignals;
     private final boolean allowGeneratedStepIds;
     private final AtomicLong scopes = new AtomicLong();
     private final HttpTimeoutOptions httpTimeoutOptions = new HttpTimeoutOptions();
@@ -55,20 +57,44 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
      * @param stepTracker tracker that owns classification and durable outcomes
      */
     public StepTrackingInterceptStrategy(StepTracker stepTracker) {
-        this(stepTracker, true);
+        this(stepTracker, null, true);
+    }
+
+    /**
+     * Creates the intercept strategy for programmatic use with activity counting: generated
+     * step ids log a warning.
+     *
+     * @param stepTracker tracker that owns classification and durable outcomes
+     * @param trafficSignals activity counters for Kafka publications, or {@code null}
+     */
+    public StepTrackingInterceptStrategy(StepTracker stepTracker, TrafficSignals trafficSignals) {
+        this(stepTracker, trafficSignals, true);
+    }
+
+    /**
+     * Creates the intercept strategy without activity counting.
+     *
+     * @param stepTracker tracker that owns classification and durable outcomes
+     * @param allowGeneratedStepIds {@code true} only as an emergency: a send without an explicit
+     *        id then logs a warning instead of failing route creation
+     */
+    public StepTrackingInterceptStrategy(StepTracker stepTracker, boolean allowGeneratedStepIds) {
+        this(stepTracker, null, allowGeneratedStepIds);
     }
 
     /**
      * Creates the intercept strategy.
      *
      * @param stepTracker tracker that owns classification and durable outcomes
+     * @param trafficSignals activity counters for Kafka publications, or {@code null}
      * @param allowGeneratedStepIds {@code true} only as an emergency: a send without an explicit
      *        id then logs a warning instead of failing route creation
      */
     @Inject
-    public StepTrackingInterceptStrategy(StepTracker stepTracker,
+    public StepTrackingInterceptStrategy(StepTracker stepTracker, TrafficSignals trafficSignals,
             @ConfigProperty(name = EMERGENCY_ALLOW_GENERATED_STEP_IDS, defaultValue = "false") boolean allowGeneratedStepIds) {
         this.stepTracker = stepTracker;
+        this.trafficSignals = trafficSignals;
         this.allowGeneratedStepIds = allowGeneratedStepIds;
     }
 
@@ -94,12 +120,16 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return kind == null ? processor : new PartsScope(processor, StepVisits.marker(kind, scopes.incrementAndGet()));
         }
         checkStepId(definition, endpointSend);
+        if (trafficSignals != null) {
+            if (target instanceof SendProcessor send) trafficSignals.observeProducerEndpoint(send.getEndpoint());
+            else if (target instanceof SendDynamicProcessor send) trafficSignals.observeDynamicEndpoint(send.getUri());
+        }
 
         boolean dynamicScheme = dynamicScheme(target, endpointSend);
         Endpoint endpoint = target instanceof SendProcessor send ? send.getEndpoint() : null;
         boolean mayPublishToKafka = PublishedCredentialHeaders.mayPublishToKafka(
                 endpoint, endpointSend.endpointUri(), dynamicScheme);
-        return new StepTrackingProcessor(processor, endpointSend, stepTracker, dynamicScheme,
+        return new StepTrackingProcessor(processor, endpointSend, stepTracker, trafficSignals, dynamicScheme,
                 mayPublishToKafka ? endpoint : null, mayPublishToKafka, routeId(definition), publishedCredentials);
     }
 
@@ -242,11 +272,12 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     }
 
     /**
-     * A send in progress: the credential headers it withheld, and its own step, which a send
+     * A send in progress: the credential headers it withheld, its own step, which a send
      * it makes in turn, such as a tracked send in a {@code direct:} route, replaces on the
-     * exchange.
+     * exchange, and the Kafka record metadata it found before it sent.
      */
-    private record Send(java.util.Map<String, Object> withheld, java.util.Map<String, Object> step) {
+    private record Send(java.util.Map<String, Object> withheld, java.util.Map<String, Object> step,
+            TrafficSignals.PublishSnapshot trafficSnapshot) {
         void restoreStep(Exchange exchange) {
             for (String name : DefaultStepTracker.CURRENT_STEP_PROPERTIES) {
                 Object value = step.get(name);
@@ -274,6 +305,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         private final AsyncProcessor delegate;
         private final EndpointSend endpointSend;
         private final StepTracker stepTracker;
+        private final TrafficSignals trafficSignals;
         private final boolean httpSend;
         private final boolean dynamicScheme;
         private final Endpoint endpoint;
@@ -287,15 +319,16 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker,
                 boolean dynamicScheme) {
-            this(delegate, endpointSend, stepTracker, dynamicScheme, null, false, null, null);
+            this(delegate, endpointSend, stepTracker, null, dynamicScheme, null, false, null, null);
         }
 
         StepTrackingProcessor(AsyncProcessor delegate, EndpointSend endpointSend, StepTracker stepTracker,
-                boolean dynamicScheme, Endpoint endpoint, boolean mayPublishToKafka, String routeId,
-                PublishedCredentialHeaders publishedCredentials) {
+                TrafficSignals trafficSignals, boolean dynamicScheme, Endpoint endpoint, boolean mayPublishToKafka,
+                String routeId, PublishedCredentialHeaders publishedCredentials) {
             this.delegate = delegate;
             this.endpointSend = endpointSend;
             this.stepTracker = stepTracker;
+            this.trafficSignals = trafficSignals;
             this.httpSend = ForwardedCredentialHeaders.isHttp(endpointSend.endpointUri());
             this.dynamicScheme = dynamicScheme;
             this.endpoint = endpoint;
@@ -348,7 +381,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 stepTracker.recordSkipped(exchange);
                 return null;
             }
-            return new Send(withholdCredentials(exchange), currentStep(exchange));
+            return new Send(withholdCredentials(exchange), currentStep(exchange), beforePublish(exchange));
         }
 
         private static java.util.Map<String, Object> currentStep(Exchange exchange) {
@@ -373,6 +406,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             try {
                 warnAboutPublishedCredentials(exchange);
                 ForwardedCredentialHeaders.restore(exchange, send.withheld());
+                afterPublish(send.trafficSnapshot(), exchange, exchange.getException() == null);
             } catch (Throwable failure) {
                 markFailed(exchange, failure);
             }
@@ -423,6 +457,14 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             // A send that picks its component at send time may be http, so it is treated as one.
             return httpSend || dynamicScheme
                     ? ForwardedCredentialHeaders.withhold(exchange, endpointSend.nodeId()) : java.util.Map.of();
+        }
+
+        private TrafficSignals.PublishSnapshot beforePublish(Exchange exchange) {
+            return trafficSignals == null ? null : trafficSignals.beforePublish(endpointSend.endpointUri(), exchange);
+        }
+
+        private void afterPublish(TrafficSignals.PublishSnapshot snapshot, Exchange exchange, boolean succeeded) {
+            if (trafficSignals != null) trafficSignals.afterPublish(snapshot, exchange, succeeded);
         }
 
         private boolean alreadyDelivered(Exchange exchange) {
