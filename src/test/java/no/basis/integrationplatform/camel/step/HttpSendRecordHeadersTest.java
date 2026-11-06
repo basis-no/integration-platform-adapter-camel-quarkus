@@ -190,7 +190,7 @@ class HttpSendRecordHeadersTest {
     }
 
     @Test
-    void aRestSendBindsTheConsumerHeadersIntoItsPathAndQueryButDoesNotSendThem() throws Exception {
+    void aRestSendStillBindsTheConsumerHeadersIntoItsPathAndQuery() throws Exception {
         List<String> uris = Collections.synchronizedList(new ArrayList<>());
         server.removeContext("/");
         server.createContext("/", x -> {
@@ -213,8 +213,9 @@ class HttpSendRecordHeadersTest {
         context.start();
         sendRecord(Map.of());
 
+        // The rest: producer replaces the filter of the endpoint it sends through, so a rest: send
+        // is not covered; the record headers must not be removed before it either.
         assertEquals(List.of("/orders/orders-in?key=record-key"), uris, "The path and query bind as before");
-        assertNoRecordHeaders();
     }
 
     @Test

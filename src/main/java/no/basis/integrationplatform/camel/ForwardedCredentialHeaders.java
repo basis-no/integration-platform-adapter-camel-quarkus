@@ -5,6 +5,7 @@ import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
 import org.apache.camel.spi.EndpointStrategy;
 import org.apache.camel.spi.HeaderFilterStrategy;
+import org.apache.camel.spi.InterceptSendToEndpoint;
 import org.apache.camel.spi.PropertyConfigurer;
 import org.apache.camel.spi.PropertyConfigurerGetter;
 import org.apache.camel.util.URISupport;
@@ -34,10 +35,11 @@ import java.util.concurrent.ConcurrentHashMap;
  * A tracked {@code to} or {@code toD} through Camel's http component withholds the credential
  * headers around the send. {@link #install} adds both kinds to the header filter of every
  * {@code http}, {@code https}, {@code netty-http} and {@code vertx-http} endpoint the context
- * registers, so the producer leaves them out of the request whichever EIP sends, also the one
- * a {@code rest:} send uses. The exchange keeps the headers. An endpoint whose filter is unset,
- * which then sends no headers, is left alone, and so is an endpoint Camel does not register,
- * such as one a {@code toD} with {@code cacheSize=-1} creates for a single send.
+ * registers, so the producer leaves them out of the request whichever EIP sends. The exchange
+ * keeps the headers. An endpoint whose filter is unset, which then sends no headers, is left
+ * alone. Not covered: an endpoint Camel does not register, such as one a {@code toD} with
+ * {@code cacheSize=-1} creates for a single send, and a filter replaced after the endpoint was
+ * registered, as the {@code rest:} producer does for the endpoint it sends through.
  */
 public final class ForwardedCredentialHeaders {
     private static final Logger LOG = LoggerFactory.getLogger(ForwardedCredentialHeaders.class);
@@ -133,9 +135,14 @@ public final class ForwardedCredentialHeaders {
      */
     private record FilterHttpEndpoints(CamelContext context) implements EndpointStrategy {
         @Override
-        public Endpoint registerEndpoint(String uri, Endpoint endpoint) {
+        public Endpoint registerEndpoint(String uri, Endpoint registered) {
+            // interceptSendToEndpoint registers a wrapper around the endpoint that sends.
+            Endpoint endpoint = registered;
+            while (endpoint instanceof InterceptSendToEndpoint intercepted && intercepted.getOriginalEndpoint() != endpoint) {
+                endpoint = intercepted.getOriginalEndpoint();
+            }
             if (endpoint == null || !hasScheme(endpoint.getEndpointUri(), HTTP_COMPONENTS)) {
-                return endpoint;
+                return registered;
             }
             PropertyConfigurer configurer = endpoint.getComponent() == null ? null
                     : endpoint.getComponent().getEndpointPropertyConfigurer();
@@ -144,14 +151,14 @@ public final class ForwardedCredentialHeaders {
             }
             Object filter = getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true);
             if (filter == null || filter instanceof RecordHeaderFilter) {
-                return endpoint;
+                return registered;
             }
             if (!(filter instanceof HeaderFilterStrategy strategy)
                     || !configurer.configure(context, endpoint, HEADER_FILTER_STRATEGY, new RecordHeaderFilter(strategy), true)
                     || !(getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true) instanceof RecordHeaderFilter)) {
                 throw unfiltered(endpoint);
             }
-            return endpoint;
+            return registered;
         }
 
         private static IllegalStateException unfiltered(Endpoint endpoint) {

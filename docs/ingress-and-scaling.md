@@ -64,9 +64,8 @@ The adapter adds these headers to the header filter of every `http`, `https`,
 `netty-http` and `vertx-http` endpoint the context registers, together with the
 endpoint's own filter, such as one set with `headerFilterStrategy=#name`. The
 producer then leaves them out of the request, whichever EIP sends: `to`, `toD`,
-`enrich`, `wireTap`, `recipientList`, `routingSlip`, `multicast`, a
-`ProducerTemplate`, and the HTTP endpoint a `rest:` send uses, after it has
-bound its path and query. The exchange keeps the headers. A `toD` URI, a
+`enrich`, `wireTap`, `recipientList`, `routingSlip`, `multicast` and a
+`ProducerTemplate`. The exchange keeps the headers. A `toD` URI, a
 `rest:` placeholder such as `{kafka.TOPIC}`, a later routing slip step, the
 route and the routes it calls through internal endpoints such as `direct:`
 still read them, and the record the adapter parks in the DLQ keeps its key.
@@ -80,9 +79,11 @@ An HTTP endpoint whose header filter the adapter cannot extend fails when it is
 created, so its route does not start. An endpoint without a header filter sends
 no headers and is left as it is. Not covered: an endpoint that Camel creates for
 a single send without registering it, such as one from a `toD` with
-`cacheSize=-1`; an endpoint whose header filter the application replaces after
-the endpoint was registered; and components other than these four, unless they
-send through one of them. Remove the headers before such a send, with
+`cacheSize=-1`; an endpoint whose header filter is replaced after the endpoint
+was registered; a `rest:` send, whose producer replaces the filter of the HTTP
+endpoint it sends through
+([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53));
+and components other than these four. Remove the headers before such a send, with
 `removeHeader("kafka.HEADERS")` and, for example,
 `removeHeaders("Authorization")`. Do not remove all `kafka.*` headers: that also
 removes `kafka.KEY`, which Camel's Kafka producer uses as the key of the record

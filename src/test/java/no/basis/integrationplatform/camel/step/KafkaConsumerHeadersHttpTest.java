@@ -125,16 +125,18 @@ class KafkaConsumerHeadersHttpTest {
             assertEquals(List.of("message-1"), headers.get("X-bip-message-id"));
             assertNotNull(headers.get("X-trace-note"), "The record's other headers are sent as before");
 
-            // The adapter restores what it withheld; Camel 4.18.3 and later name them CamelKafka*,
-            // which the adapter leaves to Camel's filters.
+            // The exchange keeps the headers; netty-http's response keeps only the request's Camel*
+            // headers, with or without the adapter.
             Map<String, Object> beforeSend = before.get(10, TimeUnit.SECONDS);
             Map<String, Object> afterSend = after.get(10, TimeUnit.SECONDS);
             for (String name : beforeSend.keySet()) {
-                if (name.startsWith("kafka.")) {
+                if (name.startsWith("kafka.") && !component.equals("netty-http:")) {
                     assertEquals(beforeSend.get(name), afterSend.get(name), "The route still sees " + name + " after the send");
                 }
             }
-            assertTrue(afterSend.containsKey("Authorization"), "The route still sees the record's credential header");
+            if (!component.equals("netty-http:")) {
+                assertTrue(afterSend.containsKey("Authorization"), "The route still sees the record's credential header");
+            }
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
             long committed = -1;
             while ((outcomes.isEmpty() || committed != 1) && System.nanoTime() < deadline) {
