@@ -85,11 +85,13 @@ a single send without registering it, such as one from a `toD` with
 was registered; a `rest:` send, whose producer replaces the filter of the HTTP
 endpoint it sends through
 ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53));
-and components other than these four. Remove the headers before such a send, with
-`removeHeader("kafka.HEADERS")` and, for example,
-`removeHeaders("Authorization")`. Do not remove all `kafka.*` headers: that also
-removes `kafka.KEY`, which Camel's Kafka producer uses as the key of the record
-the adapter parks in the DLQ.
+and components other than these four. Remove the headers before such a send:
+Camel's header that holds the record's whole header set, under both names, with
+`removeHeader("kafka.HEADERS")` and `removeHeader("CamelKafkaHeaders")`, and
+the record's credential headers, for example with
+`removeHeaders("Authorization")`. Do not remove all `kafka.*` or `CamelKafka*`
+headers: that also removes the record key, which Camel's Kafka producer uses as
+the key of the record the adapter parks in the DLQ.
 Other record headers still reach the receiver, as byte-array text through
 Camel's `http` component, unless they are `x-bip-*` headers.
 

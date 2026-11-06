@@ -37,8 +37,8 @@
   after the endpoint was registered; and a `rest:` send, whose producer
   replaces the filter of the HTTP endpoint it sends through
   ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53)).
-  Remove `kafka.HEADERS` and the record's credential headers before such a
-  send.
+  Remove `kafka.HEADERS`, `CamelKafkaHeaders` and the record's credential
+  headers before such a send.
   Upgrade: a receiver that got a caller's credential forwarded from the
   record, for example through `vertx-http` or an `enrich`, no longer gets it
   and may answer 401. To forward a credential deliberately, set the header in
