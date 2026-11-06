@@ -54,7 +54,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
       - name: Validate explicit action and exact inputs
@@ -90,10 +90,10 @@ jobs:
     env:
       MAVEN_OPTS: -Xmx512m -XX:ActiveProcessorCount=2
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.source_commit }}
           path: candidate
@@ -109,7 +109,7 @@ jobs:
           echo "GNUPGHOME=$RUNNER_TEMP/central-inspection-keyring" >> "$GITHUB_ENV"
       - name: Validate reviewed candidate notes before signing
         run: python3 .github/scripts/release-notes.py --tag "v$VERSION" --pom candidate/pom.xml --changelog candidate/CHANGELOG.md --output candidate-notes.md
-      - uses: actions/setup-java@v4
+      - uses: actions/setup-java@v6
         with:
           distribution: temurin
           java-version: '21'
@@ -134,7 +134,7 @@ jobs:
           python3 .github/scripts/central-bundle.py evidence/candidate.zip --from-directory candidate/target --group "$(python3 -c "import json; print(json.load(open('evidence/provenance.json'))['group'])")" --artifact "$(python3 -c "import json; print(json.load(open('evidence/provenance.json'))['artifact'])")" --version "$VERSION" --signer "$SIGNER" --receipt evidence/candidate.json
       - name: Retain inspected candidate bytes and identity even after validation failure
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: central-candidate-${{ inputs.version }}
           path: evidence/
@@ -142,7 +142,7 @@ jobs:
           retention-days: 90
       - name: Retain build diagnostics on failure or success
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: central-inspection-log-${{ github.run_id }}
           path: candidate-build.log
@@ -161,7 +161,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -169,7 +169,7 @@ jobs:
         run: |
           actual="$(git rev-parse "refs/tags/v$VERSION^{}")"
           test "$actual" = "$SOURCE_COMMIT"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: central-candidate-${{ inputs.version }}
           path: evidence
@@ -177,7 +177,7 @@ jobs:
           github-token: ${{ github.token }}
       - name: Restore previous deployment identity before any portal access
         if: inputs.action == 'resume' || inputs.action == 'publish'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: central-state-${{ inputs.version }}
           path: state
@@ -201,7 +201,7 @@ jobs:
           python3 .github/scripts/central-recovery.py --bundle evidence/candidate.zip --receipt evidence/candidate.json --state state/deployment.json --prepare-upload --approval-reference "$APPROVAL_REFERENCE"
       - name: Persist upload intent before the first portal call
         if: inputs.action == 'upload'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: central-intent-${{ inputs.version }}
           path: state/deployment.json
@@ -223,7 +223,7 @@ jobs:
           python3 .github/scripts/central-recovery.py --bundle evidence/candidate.zip --receipt evidence/candidate.json --state state/deployment.json --approval-reference "$APPROVAL_REFERENCE" "${options[@]}"
       - name: Retain deployment intent and identity even when a network call fails
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: central-state-${{ inputs.version }}
           path: state/

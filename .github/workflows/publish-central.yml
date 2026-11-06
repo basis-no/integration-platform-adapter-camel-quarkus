@@ -38,7 +38,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -49,12 +49,12 @@ jobs:
           python3 .github/scripts/release-candidate.py selection --mode upload --version "$version" --commit "$source_commit" --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --bundle-hash "$BUNDLE_SHA256"
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           echo "SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
           path: source
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: central-candidate-${{ env.RELEASE_VERSION }}
           path: evidence
@@ -72,7 +72,7 @@ jobs:
           python3 .github/scripts/release-candidate.py artifact --mode upload --version "$RELEASE_VERSION" --commit "$SOURCE_COMMIT" --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --bundle-hash "$BUNDLE_SHA256" --path evidence
           python3 .github/scripts/verify-public-release.py --pom source/pom.xml --version "$RELEASE_VERSION" --signer "$SIGNER" --expected-receipt evidence/candidate.json --output public-readback.json
       - name: Retain actual artifact readback
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: central-public-readback-${{ inputs.tag }}
           path: public-readback.json
@@ -94,10 +94,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag }}
           path: source
