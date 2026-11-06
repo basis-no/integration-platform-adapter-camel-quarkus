@@ -257,12 +257,16 @@ class KafkaFailureProgressTest {
             context.start();
             long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
             while (reads.get() == 0 && System.nanoTime() < deadline) Thread.sleep(20);
+            long first = System.nanoTime();
             Thread.sleep(8_000);
+            // Read at once, again at once, then after 1 s, 2 s and 4 s: before, about two reads a second.
+            assertTrue(reads.get() >= 3 && reads.get() <= 6, "Reads in the first eight seconds: " + reads.get());
+            // The fifth read is followed by an 8 s wait; stop while it runs.
+            while (reads.get() < 5 && System.nanoTime() - first < TimeUnit.SECONDS.toNanos(20)) Thread.sleep(20);
+            assertEquals(5, reads.get());
+            Thread.sleep(500);
             closed = System.nanoTime();
         }
-        // Read at once, again at once, then after 1 s, 2 s and 4 s: before, about two reads a second.
-        assertTrue(reads.get() >= 3 && reads.get() <= 6, "Reads in the first eight seconds: " + reads.get());
-        // By then the adapter is in its 8 s wait, which stopping ends.
         assertTrue(System.nanoTime() - closed < TimeUnit.SECONDS.toNanos(5), "Stopping does not wait out the back-off");
     }
 

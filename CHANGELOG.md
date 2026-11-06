@@ -10,8 +10,9 @@
   for a record without `x-bip-message-id`) reached its receiver again, and a
   parked message got another DLQ record. Now the first read again is at once,
   then each further read of the same record waits 1 s, doubling, at most 30 s
-  and at most half the consumer's `max.poll.interval.ms` less the attempt's own
-  time; a committed outcome resets it. The consumer's other partitions wait
+  and at most half the consumer's `max.poll.interval.ms` less the time its poll
+  has already taken; a committed outcome resets it. Without
+  `break-on-first-error=true` there is no wait. The consumer's other partitions wait
   with it. The outcome is still not committed and the partition still waits, as
   before. No setting.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`

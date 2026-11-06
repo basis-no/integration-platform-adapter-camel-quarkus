@@ -81,22 +81,26 @@ class ReadAgainBackOffTest {
     @Test
     void theWaitStaysWithinHalfTheConsumersPollInterval() {
         MessageStoreRoutePolicy policy = policy();
-        KafkaEndpoint endpoint = context.getEndpoint("kafka:input?brokers=localhost:1&maxPollIntervalMs=10000",
-                KafkaEndpoint.class);
+        KafkaEndpoint endpoint = context.getEndpoint(
+                "kafka:input?brokers=localhost:1&breakOnFirstError=true&maxPollIntervalMs=10000", KafkaEndpoint.class);
 
         for (int read = 0; read < 6; read++) {
             readFailingToRecord(policy, route(endpoint), 7);
         }
 
-        assertEquals(List.of(1_000L, 2_000L, 4_000L, 5_000L, 5_000L), waits);
+        assertEquals(List.of(1_000L, 2_000L, 4_000L), waits.subList(0, 3));
+        assertEquals(5, waits.size());
+        for (long capped : waits.subList(3, 5)) {
+            assertTrue(capped > 4_900 && capped <= 5_000, "Capped at half the interval: " + waits);
+        }
     }
 
     @Test
     void anAttemptThatUsedHalfThePollIntervalWaitsNoLonger() throws Exception {
         MessageStoreRoutePolicy policy = policy();
         // The consumer's own property overrides Camel's named option.
-        KafkaEndpoint endpoint = context.getEndpoint(
-                "kafka:input?brokers=localhost:1&additionalProperties.max.poll.interval.ms=2000", KafkaEndpoint.class);
+        KafkaEndpoint endpoint = context.getEndpoint("kafka:input?brokers=localhost:1&breakOnFirstError=true"
+                + "&additionalProperties.max.poll.interval.ms=2000", KafkaEndpoint.class);
         assertEquals(2_000, MessageStoreRoutePolicy.maxPollIntervalMs(route(endpoint)));
         readFailingToRecord(policy, route(endpoint), 7);
 
@@ -108,6 +112,38 @@ class ReadAgainBackOffTest {
         readFailingToRecord(policy, route(endpoint), 7);
         assertEquals(1, waits.size());
         assertTrue(waits.getFirst() > 900 && waits.getFirst() <= 1_000, "Capped at half the interval: " + waits);
+    }
+
+    @Test
+    void theRecordsBeforeItInItsPollCountAgainstTheWait() throws Exception {
+        MessageStoreRoutePolicy policy = policy();
+        KafkaEndpoint endpoint = context.getEndpoint("kafka:input?brokers=localhost:1&breakOnFirstError=true"
+                + "&additionalProperties.max.poll.interval.ms=2000", KafkaEndpoint.class);
+        readFailingToRecord(policy, route(endpoint), 7);
+
+        // The next poll: a slow record of another partition first, then the held-back one.
+        journalDown.set(false);
+        Exchange other = begin(policy, 3);
+        other.getMessage().setHeader(KafkaConstants.PARTITION, 1);
+        Thread.sleep(1_100);
+        policy.onExchangeDone(route(endpoint), other);
+        journalDown.set(true);
+        readFailingToRecord(policy, route(endpoint), 7);
+
+        assertEquals(List.of(), waits, "The poll already used half its interval");
+    }
+
+    @Test
+    void withoutBreakOnFirstErrorThereIsNoWait() {
+        MessageStoreRoutePolicy policy = policy();
+        KafkaEndpoint endpoint = context.getEndpoint("kafka:input?brokers=localhost:1&breakOnFirstError=false",
+                KafkaEndpoint.class);
+
+        for (int read = 0; read < 3; read++) {
+            readFailingToRecord(policy, route(endpoint), 7);
+        }
+
+        assertEquals(List.of(), waits);
     }
 
     @Test

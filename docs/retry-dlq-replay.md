@@ -98,8 +98,11 @@ same record comes back with its outcome still not durable, the adapter waits
 before handing it back: 1 second, doubling on each further read, at most 30
 seconds. The wait is also kept to half the consumer's effective
 `max.poll.interval.ms` (an `additionalProperties` value overrides the named
-option) less the time the attempt itself took, so that the consumer polls again
-within its interval. A committed outcome on the partition, or a later record,
+option) less the time since the records of the poll that returned it began to
+be processed, including the records before it, so that the consumer polls again
+within its interval. This relies on `break-on-first-error=true`, the adapter's
+default, under which a record that is read again ends its poll; without it
+there is no wait. A committed outcome on the partition, or a later record,
 starts again at once. The consumer waits for it, also when the route completes
 on another thread, so the consumer's other partitions wait too, as they do
 after any record that is read again. The wait ends early when the application
