@@ -49,7 +49,7 @@ class OutputCheckpointHeaderValidator {
                     + "restored on replay, so it must not hold credentials; remove them from the list and "
                     + "obtain a fresh credential on each attempt instead. A harmless header whose name "
                     + "matches the rule must be carried another way, for example as an exchange property "
-                    + "in basis.message-store.step.output-checkpoint.property-names.");
+                    + "listed in basis.message-store.step.output-checkpoint.property-names instead");
         }
     }
 }
