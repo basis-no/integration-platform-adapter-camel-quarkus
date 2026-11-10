@@ -33,7 +33,7 @@ into integration repositories.
 | `basis.message-store.step.repeatable-ids` | `BASIS_MESSAGE_STORE_STEP_REPEATABLE_IDS` | exact node ids; default empty | App-owned replay classification for safe reads/authentication. |
 | `basis.message-store.step.side-effect-ids` | `BASIS_MESSAGE_STORE_STEP_SIDE_EFFECT_IDS` | exact node ids; default empty | App-owned durable write classification. Requires stable ids. |
 | `basis.message-store.step.output-side-effect-ids` | `BASIS_MESSAGE_STORE_STEP_OUTPUT_SIDE_EFFECT_IDS` | exact node ids; default empty | App-owned writes whose output must be restored on replay. |
-| `basis.message-store.step.output-checkpoint.header-names` | `BASIS_MESSAGE_STORE_STEP_OUTPUT_CHECKPOINT_HEADER_NAMES` | header names; default empty | App-owned allowlist; only JSON-compatible, non-sensitive metadata. |
+| `basis.message-store.step.output-checkpoint.header-names` | `BASIS_MESSAGE_STORE_STEP_OUTPUT_CHECKPOINT_HEADER_NAMES` | header names; default empty; credential-like names refused at startup | App-owned allowlist; only JSON-compatible, non-sensitive metadata. See [What a Checkpoint Stores](steps-and-idempotency.md#what-a-checkpoint-stores). |
 | `basis.message-store.step.output-checkpoint.property-names` | `BASIS_MESSAGE_STORE_STEP_OUTPUT_CHECKPOINT_PROPERTY_NAMES` | exchange properties; default empty | App-owned allowlist; only JSON-compatible, non-sensitive metadata. |
 | `basis.message-store.key-value.sweep-interval-seconds` | `BASIS_MESSAGE_STORE_KEY_VALUE_SWEEP_INTERVAL_SECONDS` | integer seconds `1..3600`; default `3600` | Adapter cleanup cadence for expired [Key-Value Store](key-value-store.md) rows after its first use; no effect while unused. |
 | `basis.traffic.signals` | `BASIS_TRAFFIC_SIGNALS` | Comma-separated `record_admitted`, `record_published`, or `none`; unset or empty selects `record_admitted` | Integration-owned event selection; see [Kafka activity metrics](activity-metrics.md). An explicit list selects exactly its events. |
@@ -48,7 +48,8 @@ into integration repositories.
 
 This version does not read these settings of adapter 0.3.5 and 0.3.6. So that
 an upgraded integration does not lose their effect without notice, the
-application refuses to start when one of them has a value, from any
+application refuses to start when one of them, or any other name under
+`basis.delivery-audit.` or `basis.input-audit.`, has a value, from any
 configuration source, including its environment variable. An empty value, which
 disabled the feature in 0.3.x, only logs a warning; remove it.
 
