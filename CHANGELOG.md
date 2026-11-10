@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
+  the endpoint named in the adapter's warnings mask credentials by the .NET
+  adapter's rule, so both adapters store the same value: besides what Camel's
+  `URISupport.sanitizeUri` masked, the whole user info
+  (`https://xxxxxx@host/…`) and the values of the query parameters `key`,
+  `code`, `sig`, `pwd`, names that are credential-like by the DLQ header rule
+  (such as `Signature`, `X-Amz-Credential` or a name ending in `-key`), and
+  names containing `passphrase`, `passcode`, `privatekey`, `accesskey`,
+  `accountkey` or `connectionstring`. An endpoint the patterns cannot mask
+  within one second is stored as `xxxxxx`, instead of the step waiting on the
+  pattern. See [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
+  Upgrade: new attempts store the masked value; rows recorded before keep
+  theirs. A query or tool that matched a stored endpoint's user name or one of
+  these parameter values no longer finds it in new rows. Step keys and
+  classification by node id are unchanged.
+
 - A replay request whose `redoSteps` names a step is refused with
   `basis.message-store.step-outcome-store=noop`, the default, with `409
   Conflict` and an error that says to resend without `redoSteps`, before the
