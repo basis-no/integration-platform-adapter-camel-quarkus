@@ -11,7 +11,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class AmbiguousSinkDataSourceTest {
     @Test
     void postgresSinkRefusesToStartWithTwoDefaultDataSources() {
-        var gate = new ContractVersionStartupGate("postgres", TestDataSources.ambiguous(), disabledTestProfile());
+        var gate = new ContractVersionStartupGate("postgres", "noop", true, TestDataSources.ambiguous(), disabledTestProfile());
 
         IllegalStateException refused = assertThrows(IllegalStateException.class, gate::verify);
 
@@ -21,7 +21,7 @@ class AmbiguousSinkDataSourceTest {
 
     @Test
     void logSinkDoesNotNeedTheDataSource() {
-        assertDoesNotThrow(new ContractVersionStartupGate("log", TestDataSources.ambiguous(), disabledTestProfile())::verify);
+        assertDoesNotThrow(new ContractVersionStartupGate("log", "noop", true, TestDataSources.ambiguous(), disabledTestProfile())::verify);
     }
 
     private static no.basis.integrationplatform.camel.MessageStoreTestProfileConfig disabledTestProfile() {

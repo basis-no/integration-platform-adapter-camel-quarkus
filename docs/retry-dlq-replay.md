@@ -258,3 +258,17 @@ With the Postgres sink, startup reads the highest store schema version
 (`contract_major`) from `bip_contract`. A version other than 1 fails startup. A
 missing table or empty row is treated as version 1 with a prominent warning;
 other database errors are not treated as a missing schema.
+
+With the Postgres sink or the Postgres step store, startup also checks, with
+one catalog query, that the store has every table and column this adapter
+writes, as defined by the schema files it ships in `db/message-store/`:
+`bip_message_log` and `bip_message_attempt` with the Postgres sink,
+`bip_message_replay_audit` when replay is enabled as well, and
+`bip_step_outcome` with the Postgres step store. A store provisioned for an
+earlier adapter version, for example one without `payload_ref` or the
+`checkpoint_*` columns, fails startup. The error names each missing table and
+column and the `alter table … add column if not exists …` statements that add
+them; run them, or the schema file for a missing table, as the database
+operator before starting. The check does not compare types, defaults or check
+constraints: a store whose `payload_storage` check does not allow `s3_object`
+still fails object-backed writes in `tiered` mode.
