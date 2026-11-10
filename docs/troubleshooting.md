@@ -74,6 +74,13 @@ in `redoSteps`; see
 [Sends in a Sub-Route](steps-and-idempotency.md#sends-in-a-sub-route). This is
 fixed for 0.4.0. A message parked before the upgrade still needs the redo.
 
+## Pod Stays Ready After the Consumer Stopped
+
+The adapter adds no consumer health check. Add Camel's health bridge
+(`camel-quarkus-microprofile-health`) and give the readiness probe a timeout of
+3–5 seconds; see
+[Health and Readiness](getting-started.md#health-and-readiness).
+
 ## Replay Is Disabled
 
 Inspect `payload_storage`, `replayable`, `replay_disabled_reason`, expiry, and

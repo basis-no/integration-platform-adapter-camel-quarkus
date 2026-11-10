@@ -25,6 +25,46 @@
   `acknowledgementModeName=CLIENT_ACKNOWLEDGE`: with camel-jms's default
   `AUTO_ACKNOWLEDGE`, a message whose route failed is not delivered again
   ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
+- [Upgrading from 0.3.x to 0.4.0](docs/upgrading-to-0.4.md) collects what to
+  do before upgrading, the behaviour that changed on purpose (the stricter
+  `dlq-uri` check, a stopped exchange that fails being read again,
+  `boundary-routes`, object-backed inputs parked as their claim check, with
+  its known limitation) and the upgrade actions below. The getting-started
+  page documents the Camel health bridge and the readiness probe timeout, and
+  the payload storage page the edge of the replay expiry cap, which until now
+  were only in the 0.3.6 notes.
+- Startup refuses a credential-like name in
+  `basis.message-store.step.output-checkpoint.header-names`, naming each one,
+  by the rule that masks header values in parked DLQ records (`Authorization`,
+  cookies, names containing `token`, `secret`, `session`, `auth` and the like,
+  names ending in `-key` or `_key`). A checkpoint is stored in the Message Store for the
+  payload retention and restored on replay, so a credential in it was kept and
+  reused. The documentation of output-producing side effects now says what a
+  crash between the call and the checkpoint write does (the step runs again
+  with the same `Idempotency-Key`, so the receiver must answer it with the same
+  output; pinned by a test), what a checkpoint stores, where, for how long, and
+  that the adapter does not encrypt it.
+  Upgrade: remove credential-like names from `header-names`; an application
+  that listed one no longer starts. Obtain a fresh credential on each attempt.
+  The rule goes by the name, so harmless headers such as `X-Partition-Key`,
+  `X-Idempotency-Key`, `X-Author` or `X-Session-Count` are refused too: copy
+  the value to an exchange property and list it in `property-names` instead.
+- A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
+  the endpoint named in the adapter's warnings mask credentials by the .NET
+  adapter's rule, so both adapters store the same value: besides what Camel's
+  `URISupport.sanitizeUri` masked, the whole user info
+  (`https://xxxxxx@host/…`) and the values of the query parameters `key`,
+  `code`, `sig`, `pwd`, names that are credential-like by the DLQ header rule
+  (such as `Signature`, `X-Amz-Credential` or a name ending in `-key`), and
+  names containing `passphrase`, `passcode`, `privatekey`, `accesskey`,
+  `accountkey` or `connectionstring`. An endpoint the patterns cannot mask
+  within about a second is stored as `xxxxxx`, instead of the step waiting on
+  the pattern (Camel's own sanitizer, which also runs when an application has
+  added keywords, has no such bound). See [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
+  Upgrade: new attempts store the masked value; rows recorded before keep
+  theirs. A query or tool that matched a stored endpoint's user name or one of
+  these parameter values no longer finds it in new rows. Step keys and
+  classification by node id are unchanged.
 - The `ip-slow-backend` route configuration caps each redelivery delay at 20
   seconds: it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before
   the configured failure mode applies. Before, the delays doubled up to Camel's
