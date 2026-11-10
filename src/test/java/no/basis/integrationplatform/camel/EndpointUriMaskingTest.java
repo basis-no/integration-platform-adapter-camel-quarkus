@@ -170,17 +170,20 @@ class EndpointUriMaskingTest {
         java.lang.reflect.Field extra = URISupport.class.getDeclaredField("EXTRA_SECRETS");
         extra.setAccessible(true);
         Object before = extra.get(null);
+        // Not masked by Camel's or the adapter's built-in names, so only the added keyword masks it.
+        assertEquals("https://xxxxxx@target.example/a?zqfixtureword=s&page=2",
+                EndpointUriMasking.mask("https://u:p@target.example/a?zqfixtureword=s&page=2"));
         try {
-            URISupport.addSanitizeKeywords("syntheticfixturesecret");
+            URISupport.addSanitizeKeywords("zqfixtureword");
 
-            assertEquals("https://xxxxxx@target.example/a?syntheticfixturesecret=xxxxxx&page=2",
-                    EndpointUriMasking.mask("https://u:p@target.example/a?syntheticfixturesecret=s&page=2"));
+            assertEquals("https://xxxxxx@target.example/a?zqfixtureword=xxxxxx&page=2",
+                    EndpointUriMasking.mask("https://u:p@target.example/a?zqfixtureword=s&page=2"));
         } finally {
             // Camel keeps added keywords for the JVM; restore them for the other tests.
             extra.set(null, before);
         }
-        assertEquals("https://xxxxxx@target.example/a?syntheticfixturesecret=s&page=2",
-                EndpointUriMasking.mask("https://u:p@target.example/a?syntheticfixturesecret=s&page=2"));
+        assertEquals("https://xxxxxx@target.example/a?zqfixtureword=s&page=2",
+                EndpointUriMasking.mask("https://u:p@target.example/a?zqfixtureword=s&page=2"));
     }
 
     @Test
