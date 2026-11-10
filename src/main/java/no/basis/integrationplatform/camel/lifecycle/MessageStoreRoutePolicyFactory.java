@@ -14,12 +14,15 @@ import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.CamelContext;
+import org.apache.camel.Endpoint;
 import org.apache.camel.NamedNode;
+import org.apache.camel.component.kafka.KafkaEndpoint;
 import org.apache.camel.spi.RoutePolicy;
 import org.apache.camel.spi.RoutePolicyFactory;
 import org.apache.camel.model.RouteDefinition;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -164,6 +167,9 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         }
         MessageBoundaryKind boundaryKind = boundarySelector.kind(route);
         validateBoundary(routeId, boundaryKind);
+        if (boundaryKind == MessageBoundaryKind.KAFKA && camelContext != null) {
+            validateKafkaOffsetReset(routeId, camelContext, route);
+        }
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             InMemoryHoldGuard.check(camelContext, routeId, route);
         }
@@ -222,6 +228,35 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             }
         }
         return false;
+    }
+
+    /**
+     * A record that is not committed is read again after Camel's reconnect, which resumes from
+     * the committed offset. On a partition without one, the consumer resumes from its
+     * {@code auto.offset.reset}; anything but {@code earliest} skips the record ({@code latest})
+     * or stops the consumer ({@code none}).
+     */
+    static void validateKafkaOffsetReset(String routeId, CamelContext camelContext, NamedNode route) {
+        if (!(route instanceof RouteDefinition definition) || definition.getInput() == null) {
+            return;
+        }
+        String uri = definition.getInput().getEndpointUri();
+        Endpoint endpoint = camelContext.getEndpoint(uri);
+        if (!(endpoint instanceof KafkaEndpoint kafka)) {
+            return;
+        }
+        // The consumer's effective value: the endpoint option, the component default, or an
+        // additionalProperties entry, which Camel applies last.
+        Object effective = kafka.getConfiguration().createConsumerProperties().get("auto.offset.reset");
+        String value = effective == null ? null : effective.toString().trim();
+        if (value == null || !"earliest".equals(value.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("Kafka boundary route '" + routeId + "' (" + endpoint.getEndpointBaseUri()
+                    + ") requires autoOffsetReset=earliest, but its consumer uses auto.offset.reset=" + value
+                    + ". A record that is not committed is read again from the committed offset; on a partition "
+                    + "without one, any other value skips the record or stops the consumer. Remove the "
+                    + "autoOffsetReset or additionalProperties.auto.offset.reset override from the endpoint and "
+                    + "from camel.component.kafka.auto-offset-reset, or set it to earliest");
+        }
     }
 
     private void validateBoundary(String routeId, MessageBoundaryKind boundaryKind) {
