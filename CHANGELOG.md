@@ -25,6 +25,30 @@
   stable ids, since the lease is named after the route id. The first ticks
   after startup wait for the Message Store check and the lease, so a one-shot
   timer may fire up to a few seconds later or, on a standby, not at all.
+- [Upgrading from 0.3.x to 0.4.0](docs/upgrading-to-0.4.md) collects what to
+  do before upgrading, the behaviour that changed on purpose (the stricter
+  `dlq-uri` check, a stopped exchange that fails being read again,
+  `boundary-routes`, object-backed inputs parked as their claim check, with
+  its known limitation) and the upgrade actions below. The getting-started
+  page documents the Camel health bridge and the readiness probe timeout, and
+  the payload storage page the edge of the replay expiry cap, which until now
+  were only in the 0.3.6 notes.
+- Startup refuses a credential-like name in
+  `basis.message-store.step.output-checkpoint.header-names`, naming each one,
+  by the rule that masks header values in parked DLQ records (`Authorization`,
+  cookies, names containing `token`, `secret`, `session`, `auth` and the like,
+  names ending in `-key` or `_key`). A checkpoint is stored in the Message Store for the
+  payload retention and restored on replay, so a credential in it was kept and
+  reused. The documentation of output-producing side effects now says what a
+  crash between the call and the checkpoint write does (the step runs again
+  with the same `Idempotency-Key`, so the receiver must answer it with the same
+  output; pinned by a test), what a checkpoint stores, where, for how long, and
+  that the adapter does not encrypt it.
+  Upgrade: remove credential-like names from `header-names`; an application
+  that listed one no longer starts. Obtain a fresh credential on each attempt.
+  The rule goes by the name, so harmless headers such as `X-Partition-Key`,
+  `X-Idempotency-Key`, `X-Author` or `X-Session-Count` are refused too: copy
+  the value to an exchange property and list it in `property-names` instead.
 - A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
   the endpoint named in the adapter's warnings mask credentials by the .NET
   adapter's rule, so both adapters store the same value: besides what Camel's
