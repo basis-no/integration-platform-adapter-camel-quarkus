@@ -124,6 +124,7 @@ public final class ForwardedCredentialHeaders {
                 INSTALLED.put(context, filter);
                 // Camel keeps the callback, and runs it on the registered endpoints once.
                 context.getCamelContextExtension().registerEndpointCallback(filter);
+                context.addLifecycleStrategy(new RestSendHeaders.RouteCheck());
             }
             // Again, until it completes once: an endpoint that cannot be extended stops the
             // catch-up, and the endpoints after it must not stay unfiltered when the

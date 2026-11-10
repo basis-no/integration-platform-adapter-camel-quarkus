@@ -38,6 +38,7 @@ import java.util.function.Supplier;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -232,14 +233,21 @@ class RestSendRecordHeadersTest {
         Consumed without = restService(new DefaultCamelContext(), component);
         Consumed with = restService(context, component);
 
-        assertEquals(without.filterClass(), with.filterClass(), "The consumer keeps the component's own filter");
-        assertFalse(with.filterClass().contains("no.basis"), with.filterClass());
+        assertFalse(with.filterClass().contains("RestSendHeaders"), "The consumer never gets a rest: send's filter");
+        assertEquals(without.filterClass(), with.innerFilterClass(), "The consumer keeps the component's own filter");
+        assertNotEquals("none", without.filterClass());
+        if (component.equals("netty-http")) {
+            // Like every netty-http endpoint, wrapped in the record filter, which affects only the response's headers.
+            assertTrue(with.filterClass().endsWith("ForwardedCredentialHeaders$RecordHeaderFilter"), with.filterClass());
+        } else {
+            assertEquals(without.filterClass(), with.filterClass());
+        }
         assertEquals(without.status(), with.status());
         assertEquals(without.headerNames(), with.headerNames(), "The response carries the same headers");
         assertEquals(without.body(), with.body());
     }
 
-    private record Consumed(String filterClass, int status, Set<String> headerNames, String body) {
+    private record Consumed(String filterClass, String innerFilterClass, int status, Set<String> headerNames, String body) {
     }
 
     /**
@@ -278,22 +286,70 @@ class RestSendRecordHeadersTest {
             var names = new TreeSet<String>();
             response.headers().map().keySet().forEach(name -> names.add(name.toLowerCase(Locale.ROOT)));
             names.remove("date");
-            String filterClass = target.getEndpoints().stream()
-                    .filter(e -> e.getEndpointUri().startsWith(component + ":"))
-                    .map(RestSendRecordHeadersTest::filterClassOf).findFirst().orElse("no consumer endpoint");
-            return new Consumed(filterClass, response.statusCode(), names, response.body());
+            // The endpoint the REST DSL service's consumer uses.
+            Endpoint consumer = target.getRoutes().stream().filter(r -> r.getEndpoint() instanceof RestEndpoint)
+                    .findFirst().orElseThrow().getConsumer().getEndpoint();
+            assertFalse(consumer instanceof RestEndpoint, consumer.toString());
+            Object filter = filterOf(consumer);
+            Object inner = filter;
+            if (filter != null && filter.getClass().getName().endsWith("$RecordHeaderFilter")) {
+                var accessor = filter.getClass().getDeclaredMethod("filter");
+                accessor.setAccessible(true);
+                inner = accessor.invoke(filter);
+            }
+            return new Consumed(filter == null ? "none" : filter.getClass().getName(),
+                    inner == null ? "none" : inner.getClass().getName(), response.statusCode(), names, response.body());
         }
     }
 
-    private static String filterClassOf(Endpoint endpoint) {
-        Object filter = null;
-        if (endpoint.getComponent().getEndpointPropertyConfigurer() instanceof PropertyConfigurerGetter getter) {
-            filter = getter.getOptionValue(endpoint, "headerFilterStrategy", true);
+    @ParameterizedTest
+    @ValueSource(strings = {"http", "vertx-http", "netty-http"})
+    void aSendThroughARoutesRestInputDoesNotStart(String producer) throws Exception {
+        int port;
+        try (var socket = new java.net.ServerSocket(0)) {
+            port = socket.getLocalPort();
         }
-        if (filter == null && endpoint instanceof HeaderFilterStrategyAware aware) {
-            filter = aware.getHeaderFilterStrategy();
+        int servicePort = port;
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                restConfiguration().component("netty-http").port(servicePort).producerComponent(producer).host("127.0.0.1");
+                // Both resolve to one rest: endpoint, which the adapter leaves unfiltered for its consumer.
+                from("rest:post:orders/{id}").routeId("svc").setBody(constant("ok"));
+                from("direct:record").routeId("record").to("rest:post:orders/{id}").id("post-rest");
+            }
+        });
+
+        Exception failure = assertThrows(Exception.class, context::start);
+        assertTrue(causes(failure).contains("Route record sends to the rest: endpoint"), causes(failure));
+        assertTrue(causes(failure).contains("route svc consumes from"), causes(failure));
+        assertTrue(requests.isEmpty());
+    }
+
+    @Test
+    void aRestEndpointSetUpForSendsBeforeItsRouteWasAddedDoesNotStart() throws Exception {
+        int port;
+        try (var socket = new java.net.ServerSocket(0)) {
+            port = socket.getLocalPort();
         }
-        return filter == null ? "none" : filter.getClass().getName();
+        context.getRestConfiguration().setComponent("netty-http");
+        context.getRestConfiguration().setPort(port);
+        context.getRestConfiguration().setProducerComponent("http");
+        context.getRestConfiguration().setHost("127.0.0.1");
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record").to("rest:post:orders/{id}").id("post-rest");
+            }
+        });
+        context.start();
+        // Resolved while no route consumes from it, so it is set up as for a send.
+        Endpoint early = context.getEndpoint("rest:get:x/{id}");
+
+        Exception failure = assertThrows(Exception.class, () -> context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from(early).routeId("early").setBody(constant("ok"));
+            }
+        }));
+        assertTrue(causes(failure).contains("Route early consumes from the rest: endpoint"), causes(failure));
     }
 
     // The Camel internals this relies on, per component, without the adapter installed.
