@@ -8,6 +8,7 @@ import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecord;
 import org.apache.kafka.clients.consumer.KafkaConsumer;
 import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.Test;
@@ -19,6 +20,7 @@ import org.testcontainers.utility.DockerImageName;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
 import java.util.UUID;
@@ -65,9 +67,16 @@ class KafkaMessageStoreSinkTest {
 
             try (KafkaConsumer<String, String> consumer = consumer()) {
                 consumer.subscribe(List.of(TOPIC));
-                var records = consumer.poll(Duration.ofSeconds(10));
+                var records = new ArrayList<ConsumerRecord<String, String>>();
+                long deadline = System.nanoTime() + Duration.ofSeconds(30).toNanos();
+                while (records.isEmpty()) {
+                    long remaining = deadline - System.nanoTime();
+                    if (remaining <= 0) break;
+                    consumer.poll(Duration.ofNanos(Math.min(remaining, Duration.ofMillis(100).toNanos())))
+                            .forEach(records::add);
+                }
 
-                assertEquals(1, records.count());
+                assertEquals(1, records.size());
                 var record = records.iterator().next();
                 assertEquals("message-123", record.key());
                 assertEquals("message-123", header(record, PlatformHeaders.MESSAGE_ID));
