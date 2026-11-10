@@ -350,6 +350,9 @@ database operator, only when an application uses it. Tested with Quarkus 3.32.2 
 Quarkus 3.33.4 (Camel 4.18.4). This is the last 0.3 release; later changes come
 with 0.4.
 
+> Note, added after the release: the 0.3 line continues as a maintained series,
+> and later 0.3.x patch releases may follow, also after 0.4.0.
+
 ### Fixed
 
 - A Kafka poll failure reconnects and polls the same position again
