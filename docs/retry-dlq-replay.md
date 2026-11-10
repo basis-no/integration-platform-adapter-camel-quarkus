@@ -4,15 +4,24 @@
 
 The global route configuration applies unless a route selects a variant:
 
-| Configuration | Redeliveries | Initial delay | Terminal behavior |
-| --- | ---: | ---: | --- |
-| default | 3 | 1 second | configured failure mode |
-| `ip-slow-backend` | 6 | 5 seconds | configured failure mode |
-| `ip-no-retry` | 0 | none | configured failure mode |
-| `bip-ingress-normalization` | 3 | 1 second | propagate to source |
+| Configuration | Redeliveries | Delays | Total wait | Terminal behavior |
+| --- | ---: | --- | ---: | --- |
+| default | 3 | 1, 2, 4 seconds | 7 seconds | configured failure mode |
+| `ip-slow-backend` | 6 | 5, 10, 20, 20, 20, 20 seconds | 95 seconds | configured failure mode |
+| `ip-no-retry` | 0 | none | none | configured failure mode |
+| `bip-ingress-normalization` | 3 | 1, 2, 4 seconds | 7 seconds | propagate to source |
 
-Retries use exponential backoff. Automatic redelivery does not increment the
-message attempt; it adds diagnostics to that attempt.
+Retries use exponential backoff; `ip-slow-backend` caps each delay at 20
+seconds. Automatic redelivery does not increment the message attempt; it adds
+diagnostics to that attempt.
+
+On a Kafka input the waits run on the consumer thread, between attempts that
+take their own time, and all of it counts against `max.poll.interval.ms` (300
+seconds by default). If one record's processing takes longer, Kafka removes the
+consumer from its group and the uncommitted record is delivered again. The
+`ip-slow-backend` waits leave about 200 seconds for its seven attempts, so bound
+each receiver call well inside that, for example a `responseTimeout` of 20
+seconds, or raise `max.poll.interval.ms` with `maxPollIntervalMs` on the input.
 
 The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
 client inside Camel's `http` component (Apache HttpClient 5.5 and its default

@@ -3,8 +3,14 @@ package no.basis.integrationplatform.camel;
 import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import org.apache.camel.Exchange;
 import org.apache.camel.impl.DefaultCamelContext;
+import org.apache.camel.model.RedeliveryPolicyDefinition;
+import org.apache.camel.model.RouteConfigurationDefinition;
+import org.apache.camel.model.errorhandler.DefaultErrorHandlerDefinition;
+import org.apache.camel.processor.errorhandler.RedeliveryPolicy;
 import org.apache.camel.support.DefaultExchange;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
@@ -15,9 +21,53 @@ import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class PlatformRouteConfigurationTest {
     private final PlatformRouteConfiguration configuration = new PlatformRouteConfiguration();
+
+    @ParameterizedTest
+    @EnumSource(MessageFailureMode.class)
+    void slowBackendRedeliveriesWaitWellUnderTheKafkaPollInterval(MessageFailureMode mode) throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            context.addRoutesConfigurations(new PlatformRouteConfiguration(mode));
+            RedeliveryPolicyDefinition policy = redeliveryPolicy(context, PlatformRouteConfiguration.SLOW_BACKEND);
+
+            // Camel's own policy computes the waits, including its default cap when none is set.
+            var camel = new RedeliveryPolicy();
+            camel.setMaximumRedeliveries(Integer.parseInt(policy.getMaximumRedeliveries()));
+            camel.setRedeliveryDelay(Long.parseLong(policy.getRedeliveryDelay()));
+            camel.setUseExponentialBackOff(Boolean.parseBoolean(policy.getUseExponentialBackOff()));
+            camel.setBackOffMultiplier(Double.parseDouble(policy.getBackOffMultiplier()));
+            if (policy.getMaximumRedeliveryDelay() != null) {
+                camel.setMaximumRedeliveryDelay(Long.parseLong(policy.getMaximumRedeliveryDelay()));
+            }
+            int redeliveries = camel.getMaximumRedeliveries();
+            long delay = 0;
+            long total = 0;
+            for (int redelivery = 1; redelivery <= redeliveries; redelivery++) {
+                delay = camel.calculateRedeliveryDelay(delay, redelivery);
+                total += delay;
+            }
+
+            // Still patient: six redeliveries, the first after five seconds.
+            assertEquals(6, redeliveries);
+            assertEquals(5_000, Long.parseLong(policy.getRedeliveryDelay()));
+            // The waits run on the Kafka consumer thread. With Camel's default 60 s cap they took
+            // 195 s of the 300 s max.poll.interval.ms; capped at 20 s, they leave most of it to the attempts.
+            assertEquals(95_000, total);
+        }
+    }
+
+    private static RedeliveryPolicyDefinition redeliveryPolicy(DefaultCamelContext context, String id) {
+        for (RouteConfigurationDefinition definition : context.getRouteConfigurationDefinitions()) {
+            if (id.equals(definition.getId())) {
+                return ((DefaultErrorHandlerDefinition) definition.getErrorHandler().getErrorHandlerType())
+                        .getRedeliveryPolicy();
+            }
+        }
+        return fail("No route configuration " + id);
+    }
 
     @Test
     void dlqParkingRestoresOriginalPayloadAndSetsDiagnosticsHeaders() {

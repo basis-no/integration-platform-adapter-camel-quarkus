@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The `ip-slow-backend` route configuration caps each redelivery delay at 20
+  seconds: it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before
+  the configured failure mode applies. Before, the delays doubled up to Camel's
+  default cap of 60 seconds and waited 195 seconds, which together with seven
+  attempts could outlast the Kafka consumer's 300-second
+  `max.poll.interval.ms`; Kafka then removed the consumer from its group and
+  delivered the record again, so it could run, and be parked, more than once.
+  The number of redeliveries and the first delay are unchanged. See
+  [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,
