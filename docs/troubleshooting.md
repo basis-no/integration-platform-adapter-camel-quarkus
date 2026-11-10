@@ -26,6 +26,10 @@
 
 Common fail-fast causes include:
 
+- a Kafka boundary route whose consumer does not use
+  `auto.offset.reset=earliest`: remove the `autoOffsetReset` or
+  `additionalProperties.auto.offset.reset` override from the endpoint and from
+  `camel.component.kafka.auto-offset-reset`, or set it to `earliest`;
 - unsupported sink, payload, failure-mode, or test-profile value;
 - non-default test profile without explicit opt-in;
 - Postgres modes without a resolvable datasource;
@@ -38,7 +42,11 @@ Common fail-fast causes include:
 - store schema version mismatch in `bip_contract`;
 - a Message Store without a table or column this adapter writes, for example
   one provisioned for an earlier adapter version. The error names the missing
-  columns and the statements that add them.
+  columns and the statements that add them;
+- a setting of adapter 0.3.x that this version does not read
+  (`basis.delivery-audit.routes`, `basis.input-audit.routes`); the error names
+  each one and what to use instead. See
+  [Settings Removed Since 0.3.x](configuration.md#settings-removed-since-03x).
 
 Treat these as configuration errors. Do not bypass them in business routes.
 

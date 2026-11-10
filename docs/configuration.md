@@ -44,6 +44,19 @@ into integration repositories.
 | `basis.message-store.kafka.ssl-truststore-location` | `BASIS_MESSAGE_STORE_KAFKA_SSL_TRUSTSTORE_LOCATION` | unset | Mounted CA/truststore path. Hostname verification remains enabled. |
 | `basis.message-store.kafka.ssl-truststore-type` | `BASIS_MESSAGE_STORE_KAFKA_SSL_TRUSTSTORE_TYPE` | `JKS` by default | Use `PEM` for a mounted broker CA certificate. |
 
+## Settings Removed Since 0.3.x
+
+This version does not read these settings of adapter 0.3.5 and 0.3.6. So that
+an upgraded integration does not lose their effect without notice, the
+application refuses to start when one of them has a value, from any
+configuration source, including its environment variable. An empty value, which
+disabled the feature in 0.3.x, only logs a warning; remove it.
+
+| 0.3.x setting | Environment variable | What 0.3.x did | Instead, in this version |
+| --- | --- | --- | --- |
+| `basis.delivery-audit.routes` | `BASIS_DELIVERY_AUDIT_ROUTES` | Recorded each request to the selected `direct:` routes as its own non-replayable row | Not available yet ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)). Remove the setting to start without it. |
+| `basis.input-audit.routes` | `BASIS_INPUT_AUDIT_ROUTES` | Recorded each run of the selected non-Kafka input routes as a non-replayable row | For an HTTP input, the [HTTP audit-only preview](ingress-and-scaling.md#http-audit-only-preview) (`basis.message-store.boundary-routes=<route id>`, `failure-mode=record-failed`, `replay.enabled=false`), which cannot be combined with adapter-managed Kafka boundaries in the same application. For a file, timer or poller input, normalize it to Kafka with `basis.message-store.ingress.normalization-routes`. Inspection of other non-Kafka inputs without Kafka is not available yet ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)). |
+
 ## Required Runtime Configuration
 
 These are integration/runtime dependencies rather than adapter-owned options:
@@ -55,6 +68,7 @@ These are integration/runtime dependencies rather than adapter-owned options:
 | `camel.component.kafka.auto-commit-enable=false` | Adapter default; must remain false. |
 | `camel.component.kafka.allow-manual-commit=true` | Adapter default; must remain true. |
 | `camel.component.kafka.break-on-first-error=true` | Adapter default; must remain true. A record that was not committed is read again before the partition's later records, whose commit would otherwise move past it. |
+| `camel.component.kafka.auto-offset-reset=earliest` | Adapter default; must remain `earliest` for every Kafka boundary, on the component, the endpoint (`autoOffsetReset`) and `additionalProperties.auto.offset.reset`. The reconnect after an uncommitted record resumes from the committed offset; on a partition where the group has none yet, `latest` would resume at the end and skip the record, and `none` stops the consumer. A Kafka boundary route with any other effective value refuses to start. A new consumer group therefore starts at the beginning of each partition's retained records; so does a group whose committed offsets expired on the broker, and a boundary without a `groupId`, for which Camel generates a new group on every start and so reprocesses every retained record on each start. Give every Kafka boundary a stable `groupId`. |
 | `quarkus.datasource.jdbc.url` / `QUARKUS_DATASOURCE_JDBC_URL` | Required by Postgres sink/store/replay. |
 | `quarkus.datasource.username` / `QUARKUS_DATASOURCE_USERNAME` | Message-store database identity. |
 | `quarkus.datasource.password` / `QUARKUS_DATASOURCE_PASSWORD` | Secret binding when password auth is used. |
