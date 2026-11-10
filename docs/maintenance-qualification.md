@@ -83,29 +83,26 @@ parking and consumer progress; record the exact image and adapter versions.
 
 ## Snapshot publication
 
-Suspended. Every Central upload requires the offline signer, so
-`publish-snapshot.yml` refuses to run, and no Central token or signing secret
-may be configured in the repository. Use locally built artifacts for acceptance
-([Releasing](releasing.md#acceptance-with-locally-built-artifacts)). The steps
-below are kept for reference only, until an approved signing boundary covers
-snapshots.
+A reviewed maintenance snapshot is published only through the approval-gated
+snapshot lane, `publish-snapshot.yml`, dispatched on the head of `release/0.3`;
+see [Testing a published snapshot](releasing.md#testing-a-published-snapshot)
+and [Snapshot lane](release-packaging.md#snapshot-lane). The build runs without
+credentials, and the upload, after an approval in the environment `snapshot`,
+runs only the release tools at the trusted commit; no signing secret is
+involved, and no Central token exists outside that environment.
 
-The maintenance line uses the same snapshot publishing mechanism as development;
-snapshot support is not restricted to the highest version. `0.3.4-SNAPSHOT` and
-`0.4.0-SNAPSHOT` are separate Maven coordinates. Snapshot publication does not
-create a stable release tag or activate any integration.
+The maintenance line uses the same lane as development; snapshot support is not
+restricted to the highest version. `0.3.7-SNAPSHOT` and `0.4.0-SNAPSHOT` are
+separate Maven coordinates. Snapshot publication does not create a stable
+release tag or activate any integration.
 
-1. Complete local checks and CI for the exact candidate commit. Review changes
-   and obtain publication authorization before running the workflow.
-2. Ensure the Sonatype namespace has snapshots enabled and the repository's
-   existing Central token and signing secrets are configured. Never copy these
-   secrets into source or operator commands.
-3. Dispatch **Publish Maven SNAPSHOT** (`publish-snapshot.yml`) on the reviewed
-   branch/ref. Check that the run's `head_sha` is the reviewed commit. The workflow
-   tests and publishes the POM's `-SNAPSHOT` version; it rejects stable versions.
-4. Verify the published timestamped snapshot from Sonatype metadata and record
-   the workflow URL, source commit, resolved version and downloaded artifact hash.
-5. The synthetic validation application's POM must explicitly enable consumption:
+1. Complete local checks and CI for the exact candidate commit on `release/0.3`.
+2. Dispatch the lane with that head commit as `source_commit`, and have the
+   other release approver approve the `upload` job.
+3. Record the workflow URL, source commit, the timestamped version from the run
+   summary (for example `0.3.7-20261110.123456-1`) and the SHA-256 of each file.
+4. The synthetic validation application's POM must explicitly enable consumption,
+   and pins the timestamped version:
 
    ```xml
    <repository>
@@ -116,12 +113,10 @@ create a stable release tag or activate any integration.
    </repository>
    ```
 
-6. Build the validation application with `./mvnw -U clean verify`, retaining its
+5. Build the validation application with `./mvnw -U clean verify`, retaining its
    resolved dependency provenance and final immutable image digest. Isolate the
-   validation application's inputs, group and DLQ from business traffic. A later
-   rebuild of the same snapshot coordinate can resolve a newer artifact; the
-   already-built image does not change.
-7. Complete controlled runtime acceptance and the applicable contract gate before
+   validation application's inputs, group and DLQ from business traffic.
+6. Complete controlled runtime acceptance and the applicable contract gate before
    publishing the stable patch release. Customer application rollout remains a
    separate action and should pin that final release, not this snapshot.
 

@@ -12,7 +12,8 @@ GitHub release-note readback and the applicable qualification/documentation gate
 A `vX.Y.Z` tag starts `release.yml`, which builds an unsigned candidate and then
 waits for human approval in protected environments before signing, uploading and
 publishing; the alternative is offline signing on the release workstation (see
-below). Snapshot publication is suspended. The release-page workflow verifies
+below). A reviewed snapshot is published only through the approval-gated,
+manual snapshot lane. The release-page workflow verifies
 actual public bytes before creating notes. The synthetic CI gate does not replace
 full candidate review, the signer's receipt or portal validation before release.
 Never rebuild or republish packages merely to repair missing release notes.

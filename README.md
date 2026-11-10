@@ -31,7 +31,8 @@ limitations. [Release tooling](docs/release-packaging.md) builds unsigned candid
 without production credentials. Final releases are signed and uploaded either by
 a protected tag run that waits for reviewer approval before signing with a CI
 signing subkey, or offline by the release manager; the primary release key never
-exists in GitHub. Snapshot publication is suspended. Final notes need an approved
+exists in GitHub. A reviewed snapshot is published only through the
+approval-gated, manual snapshot lane. Final notes need an approved
 date and exact artifact provenance; source preparation does not authorize
 publication. See [Releasing](docs/releasing.md).
 
@@ -48,8 +49,9 @@ version from its release tag. The published stable package is `0.3.5`; the
 maintenance source POM remains `0.3.5-SNAPSHOT` for development. Select the stable
 package explicitly when upgrading an integration.
 
-For acceptance, use locally built `X.Y.Z-SNAPSHOT` artifacts; snapshot
-publication is suspended. See [Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts).
+For acceptance, use locally built `X.Y.Z-SNAPSHOT` artifacts, or, to test in
+another environment, a reviewed snapshot from the approval-gated snapshot lane.
+See [Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts).
 Snapshots are test artifacts; production integrations keep an explicitly
 selected stable version.
 
