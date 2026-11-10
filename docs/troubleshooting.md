@@ -16,6 +16,23 @@
   because the DLQ publish failed or a step outcome could not be recorded during
   a Message Store outage. Its offset is not committed and the consumer
   reads it again until the DLQ accepts it; the ERROR log names the message.
+- An error that says a statement was cancelled because of a statement or lock
+  timeout or "due to user request" (the JDBC query timeout, used inside an
+  application transaction), or a socket read timeout, means a Message Store
+  statement took longer than `basis.message-store.statement-timeout` or waited
+  longer than `basis.message-store.lock-timeout`: check the database's health, its locks
+  (`pg_locks`, `pg_stat_activity`) and its network before raising either value.
+- An error that says a Message Store transaction "committed locally, but a
+  synchronous standby did not confirm it" means a synchronous commit's wait was
+  cancelled. The record is read again and its outcome written again; check the
+  synchronous standby and the database's replication status
+  (`pg_stat_replication`).
+- An error that says a Message Store transaction "committed, but the commit
+  reported a warning" means the commit succeeded but PostgreSQL reported a
+  warning with it, which the adapter cannot tell apart from an unconfirmed
+  commit. The record is read again, and fails again, until the warning's source
+  is removed: for example a deferred constraint trigger with `RAISE WARNING`
+  on a `bip_*` table. The error names the warning.
 - Confirm `allow-manual-commit=true`, `auto-commit-enable=false` and
   `break-on-first-error=true`.
 - Check whether the guarded `no-commit` test profile is active.
@@ -46,6 +63,8 @@ Common fail-fast causes include:
 - a Message Store without a table or column this adapter writes, for example
   one provisioned for an earlier adapter version. The error names the missing
   columns and the statements that add them;
+- a Message Store statement or lock timeout under 1 ms, or a lock timeout
+  longer than the statement timeout;
 - a setting of adapter 0.3.x that this version does not read
   (`basis.delivery-audit.routes`, `basis.input-audit.routes`); the error names
   each one and what to use instead. See

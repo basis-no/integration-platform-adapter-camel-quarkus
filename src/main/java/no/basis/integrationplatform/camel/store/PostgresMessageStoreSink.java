@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.store;
 
+import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
 import javax.sql.DataSource;
@@ -144,6 +145,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     private final DataSource dataSource;
     private final Duration retention;
     private final MessageStatusEventJson serializer;
+    private final MessageStoreTimeouts timeouts;
 
     /**
      * Creates a direct Postgres outcome sink.
@@ -169,9 +171,15 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     }
 
     PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Duration retention) {
+        this(dataSource, serializer, retention, MessageStoreTimeouts.DEFAULT);
+    }
+
+    PostgresMessageStoreSink(
+            DataSource dataSource, MessageStatusEventJson serializer, Duration retention, MessageStoreTimeouts timeouts) {
         this.dataSource = dataSource;
         this.serializer = serializer;
         this.retention = retention;
+        this.timeouts = timeouts;
     }
 
     /**
@@ -187,7 +195,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             return requested;
         }
         Instant firstReceipt = result.occurredAt();
-        try (PreparedStatement statement = connection.prepareStatement(FIRST_RECEIPT_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, FIRST_RECEIPT_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.integration());
             try (ResultSet earliest = statement.executeQuery()) {
@@ -204,19 +212,12 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     @Override
     public void record(MessageAttemptResult result) {
-        try (Connection connection = dataSource.getConnection()) {
-            boolean previousAutoCommit = connection.getAutoCommit();
-            connection.setAutoCommit(false);
-            try {
+        try {
+            timeouts.inTransaction(dataSource, connection -> {
                 Instant payloadExpiresAt = upsertMessageLog(connection, result, cappedInlineExpiry(connection, result));
                 upsertMessageAttempt(connection, result, payloadExpiresAt);
-                connection.commit();
-            } catch (Exception e) {
-                connection.rollback();
-                throw e;
-            } finally {
-                connection.setAutoCommit(previousAutoCommit);
-            }
+                return null;
+            });
         } catch (Exception e) {
             throw new MessageStoreSinkException("Failed to record message attempt " + result.messageId()
                     + "/" + result.attempt(), e);
@@ -227,7 +228,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             Connection connection,
             MessageAttemptResult result,
             Instant payloadExpiresAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_ATTEMPT_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPSERT_MESSAGE_ATTEMPT_SQL)) {
             statement.setString(1, result.messageId());
             statement.setInt(2, result.attempt());
             statement.setInt(3, result.schemaVersion());
@@ -259,7 +260,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     private Instant upsertMessageLog(Connection connection, MessageAttemptResult result, Instant requestedExpiry)
             throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_LOG_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPSERT_MESSAGE_LOG_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.correlationId());
             statement.setString(3, result.contentType());
@@ -295,7 +296,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
         if (!"s3_object".equals(result.payloadStorage())) {
             return requestedExpiry;
         }
-        try (PreparedStatement statement = connection.prepareStatement(MESSAGE_LOG_EXPIRY_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, MESSAGE_LOG_EXPIRY_SQL)) {
             statement.setString(1, result.messageId());
             try (ResultSet current = statement.executeQuery()) {
                 current.next();

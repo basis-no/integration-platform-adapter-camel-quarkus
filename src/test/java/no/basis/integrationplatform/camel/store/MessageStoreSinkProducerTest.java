@@ -18,6 +18,8 @@ class MessageStoreSinkProducerTest {
                 Optional.empty(),
                 KafkaMessageStoreSink.DEFAULT_STATUS_TOPIC,
                 30,
+                java.time.Duration.ofSeconds(10),
+                java.time.Duration.ofSeconds(5),
                 unavailableDataSource(),
                 new MessageStoreTestProfileConfig("no-persistence", true));
 

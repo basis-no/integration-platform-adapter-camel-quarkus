@@ -18,7 +18,9 @@ Kafka record
 ```
 
 A persistence failure or a failed DLQ publish prevents the managed Kafka commit
-and leaves the exchange failed. With `camel.component.kafka.break-on-first-error=true`,
+and leaves the exchange failed. A Message Store call that reaches its statement,
+lock or network timeout is such a failure (see
+[Message Store call timeouts](configuration.md#message-store-call-timeouts)). With `camel.component.kafka.break-on-first-error=true`,
 the adapter's default, the consumer reads the record again before the
 partition's later records. Kafka can also redeliver a record after a rebalance,
 which is why side effects still require stable idempotency.
