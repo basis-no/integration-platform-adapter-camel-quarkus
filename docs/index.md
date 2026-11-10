@@ -19,11 +19,12 @@ GitHub and in any static documentation site.
 
 1. [Message lifecycle](message-lifecycle.md)
 2. [Ingress and scaling](ingress-and-scaling.md)
-3. [Payload storage](payload-storage.md)
-4. [Configuration reference](configuration.md)
-5. [Kafka activity metrics](activity-metrics.md)
-6. [Troubleshooting](troubleshooting.md)
-7. [Releasing](releasing.md)
+3. [Single-active routes](single-active.md)
+4. [Payload storage](payload-storage.md)
+5. [Configuration reference](configuration.md)
+6. [Kafka activity metrics](activity-metrics.md)
+7. [Troubleshooting](troubleshooting.md)
+8. [Releasing](releasing.md)
 
 ## Sources of Truth
 

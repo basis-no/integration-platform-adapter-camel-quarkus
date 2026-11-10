@@ -177,6 +177,35 @@ route on another topic is refused before any replay audit row is written.
 Leave `boundary-routes` at `auto` unless the application needs the HTTP
 preview.
 
+### Polling routes run on one replica at a time
+
+0.3.x ran a timer, cron or Quartz trigger, and every scheduled poll (file,
+FTP/SFTP, SQL, object stores, polled queues), on every replica. 0.4.0 runs each
+such route only on the replica that holds its lease, the Key-Value Store key
+`lease/<routeId>`; see [Single-Active Routes](single-active.md).
+
+- **List a route that must run on every replica** in
+  `basis.message-store.single-active.excluded-routes`, such as a timer that
+  refreshes a per-replica cache. A polled queue (`aws2-sqs:`,
+  `azure-storage-queue:`) becomes single-active too; list it, or use a broker
+  consumer, where several replicas should share the queue.
+- **A `timer:` with a finite `repeatCount`** (a one-shot initialization timer)
+  is not leased and still runs on every replica, with a startup WARN: under a
+  lease its tick could be dropped for good on the new pod of a rolling update.
+  Make such work idempotent across replicas.
+- **Give polling routes stable ids.** The lease is named after the route id;
+  a generated id can differ between image versions.
+- **A polling endpoint whose consumer the adapter cannot gate** (neither a
+  scheduled-poll consumer nor a timer, Quartz or cron trigger) refuses to
+  start; list it in `basis.message-store.single-active.excluded-routes`.
+- **Without `bip_key_value`**, or without a Key-Value Store (no Message Store
+  datasource or `app.name`), polling routes run on every replica as in 0.3.x,
+  with one warning per route. An ingress normalization route that the replica
+  check accepted only because of its lease (several or no declared replicas)
+  does no work then, and logs an ERROR, instead of duplicating its source.
+- **Expect the first ticks after startup to wait** for the Message Store check
+  and the lease, and a standby replica to start its consumers without polling.
+
 ### Object-backed inputs are parked as their claim check
 
 Object storage (`tiered` payload mode) is new in 0.4. A Kafka input whose
@@ -237,6 +266,26 @@ The changelog's Unreleased section has the details; in short:
   default 60-second cap). `max.poll.interval.ms` covers every record of one
   poll, so for a route on `ip-slow-backend` set `maxPollRecords=1` on its Kafka
   input or raise `maxPollIntervalMs`. See
+  [Automatic Retry](retry-dlq-replay.md#automatic-retry).
+- **The HTTP client's own retries are off.** On every instance of Camel's
+  `http` component (`http`, `https` or the application's own name) the adapter
+  sets `automaticRetriesDisabled`, so the client no longer repeats a request
+  answered with 503 or 429 by itself, POST included, outside the step ledger;
+  every repeat is a recorded Camel redelivery. After a 429 or 503, in the
+  default and `ip-slow-backend` configurations, the next redelivery waits for
+  the longer of the receiver's `Retry-After` and the configured delay when it
+  fits the budget (for a Kafka input, its poll interval less the time the
+  exchange has run and a 20 % margin; otherwise the configuration's maximum
+  delay); a longer `Retry-After` gets the configured delays. A receiver that
+  answered 503 once and then succeeded now records one more redelivery. To
+  keep the client's own retries, set
+  `camel.component.<name>.automatic-retries-disabled=false` for the component's
+  name; it is the only way, so an application that turns them on in code, in a
+  `ComponentCustomizer` or with a retry strategy through `httpClientConfigurer`
+  must set it too, or the adapter turns them off. A non-Kafka input, such as an
+  HTTP request a route answers, can hold its caller for up to each
+  redelivery's maximum delay (3 × 60 s with the default configuration) when the
+  receiver asks for it; give such a route `ip-no-retry` or short delays. See
   [Automatic Retry](retry-dlq-replay.md#automatic-retry).
 - **Spaced re-reads of a record whose outcome is not durable.** 0.3.6 read
   such a record again at once, several times a second. Now the first read

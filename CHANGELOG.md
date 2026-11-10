@@ -11,6 +11,76 @@
   history and summary show the same expiry. A rolling-upgrade test runs the
   released 0.3.6 adapter next to this one against one Message Store. No schema
   change.
+- The HTTP client inside Camel's `http` component no longer repeats a request
+  by itself: the adapter sets `automaticRetriesDisabled` on every instance of
+  it, under any name (`http`, `https` or the application's own), unless the
+  application sets `camel.component.<name>.automatic-retries-disabled`. Before,
+  the client repeated a request answered with 503 or 429 once, POST included,
+  inside one Camel attempt and outside the step ledger, and waited for any
+  `Retry-After` with no upper limit on the Kafka consumer thread. Every repeat
+  is now a recorded Camel redelivery, sent with the step's `Idempotency-Key`,
+  so `auto_redelivery_count` matches the requests a receiver got. After a 429
+  or 503 from `http`, `https` or `vertx-http`, the `dlq` mode's default and
+  `ip-slow-backend` configurations wait for the receiver's `Retry-After`
+  (seconds or an HTTP date) as a minimum: the longer of it and the configured
+  delay, so `0` or a past date changes nothing. The wait must fit the budget:
+  for a Kafka input, its poll interval (`additionalProperties` included) less
+  the time the exchange has run and a 20 % margin; otherwise the
+  configuration's maximum delay. A longer wait is not used: the configured
+  delays apply and the message is parked when they are exhausted, instead of
+  Kafka removing the consumer from its group. A non-Kafka input, such as an
+  HTTP request a route answers, can now hold its synchronous caller for up to
+  each redelivery's maximum delay (3 × 60 s with the default configuration)
+  when the receiver asks for it. See
+  [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
+  Upgrade: a receiver that answered 503 or 429 once and then succeeded is now
+  retried after the configured delay or its `Retry-After`, and the attempt
+  records one more redelivery. The property is the only way to keep the
+  client's own retries: an application that turns them on in code, in a
+  `ComponentCustomizer` or with a retry strategy through `httpClientConfigurer`
+  must set `camel.component.<name>.automatic-retries-disabled=false`. A route
+  that answers a synchronous caller and calls a receiver that sends long
+  `Retry-After` values should use `ip-no-retry` or short delays of its own.
+- Polling routes run on one replica at a time. Every route whose consumer polls
+  on a schedule (`timer:`, `quartz:`, `cron:`, `scheduler:`, and Camel
+  scheduled-poll consumers such as `file:`, `ftp:`, `sftp:` and `sql:`) does
+  its work only on the replica that holds the route's lease, the Key-Value
+  Store key `lease/<routeId>`: a 30 second lease renewed every 10 seconds, so
+  another replica takes over within about 10 seconds after an orderly stop and
+  within about 40 seconds after a crash. Routes start and stop as before; the
+  lease gates each poll or trigger inside the route. `master:`, Kafka, HTTP,
+  broker-queue, `direct:` and `seda:` routes are not gated. Without
+  `bip_key_value`, or without a Key-Value Store (no Message Store datasource or
+  `app.name`), polling routes run on every replica as before, with one warning
+  per route; an unreachable Key-Value Store keeps their work stopped. A route
+  listed in the new `basis.message-store.single-active.excluded-routes` runs on
+  every replica. A `timer:` with a finite `repeatCount`, such as a one-shot
+  initialization timer, is not leased: it runs on every replica, with a startup
+  WARN, because a tick dropped on the new pod of a rolling update would never
+  fire again. An ingress normalization route whose polling source is
+  coordinated this way is accepted with several declared replicas, and then
+  requires its lease: without `bip_key_value` it does no work and logs an
+  ERROR, instead of running on every replica. A polling route whose consumer
+  the adapter cannot gate (neither a scheduled-poll consumer nor a timer,
+  Quartz or cron trigger) refuses to start unless it is excluded. The gauge
+  `integration_single_active_lease{route}` reports 1 held, 0 waiting, 2
+  uncoordinated, 3 stopped because the route needs its lease and there is no
+  Key-Value Store. The Key-Value Store's first call fails with the new
+  `KeyValueStoreNotConfiguredException` (an `IllegalStateException`) when the
+  application has no Message Store datasource, an inactive one, or no
+  `app.name`. See [Single-Active Routes](docs/single-active.md).
+  Upgrade: with `bip_key_value` provisioned, a polling route that ran on every
+  replica now runs on one; list a route that must run on every replica (a
+  per-replica cache refresh or heartbeat) in
+  `basis.message-store.single-active.excluded-routes`. Give polling routes
+  stable ids, since the lease is named after the route id. The first ticks
+  after startup wait for the Message Store check and the lease. A queue
+  consumed by polling, such as `aws2-sqs:` or `azure-storage-queue:`, becomes
+  single-active too, so its consumption no longer scales with replicas; use a
+  broker consumer, or list the route, where several replicas should share a
+  queue. A poll still in flight when its lease is lost runs to its end and can
+  overlap with the next holder's: bound polls (`maxMessagesPerPoll`), use the
+  source's read lock or move, and keep the work idempotent.
 - The adapter logs a warning when it journals a message id that another
   integration already journaled on the same Message Store, as adapter 0.3.6
   does: once per pair of integrations, then at most every ten minutes with the
