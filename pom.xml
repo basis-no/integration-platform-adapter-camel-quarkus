@@ -293,13 +293,15 @@
   </build>
 
   <profiles>
-    <!-- A build that skips tests does not download the released adapter for the upgrade test. -->
+    <!-- A build that skips tests does not download the released adapter for the upgrade test.
+         -DskipTests and -Dmaven.test.skip without a value set "true"; "=false" keeps the
+         download. A negated value (!false) would also match an unset property. -->
     <profile>
       <id>skip-upgrade-test-download</id>
       <activation>
         <property>
           <name>skipTests</name>
-          <value>!false</value>
+          <value>true</value>
         </property>
       </activation>
       <properties>
@@ -311,7 +313,7 @@
       <activation>
         <property>
           <name>maven.test.skip</name>
-          <value>!false</value>
+          <value>true</value>
         </property>
       </activation>
       <properties>
