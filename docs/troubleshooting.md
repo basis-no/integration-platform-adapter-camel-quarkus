@@ -48,6 +48,9 @@ Common fail-fast causes include:
   `additionalProperties.auto.offset.reset` override from the endpoint and from
   `camel.component.kafka.auto-offset-reset`, or set it to `earliest`;
 - unsupported sink, payload, failure-mode, or test-profile value;
+- `basis.message-store.failure-mode=record-failed` in an application with a
+  Kafka boundary: remove the setting; an HTTP audit-only boundary needs no
+  failure mode of its own;
 - non-default test profile without explicit opt-in;
 - Postgres modes without a resolvable datasource;
 - tiered mode without a payload bucket/S3 client;
