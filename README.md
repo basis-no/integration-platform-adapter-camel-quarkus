@@ -91,6 +91,9 @@ Start with the [documentation index](docs/index.md).
   intercept strategy "does not return an AsyncProcessor instance", once per
   untracked processor such as `validate`. Harmless; fixed for 0.4.0. See
   [Troubleshooting](docs/troubleshooting.md#route-fails-at-startup).
+- On `main`, a replay request with `redoSteps` is refused unless delivered
+  steps are recorded (the `postgres` step store); see
+  [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
 - 0.4.0-rc1 gives an application's own `onException` handler the consumed
   input instead of the message the route left, and logs that a handled message
   is being parked. 0.3.6 fixed it, and so does 0.4.0; see
