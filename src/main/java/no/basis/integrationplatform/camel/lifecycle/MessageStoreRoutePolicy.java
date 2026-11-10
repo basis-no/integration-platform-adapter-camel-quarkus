@@ -195,7 +195,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     /**
      * The innermost cause, so that a full disk, a refused or missing object and a timeout can be
-     * told apart. Exception texts of the file system and the object store carry no payload content.
+     * told apart. Its message is shown only for a failure while the object was copied or opened:
+     * an I/O or file system error, or the object store client's own error. Any other cause, such
+     * as a parser's or an application's, may quote payload content, so only its class is shown.
+     * The text is one line.
      */
     static String rootCause(Throwable failure) {
         Throwable root = failure;
@@ -205,8 +208,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         if (root == failure) {
             return "";
         }
-        return " (cause: " + root.getClass().getName()
-                + (root.getMessage() == null ? "" : ": " + root.getMessage()) + ")";
+        String message = root.getMessage();
+        boolean safe = message != null && !root.getClass().getName().startsWith("com.fasterxml.")
+                && (root instanceof java.io.IOException || isObjectStoreClientError(root));
+        String text = " (cause: " + root.getClass().getName() + (safe ? ": " + message : "") + ")";
+        return text.replaceAll("[\\r\\n\\t]+", " ");
+    }
+
+    private static boolean isObjectStoreClientError(Throwable failure) {
+        for (Class<?> type = failure.getClass(); type != null; type = type.getSuperclass()) {
+            if (type.getName().equals("software.amazon.awssdk.core.exception.SdkException")) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void closeCheckedCopy(Exchange exchange) {

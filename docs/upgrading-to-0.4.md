@@ -171,7 +171,7 @@ deployment settings:
   raise both together.
 
 Mount a dedicated, size-limited volume at the spool directory with room for
-`spool-max-bytes`: a copy has no directory entry while it is read, and may not
+`spool-max-bytes`: on Linux a copy has no directory entry while it is read, and may not
 count toward a pod's ephemeral-storage accounting.
 
 A payload that cannot be captured or checked (a changed, truncated, missing or

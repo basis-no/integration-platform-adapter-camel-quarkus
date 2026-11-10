@@ -689,6 +689,51 @@ class MessageStoreRoutePolicyTest {
         assertFalse(commit.committed);
     }
 
+    @Test
+    void aMalformedClaimCheckDoesNotLogItsBody() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                sink,
+                "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1, 1024, Duration.ofDays(30), true),
+                MessageBoundaryKind.KAFKA,
+                true,
+                no.basis.integrationplatform.camel.payload.PayloadObjectStore.disabled());
+        Exchange exchange = exchange();
+        // An ordinary payload sent with the headers of a claim check.
+        String body = "{\"customer\": \"private-order-details-4711\",\n \"card\": \"0000-1111\"";
+        exchange.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
+        exchange.getMessage().setBody(body);
+
+        try (var log = no.basis.integrationplatform.camel.LogCapture.of(MessageStoreRoutePolicy.class)) {
+            policy.onExchangeBegin(route("orders"), exchange);
+
+            var errors = log.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            String logged = no.basis.integrationplatform.camel.LogCapture.text(errors.getFirst());
+            assertFalse(logged.contains("private-order-details"), logged);
+            assertFalse(logged.contains("0000-1111"), logged);
+            assertFalse(logged.contains("\n"), "one line: " + logged);
+            assertTrue(logged.contains("Invalid payload-reference document"), logged);
+        }
+        PayloadStorageException failure = exchange.getException(PayloadStorageException.class);
+        assertFalse(failure.getMessage().contains("private-order-details"), failure.getMessage());
+        assertNull(failure.getCause(), "the parser's exception, which quotes the body, is not kept");
+        assertTrue(exchange.isRouteStop());
+    }
+
+    @Test
+    void onlyCopyAndObjectStoreErrorsShowTheirMessage() {
+        var disk = new PayloadStorageException("copy failed",
+                new java.io.IOException("wrapped", new java.nio.file.FileSystemException("/spool: No space left\non device")));
+        var application = new PayloadStorageException("capture failed",
+                new IllegalStateException("payload was: private-order-details-4711"));
+
+        assertEquals(" (cause: java.nio.file.FileSystemException: /spool: No space left on device)",
+                MessageStoreRoutePolicy.rootCause(disk));
+        assertEquals(" (cause: java.lang.IllegalStateException)", MessageStoreRoutePolicy.rootCause(application));
+    }
+
     private Route route(String routeId) {
         InvocationHandler handler = (proxy, method, args) -> switch (method.getName()) {
             case "getRouteId", "getId" -> routeId;
