@@ -15,6 +15,8 @@ import org.apache.kafka.clients.admin.OffsetSpec;
 import org.apache.kafka.clients.producer.KafkaProducer;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.TopicPartition;
+import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.serialization.Deserializer;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.CsvSource;
@@ -24,6 +26,7 @@ import org.testcontainers.kafka.ConfluentKafkaContainer;
 import org.testcontainers.utility.DockerImageName;
 
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -223,6 +226,65 @@ class KafkaFailureProgressTest {
             assertEquals(0, dlqEnd);
             assertNull(admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
                     .get(5, TimeUnit.SECONDS).get(new TopicPartition(input, 0)), "No offset was committed");
+        }
+    }
+
+    /** Fails the first deserialization, as a poll-time failure that clears on its own. */
+    public static class TransientPollFailure implements Deserializer<String> {
+        static final AtomicInteger FAILURES = new AtomicInteger();
+
+        @Override
+        public String deserialize(String topic, byte[] data) {
+            if (FAILURES.getAndDecrement() > 0) {
+                throw new SerializationException("synthetic transient poll failure");
+            }
+            return data == null ? null : new String(data, StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
+    void transientPollFailureReconnectsWithoutSkippingOrJournaling() throws Exception {
+        String input = "input-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        var client = Map.<String, Object>of("bootstrap.servers", brokers);
+        try (var admin = AdminClient.create(client); var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(input, 1, (short) 1))).all().get(20, TimeUnit.SECONDS);
+            bindShippedKafkaDefaults(context);
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            var calls = new CopyOnWriteArrayList<String>();
+            var outcomes = new CopyOnWriteArrayList<String>();
+            var completed = new CountDownLatch(1);
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(row -> {
+                outcomes.add(row.status().name());
+                if (row.status().name().equals("COMPLETED")) completed.countDown();
+            }, "order-pipeline", "postgres-inline", 100_000, 30, true, "dlq", "auto"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=group-" + UUID.randomUUID()
+                            + "&autoOffsetReset=earliest&pollTimeoutMs=100&valueDeserializer="
+                            + TransientPollFailure.class.getName())
+                            .routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .process(e -> calls.add(e.getMessage().getBody(String.class)));
+                    from("direct:parking").routeId("parking").errorHandler(noErrorHandler()).log("parked");
+                }
+            });
+            var producerProperties = new HashMap<String, Object>(client);
+            producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            try (var producer = new KafkaProducer<String, String>(producerProperties)) {
+                producer.send(new ProducerRecord<>(input, "key", "only")).get(10, TimeUnit.SECONDS);
+            }
+            TransientPollFailure.FAILURES.set(1);
+            context.start();
+
+            assertTrue(completed.await(30, TimeUnit.SECONDS),
+                    "The consumer did not recover from a poll failure: " + calls + " / " + outcomes);
+            assertEquals(List.of("only"), calls, "A poll failure must not skip the record");
+            assertEquals(List.of("COMPLETED"), outcomes, "A poll failure is not a message and must not be journaled");
         }
     }
 

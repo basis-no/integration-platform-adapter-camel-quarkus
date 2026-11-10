@@ -38,12 +38,20 @@ jobs:
       - name: Test release tag parser
         run: .github/scripts/test-release-version-from-tag.sh
 
-      - name: Run adapter tests
+      - name: Run adapter tests and install the adapter for the startup smoke
         run: >-
           ./mvnw
           --batch-mode
           --no-transfer-progress
-          test
+          install
+
+      - name: Boot the packaged adapter in a Quarkus application
+        run: >-
+          ./mvnw
+          --batch-mode
+          --no-transfer-progress
+          -f integration-tests/startup-smoke/pom.xml
+          verify
 
       - name: Verify public API documentation
         run: >-
