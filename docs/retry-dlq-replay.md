@@ -174,6 +174,42 @@ original record back to its historical offset. Kafka ordering is guaranteed
 only within a partition, and bulk replay needs a separately defined ordering
 policy.
 
+### Replay order
+
+A replay record goes to the end of the integration's replay topic, never back
+to the original offset. Its key is the message's stored correlation id: the
+`x-bip-correlation-id` the exchange carried when its outcome was recorded,
+or else the one the consumed record had. Without either, the replay record has
+no key, and Kafka places it on any partition; there is no fallback to the
+original record's key or to the message id. The adapter publishes the key as
+UTF-8 text with the Kafka client's default partitioner. The replay therefore
+lands on the original record's partition when the input's producer also
+published that key as the same UTF-8 bytes, with the default partitioner, no
+explicit partition and the same partition count. That is not guaranteed when:
+
+- the input's producer keyed its records by something else than the correlation
+  id, serialized the key differently, chose the partition itself, or used
+  another partitioner;
+- the route changed `x-bip-correlation-id`, or the record had none;
+- the topic's partition count changed.
+
+Kafka keeps order only within a partition, so even on the same partition a
+replay comes after every record that was appended in the meantime: a newer
+message for the same entity may already have been processed. A replay of
+several messages has no overall order. When you resend several messages:
+
+- resend per key, oldest first, and wait until each has been processed (its
+  outcome recorded), not only accepted, before the next;
+- do not resend a failure that a newer message for the same key has already
+  superseded: replaying it would restore stale data;
+- keep `x-bip-correlation-id` equal to the record key when order per entity
+  matters, so that the replay key and the original key agree.
+
+The .NET adapter keys its replay records by the correlation id too, but falls
+back to the original record's key and then to the message id when there is no
+correlation id, and its Kafka client places keys with a different default
+partitioner than Java clients.
+
 ## Redo Steps
 
 Ordinary replay skips side effects already recorded `DELIVERED`. An operator
@@ -205,3 +241,17 @@ With the Postgres sink, startup reads the highest store schema version
 (`contract_major`) from `bip_contract`. A version other than 1 fails startup. A
 missing table or empty row is treated as version 1 with a prominent warning;
 other database errors are not treated as a missing schema.
+
+With the Postgres sink or the Postgres step store, startup also checks, with
+one catalog query, that the store has every table and column this adapter
+writes, as defined by the schema files it ships in `db/message-store/`:
+`bip_message_log` and `bip_message_attempt` with the Postgres sink,
+`bip_message_replay_audit` when replay is enabled as well, and
+`bip_step_outcome` with the Postgres step store. A store provisioned for an
+earlier adapter version, for example one without `payload_ref` or the
+`checkpoint_*` columns, fails startup. The error names each missing table and
+column and the `alter table … add column if not exists …` statements that add
+them; run them, or the schema file for a missing table, as the database
+operator before starting. The check does not compare types, defaults or check
+constraints: a store whose `payload_storage` check does not allow `s3_object`
+still fails object-backed writes in `tiered` mode.

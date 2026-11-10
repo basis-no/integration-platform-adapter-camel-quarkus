@@ -39,7 +39,10 @@ Common fail-fast causes include:
 - normalization route also selected as a lifecycle boundary;
 - normalization without the durable Postgres step store;
 - unsafe polling with missing or multiple declared replicas;
-- store schema version mismatch in `bip_contract`.
+- store schema version mismatch in `bip_contract`;
+- a Message Store without a table or column this adapter writes, for example
+  one provisioned for an earlier adapter version. The error names the missing
+  columns and the statements that add them.
 
 Treat these as configuration errors. Do not bypass them in business routes.
 
