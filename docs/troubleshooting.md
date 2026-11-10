@@ -84,6 +84,23 @@ Verify bucket/prefix ownership, object existence, expiry, size, SHA-256,
 workload identity, endpoint reachability, and encryption permissions. The
 adapter intentionally fails closed when claim-check metadata does not match.
 
+An object-stored input that fails its check, or cannot be checked, is logged at
+ERROR as `Message <id> did not reach its route: <reason>`; its route does not
+run, its outcome is `FAILED` and its Kafka offset is not committed, so it is
+read again. The reasons:
+
+- `does not match its reference's SHA-256`, `has N bytes; its reference has M`
+  or `is larger than its reference`: the object was changed or replaced after it
+  was stored. It is read again until the object is restored; resend another
+  copy of the message if the object cannot be restored.
+- `could not be copied for checking to <directory>`: the object store failed
+  while the object was read, or the spool directory is not writable or is full.
+  Check the object store and the space in
+  `basis.message-store.payload.spool-directory`.
+- `cannot be checked now: checked copies of N bytes are in use`: other inputs'
+  checked copies fill `basis.message-store.payload.spool-max-bytes`; the record
+  is read again when they are done.
+
 ## Polling Works with One Replica but Not Several
 
 Uncoordinated polling is rejected with more than one replica. Use `master:`

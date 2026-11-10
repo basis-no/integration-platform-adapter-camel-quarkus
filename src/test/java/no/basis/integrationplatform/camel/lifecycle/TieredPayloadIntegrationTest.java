@@ -255,6 +255,66 @@ class TieredPayloadIntegrationTest {
         assertTrue(missing.getMessage().contains("unavailable"));
     }
 
+    @Test
+    void aChangedObjectIsRefusedBeforeTheRouteReadsAnyOfIt() throws Exception {
+        byte[] original = new byte[4096];
+        for (int index = 0; index < original.length; index++) {
+            original[index] = (byte) (index % 199);
+        }
+        PayloadReference reference = objectStore.store(
+                "large-payload-validation", "changed-before-route", new ByteArrayInputStream(original),
+                (long) original.length, "application/octet-stream", expiresAt(), 1024 * 1024);
+        String key = reference.ref().substring(("s3://" + BUCKET + "/").length());
+        byte[] changed = original.clone();
+        changed[0] ^= 1;
+        // Same size, so the size check passes; only the full SHA-256 check can see it.
+        s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key(key).build(), RequestBody.fromBytes(changed));
+
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        var outcomes = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                row -> outcomes.add(row.status().name()),
+                "large-payload-validation",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1024, 32L * 1024 * 1024, Duration.ofDays(30), true),
+                MessageBoundaryKind.KAFKA,
+                true,
+                objectStore);
+        try (DefaultCamelContext context = new DefaultCamelContext()) {
+            context.addRoutes(new RouteBuilder() {
+                @Override
+                public void configure() {
+                    from("direct:replayed").routeId("large-payload-validation").routePolicy(policy)
+                            .process(e -> {
+                                // Reading even the first byte would be a failure of the check.
+                                reads.incrementAndGet();
+                                e.getMessage().getBody(InputStream.class).read();
+                            });
+                }
+            });
+            context.start();
+            Exchange replayed = context.createProducerTemplate().send("direct:replayed", e -> {
+                e.getMessage().setBody(reference.toJsonBytes());
+                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "changed-before-route");
+                e.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
+                e.getMessage().setHeader(PlatformHeaders.PAYLOAD_REF, reference.ref());
+                e.getMessage().setHeader(PlatformHeaders.PAYLOAD_SIZE, Long.toString(reference.sizeBytes()));
+                e.getMessage().setHeader(PlatformHeaders.PAYLOAD_SHA256, reference.sha256());
+            });
+
+            assertEquals(0, reads.get(), "the route must not see a byte of an object that does not match");
+            assertTrue(replayed.isFailed());
+            assertEquals(java.util.List.of("FAILED"), outcomes);
+        }
+
+        // The unchanged object reaches the route complete.
+        s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key(key).build(), RequestBody.fromBytes(original));
+        Exchange intact = exchange(reference.toJsonBytes());
+        intact.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
+        policy.onExchangeBegin(route(), intact);
+        assertArrayEquals(original, intact.getMessage().getBody(InputStream.class).readAllBytes());
+        policy.onExchangeDone(route(), intact);
+    }
+
     private static MessageStoreRoutePolicy policy(PostgresMessageStoreSink sink, String integrationName) {
         return new MessageStoreRoutePolicy(
                 sink,

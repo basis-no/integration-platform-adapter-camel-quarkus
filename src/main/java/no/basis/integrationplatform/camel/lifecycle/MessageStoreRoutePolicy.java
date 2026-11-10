@@ -43,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
+    private static final String CHECKED_COPY = "basis.messageStore.checkedPayloadCopy";
     private static final String ENVELOPE_PREFIX = "x-bip-";
     private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
     private static final List<String> ENVELOPE_HEADERS = List.of(PlatformHeaders.ATTEMPT, PlatformHeaders.SCHEMA_VERSION,
@@ -55,6 +56,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
     private TrafficSignals trafficSignals;
+    private VerifiedPayloadSpool payloadSpool = VerifiedPayloadSpool.defaults();
     // Per topic partition: the offset of the record held back last, and how often in a row.
     private final Map<String, long[]> heldBack = new ConcurrentHashMap<>();
     private Sleeper sleeper = MessageStoreRoutePolicy::sleepUnlessStopping;
@@ -133,6 +135,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         this.objectStore = objectStore;
     }
 
+    void setPayloadSpool(VerifiedPayloadSpool payloadSpool) {
+        this.payloadSpool = payloadSpool;
+    }
+
     void setTrafficSignals(TrafficSignals trafficSignals) {
         this.trafficSignals = trafficSignals;
     }
@@ -158,14 +164,55 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
             StepOutcomeFailure.begin(exchange);
         }
-        capturePayloadMetadata(exchange);
+        try {
+            capturePayloadMetadata(exchange);
+        } catch (PayloadStorageException e) {
+            failBeforeTheRoute(exchange, e);
+        }
         if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
             trafficSignals.recordAdmitted(exchange);
         }
     }
 
+    /**
+     * Camel ignores an exception thrown from {@code onExchangeBegin}, and runs the route. A
+     * payload that could not be captured or checked must not reach it: the exchange fails and
+     * stops, so no processor runs and nothing is parked, and its outcome is recorded FAILED
+     * without a commit, so the record is read again.
+     */
+    private void failBeforeTheRoute(Exchange exchange, PayloadStorageException failure) {
+        LOG.error("Message {} did not reach its route: {}",
+                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure.getMessage());
+        closeCheckedCopy(exchange);
+        exchange.getMessage().setBody(null);
+        exchange.setException(failure);
+        exchange.setRouteStop(true);
+    }
+
+    private void closeCheckedCopy(Exchange exchange) {
+        InputStream copy = exchange.getProperty(CHECKED_COPY, InputStream.class);
+        if (copy == null) {
+            return;
+        }
+        exchange.removeProperty(CHECKED_COPY);
+        try {
+            copy.close();
+        } catch (Exception e) {
+            LOG.warn("Could not close the checked payload copy of message {}: {}",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), e.toString());
+        }
+    }
+
+    private InputStream checkedCopy(Exchange exchange, PayloadReference reference) {
+        InputStream copy = payloadSpool.checkedCopy(reference, () -> objectStore.open(reference));
+        exchange.setProperty(CHECKED_COPY, copy);
+        return copy;
+    }
+
     @Override
     public void onExchangeDone(Route route, Exchange exchange) {
+        // The route is done with its payload; the checked copy and its file go now.
+        closeCheckedCopy(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA && parkingDidNotPublish(exchange)) {
             // Neither completed nor parked: keep the exchange failed, so that it is recorded
             // FAILED, not committed, and read again.
@@ -549,7 +596,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             }
             InputStream completePayload = new SequenceInputStream(new ByteArrayInputStream(probe), input);
             PayloadReference reference = captureObject(exchange, completePayload, null);
-            exchange.getMessage().setBody(objectStore.open(reference));
+            exchange.getMessage().setBody(checkedCopy(exchange, reference));
         } catch (PayloadStorageException e) {
             throw e;
         } catch (Exception e) {
@@ -578,10 +625,11 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             throw new PayloadStorageException("Payload reference has expired: " + reference.ref());
         }
         objectStore.verify(reference);
+        InputStream checked = checkedCopy(exchange, reference);
         applyPayloadReference(exchange, reference);
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK, reference.toJsonBytes());
         exchange.getMessage().setHeader(PlatformHeaders.CONTENT_TYPE, reference.contentType());
-        exchange.getMessage().setBody(objectStore.open(reference));
+        exchange.getMessage().setBody(checked);
     }
 
     private void applyPayloadReference(Exchange exchange, PayloadReference reference) {

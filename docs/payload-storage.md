@@ -50,18 +50,38 @@ until its exchange completes, unless it is stored as an object.
 
 For `s3_object`, Postgres stores the immutable object reference, size, SHA-256,
 content type, and expiry. Before processing or replay, the adapter validates
-the bucket, prefix, expiry and the object's size. An input's SHA-256 is checked
-when the route reads the payload stream to its end, and a mismatch fails that
-read: a route that acts on only part of an object payload can use bytes that
-were not checked yet
-([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+the bucket, prefix, expiry and the object's size.
+
+An input in object storage is checked in full before its route reads any of it,
+on a replay of a claim-checked input and on the first attempt after the adapter
+stored a streamed input. The adapter copies the object to a local file in
+`basis.message-store.payload.spool-directory` (the JVM's temporary directory by
+default) while it checks the object's size and SHA-256 against the reference,
+and only then gives the route a stream of that checked copy. Memory stays
+bounded by a 64 KiB copy buffer, whatever the object's size. The copy is
+deleted when the exchange is done, and at once when the check fails; on Linux
+its directory entry is removed as soon as the route's stream is open, and the
+space is freed when the stream is closed. A copy left by a process that stopped
+without cleaning up, such as after a crash, is deleted when the application
+starts again.
+
+The checked copies one process holds at once are bounded by
+`basis.message-store.payload.spool-max-bytes`, by default the same as
+`object-max-bytes`, so that an object of the largest accepted size always fits
+when it is the only one. In `tiered` mode startup refuses a smaller value. Give
+the spool directory room for that much: a pod's ephemeral storage, or a volume
+mounted at the directory.
+
 An output checkpoint is checked completely before it is restored; see
 [Output-Producing Side Effects](steps-and-idempotency.md#output-producing-side-effects).
-A missing, expired, oversized or unavailable required object, and a corrupt
-one that is detected, fails processing; success is not recorded and a consumed
-offset is not committed. While an input is checked only at its end, a corrupt
-input that the route does not read to its end can still complete and be
-committed.
+
+A missing, expired, changed, truncated or oversized object, an object store
+failure while it is read, a spool directory that is full or not writable, and
+checked copies that already fill `spool-max-bytes`, all fail the input before
+its route runs: no processor sees the payload, nothing is parked, its outcome is
+recorded `FAILED` and a consumed Kafka offset is not committed, so the record is
+read again. A changed or truncated object is read again until it is restored.
+See [Troubleshooting](troubleshooting.md#s3-replay-fails).
 
 Object storage failure during required capture also fails the message. The
 adapter never claims replayability without durable bytes.

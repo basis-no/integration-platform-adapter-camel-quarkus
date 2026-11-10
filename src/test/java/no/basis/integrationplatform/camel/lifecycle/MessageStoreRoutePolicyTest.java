@@ -671,12 +671,22 @@ class MessageStoreRoutePolicyTest {
         exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
         exchange.getMessage().setBody(new byte[]{1, 2});
 
-        PayloadStorageException failure = assertThrows(PayloadStorageException.class,
-                () -> policy.onExchangeBegin(route("orders"), exchange));
+        // Camel ignores an exception from onExchangeBegin, so the policy fails and stops the
+        // exchange instead: no processor runs, nothing is parked, and nothing is committed.
+        policy.onExchangeBegin(route("orders"), exchange);
 
+        PayloadStorageException failure = exchange.getException(PayloadStorageException.class);
         assertEquals("object store unavailable", failure.getMessage());
+        assertTrue(exchange.isRouteStop());
+        assertNull(exchange.getMessage().getBody());
         assertFalse(commit.committed);
         assertEquals(0, sink.recordCalls());
+
+        policy.onExchangeDone(route("orders"), exchange);
+
+        assertEquals(1, sink.recordCalls());
+        assertEquals(MessageStatus.FAILED, sink.result.status());
+        assertFalse(commit.committed);
     }
 
     private Route route(String routeId) {
