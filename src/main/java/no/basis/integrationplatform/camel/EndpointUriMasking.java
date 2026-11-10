@@ -25,7 +25,9 @@ import java.util.regex.Pattern;
  * {@code accountkey} or {@code connectionstring}. Both rules read the URI as given, and a run of
  * masked characters becomes one {@code xxxxxx}. Keywords an application adds with
  * {@link URISupport#addSanitizeKeywords(String)} are masked as well; the .NET adapter has no such
- * setting. A URI the patterns cannot mask within about a second is recorded as {@code xxxxxx}.
+ * setting. A URI the adapter's patterns cannot mask within about a second is recorded as
+ * {@code xxxxxx}; when keywords were added, Camel's own sanitizer also runs, and that pass is not
+ * bounded.
  */
 public final class EndpointUriMasking {
     /** The mask written in place of a credential. */
@@ -42,7 +44,8 @@ public final class EndpointUriMasking {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern CAMEL_USER_INFO_PASSWORD = Pattern.compile("(.*://.*?:)(.*)(@)");
 
-    // One deadline covers both patterns, so a URI takes at most about a second to mask.
+    // One deadline covers both of the adapter's patterns (about a second in all). Camel's own
+    // sanitizer, run only when an application added keywords, is not bounded.
     private static final long MASK_TIMEOUT_NANOS = 1_000_000_000L;
     private static final java.lang.reflect.Field EXTRA_SECRETS = extraSecretsField();
 
@@ -101,9 +104,14 @@ public final class EndpointUriMasking {
         }
         try {
             return EXTRA_SECRETS.get(null) != null;
-        } catch (ReflectiveOperationException | RuntimeException e) {
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
             return true;
         }
+    }
+
+    /** Whether Camel's added-keyword field was found, so the bounded path is used without them. */
+    static boolean addedKeywordsReadable() {
+        return EXTRA_SECRETS != null;
     }
 
     private static java.lang.reflect.Field extraSecretsField() {
@@ -111,7 +119,8 @@ public final class EndpointUriMasking {
             java.lang.reflect.Field field = URISupport.class.getDeclaredField("EXTRA_SECRETS");
             field.setAccessible(true);
             return field;
-        } catch (ReflectiveOperationException | RuntimeException e) {
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
+            // Also a missing reflection registration in a native image: assume keywords were added.
             return null;
         }
     }

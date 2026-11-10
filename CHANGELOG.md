@@ -12,7 +12,8 @@
   names containing `passphrase`, `passcode`, `privatekey`, `accesskey`,
   `accountkey` or `connectionstring`. An endpoint the patterns cannot mask
   within about a second is stored as `xxxxxx`, instead of the step waiting on
-  the pattern. See [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
+  the pattern (Camel's own sanitizer, which also runs when an application has
+  added keywords, has no such bound). See [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
   Upgrade: new attempts store the masked value; rows recorded before keep
   theirs. A query or tool that matched a stored endpoint's user name or one of
   these parameter values no longer finds it in new rows. Step keys and

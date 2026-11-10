@@ -160,11 +160,26 @@ class EndpointUriMaskingTest {
     }
 
     @Test
-    void masksKeywordsTheApplicationAddedToCamelsSanitizer() {
-        // Camel keeps added keywords for the JVM; this one appears in no other test.
-        URISupport.addSanitizeKeywords("syntheticfixturesecret");
+    void readsCamelsAddedKeywordFieldOnThisCamelVersion() {
+        // If Camel renames the field, every endpoint would also take Camel's unbounded pass.
+        assertTrue(EndpointUriMasking.addedKeywordsReadable(), "URISupport.EXTRA_SECRETS not found");
+    }
 
-        assertEquals("https://xxxxxx@target.example/a?syntheticfixturesecret=xxxxxx&page=2",
+    @Test
+    void masksKeywordsTheApplicationAddedToCamelsSanitizer() throws Exception {
+        java.lang.reflect.Field extra = URISupport.class.getDeclaredField("EXTRA_SECRETS");
+        extra.setAccessible(true);
+        Object before = extra.get(null);
+        try {
+            URISupport.addSanitizeKeywords("syntheticfixturesecret");
+
+            assertEquals("https://xxxxxx@target.example/a?syntheticfixturesecret=xxxxxx&page=2",
+                    EndpointUriMasking.mask("https://u:p@target.example/a?syntheticfixturesecret=s&page=2"));
+        } finally {
+            // Camel keeps added keywords for the JVM; restore them for the other tests.
+            extra.set(null, before);
+        }
+        assertEquals("https://xxxxxx@target.example/a?syntheticfixturesecret=s&page=2",
                 EndpointUriMasking.mask("https://u:p@target.example/a?syntheticfixturesecret=s&page=2"));
     }
 
