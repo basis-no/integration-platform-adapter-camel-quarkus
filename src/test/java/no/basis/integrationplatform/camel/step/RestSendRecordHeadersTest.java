@@ -226,6 +226,76 @@ class RestSendRecordHeadersTest {
         assertTrue(requests.isEmpty());
     }
 
+    @ParameterizedTest
+    @ValueSource(strings = {"platform-http", "netty-http"})
+    void aRestDslServiceIsLeftAsItIs(String component) throws Exception {
+        Consumed without = restService(new DefaultCamelContext(), component);
+        Consumed with = restService(context, component);
+
+        assertEquals(without.filterClass(), with.filterClass(), "The consumer keeps the component's own filter");
+        assertFalse(with.filterClass().contains("no.basis"), with.filterClass());
+        assertEquals(without.status(), with.status());
+        assertEquals(without.headerNames(), with.headerNames(), "The response carries the same headers");
+        assertEquals(without.body(), with.body());
+    }
+
+    private record Consumed(String filterClass, int status, Set<String> headerNames, String body) {
+    }
+
+    /**
+     * A REST DSL service through the component, and a rest: send to it through http in the same
+     * context; returns what an HTTP client gets from the service directly.
+     */
+    private Consumed restService(DefaultCamelContext target, String component) throws Exception {
+        int port;
+        try (var socket = new java.net.ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+        if (component.equals("platform-http")) {
+            var configuration = new org.apache.camel.component.platform.http.vertx.VertxPlatformHttpServerConfiguration();
+            configuration.setBindPort(port);
+            target.addService(new org.apache.camel.component.platform.http.vertx.VertxPlatformHttpServer(configuration));
+        }
+        int servicePort = port;
+        try (target) {
+            target.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    restConfiguration().component(component).port(servicePort)
+                            .producerComponent("http").host("127.0.0.1");
+                    rest("/svc").post("/orders/{id}").to("direct:svc");
+                    from("direct:svc").routeId("svc").setHeader("X-Reply", constant("r")).setBody(constant("ok"));
+                    from("direct:record").routeId("record").to("rest:post:svc/orders/{id}").id("post-rest");
+                }
+            });
+            target.start();
+            send(target, Map.of("Authorization", CALLER_AUTHORIZATION));
+
+            var client = java.net.http.HttpClient.newHttpClient();
+            var response = client.send(java.net.http.HttpRequest.newBuilder(
+                            java.net.URI.create("http://127.0.0.1:" + servicePort + "/svc/orders/o-1"))
+                    .header("X-Route-Token", "route-own").POST(java.net.http.HttpRequest.BodyPublishers.ofString("{}")).build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            var names = new TreeSet<String>();
+            response.headers().map().keySet().forEach(name -> names.add(name.toLowerCase(Locale.ROOT)));
+            names.remove("date");
+            String filterClass = target.getEndpoints().stream()
+                    .filter(e -> e.getEndpointUri().startsWith(component + ":"))
+                    .map(RestSendRecordHeadersTest::filterClassOf).findFirst().orElse("no consumer endpoint");
+            return new Consumed(filterClass, response.statusCode(), names, response.body());
+        }
+    }
+
+    private static String filterClassOf(Endpoint endpoint) {
+        Object filter = null;
+        if (endpoint.getComponent().getEndpointPropertyConfigurer() instanceof PropertyConfigurerGetter getter) {
+            filter = getter.getOptionValue(endpoint, "headerFilterStrategy", true);
+        }
+        if (filter == null && endpoint instanceof HeaderFilterStrategyAware aware) {
+            filter = aware.getHeaderFilterStrategy();
+        }
+        return filter == null ? "none" : filter.getClass().getName();
+    }
+
     // The Camel internals this relies on, per component, without the adapter installed.
 
     @ParameterizedTest

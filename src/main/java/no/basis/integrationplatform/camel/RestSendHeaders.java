@@ -7,6 +7,8 @@ import org.apache.camel.spi.HeaderFilterStrategy;
 import org.apache.camel.spi.HeaderFilterStrategyAware;
 import org.apache.camel.spi.InterceptSendToEndpoint;
 import org.apache.camel.spi.PropertyConfigurerGetter;
+import org.apache.camel.model.ModelCamelContext;
+import org.apache.camel.model.RouteDefinition;
 import org.apache.camel.support.EndpointHelper;
 import org.apache.camel.util.URISupport;
 
@@ -24,6 +26,9 @@ import java.util.Map;
  * around the filter the component would have used: the application's own, or the component's
  * rest filter, built for the endpoint's path and query parameters. The exchange keeps its
  * headers, so the path and query bind as before.
+ * <p>
+ * A {@code rest:} endpoint that is a route's input, a REST DSL service, is left alone: its
+ * consumer component reads the same parameters, and the filter must never become a consumer's.
  * <p>
  * Covered producer components: {@code http}, {@code vertx-http} and {@code netty-http}, also
  * subclassed. Their rest filters are loaded by name, since the adapter has no compile dependency
@@ -54,6 +59,9 @@ final class RestSendHeaders {
      * application's own filter if it set one.
      */
     static void seed(Endpoint rest) {
+        if (isRouteInput(rest)) {
+            return;
+        }
         Map<String, Object> parameters = parameters(rest);
         Object own = parameters.get(HEADER_FILTER_STRATEGY);
         if (own instanceof ForwardedCredentialHeaders.RecordFilter) {
@@ -93,6 +101,32 @@ final class RestSendHeaders {
             return endpoint instanceof HeaderFilterStrategyAware aware ? aware.getHeaderFilterStrategy() : null;
         } catch (RuntimeException e) {
             return null;
+        }
+    }
+
+    /**
+     * Whether a route consumes from the endpoint. The REST DSL adds its services as routes
+     * from {@code rest:} endpoints before Camel creates their endpoints.
+     */
+    static boolean isRouteInput(Endpoint rest) {
+        if (!(rest.getCamelContext() instanceof ModelCamelContext model)) {
+            return false;
+        }
+        String uri = normalized(rest.getCamelContext(), rest.getEndpointUri());
+        for (RouteDefinition route : List.copyOf(model.getRouteDefinitions())) {
+            String input = route.getInput() == null ? null : route.getInput().getEndpointUri();
+            if (input != null && uri != null && uri.equals(normalized(rest.getCamelContext(), input))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String normalized(CamelContext context, String uri) {
+        try {
+            return URISupport.normalizeUri(context.resolvePropertyPlaceholders(uri));
+        } catch (Exception e) {
+            return uri;
         }
     }
 

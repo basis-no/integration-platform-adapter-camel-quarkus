@@ -12,7 +12,8 @@
   record's headers. The path and query bind from the exchange's headers as
   before. A `rest:` send through another producer component fails when its
   producer is created (or at its first request), instead of sending the
-  headers. See
+  headers. A REST DSL service, a `rest:` endpoint that is a route's input, is
+  left as it is. See
   [Kafka Consumers](docs/ingress-and-scaling.md#kafka-consumers).
   Upgrade: a receiver behind a `rest:` send that got a caller's credential
   forwarded from the record no longer gets it and may answer 401; set the

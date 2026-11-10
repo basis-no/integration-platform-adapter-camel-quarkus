@@ -88,6 +88,8 @@ with the record's headers. The path and query bind from the exchange's headers
 as before, also from a header the request leaves out. A `rest:` send through
 another producer component fails when its producer is created, or at its first
 request if it reuses an endpoint created before, instead of sending the headers.
+A `rest:` endpoint that is a route's input, a REST DSL service, is left as it
+is: its consumer keeps the consumer component's own header filter.
 
 An HTTP endpoint whose header filter the adapter cannot extend fails when it is
 created, so its route does not start. An endpoint without a header filter sends
