@@ -9,9 +9,12 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
 
 ## Before You Upgrade
 
-- **Bring the Message Store to the shipped schema.** The adapter refuses to
-  start against a store that lacks a table or column it writes, and its error
-  lists the statements that add them. The schema ships in
+- **Bring the Message Store to the shipped schema.** With the Postgres sink or
+  the Postgres step store, the adapter refuses to start against a store that
+  lacks a table or column it writes, and its error lists the statements that
+  add them: `bip_message_log` and `bip_message_attempt` with the Postgres sink,
+  `bip_message_replay_audit` as well when replay is enabled, and
+  `bip_step_outcome` with the Postgres step store. The schema ships in
   `src/main/resources/db/message-store/`; the database operator applies it.
 - **Kafka header names on the newer Quarkus line.** This branch builds against
   Quarkus 3.33.4 (Camel 4.18.4), whose camel-kafka exchange headers are named
@@ -23,25 +26,27 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
   `camel.component.kafka.break-on-first-error=true`; see the
   [configuration reference](configuration.md).
 - **Classify sends.** 0.3.6 tracked every send to a non-internal endpoint as a
-  side effect. On this branch the default classifier tracks only internal
-  schemes (not as steps), write-only producers (`kafka`, `jms`, `sjms`,
-  `sjms2`, `amqp`, `amqp10`, `file`, `ftp`, `ftps`, `sftp`) and HTTP sends with
-  a safe method (`GET`, `HEAD`, `OPTIONS`, `TRACE`, as repeatable). Every other
-  send is ambiguous: every POST, PUT, PATCH or DELETE, an HTTP send with
+  side effect. On this branch the default classifier classifies internal
+  schemes as internal (not a step), write-only producers (`kafka`, `jms`,
+  `sjms`, `sjms2`, `amqp`, `amqp10`, `file`, `ftp`, `ftps`, `sftp`) as side
+  effects, which are tracked, and HTTP sends with a safe method (`GET`,
+  `HEAD`, `OPTIONS`, `TRACE`) as repeatable. Every other send is ambiguous: every POST, PUT, PATCH or DELETE, an HTTP send with
   Camel's default method, and sends such as `sql:`, `jdbc:`, `aws2-s3:` or
   `smtp:`. An ambiguous send runs on every redelivery, resend and replay and is
   not protected by the step ledger. The adapter logs a warning for it when the
   first message reaches the send, once per node and scheme, not at startup.
   Give each such send a stable node id and a role with the
   `basis.message-store.step.*-ids` properties; see
-  [Steps and idempotency](steps-and-idempotency.md). How 0.4.0 will require a
-  role is still being designed
+  [Steps and idempotency](steps-and-idempotency.md). That 0.4.0 will require a
+  role for every such send, set in the application's own code, is decided but
+  not implemented yet
   ([#68](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/68)).
 - **Remove the delivery-audit and input-audit settings.** 0.3.5 and 0.3.6
   record `direct:` request routes named in `basis.delivery-audit.routes` and
   non-Kafka inputs named in `basis.input-audit.routes`. This version implements
-  neither, and the application refuses to start when either setting has a
-  value, naming each one and what to use instead; an empty value only logs a
+  neither, and the application refuses to start when either setting, or any
+  other name under `basis.delivery-audit.` or `basis.input-audit.` (also in
+  its environment form), has a value, naming each one and what to use instead; an empty value only logs a
   warning. Remove `basis.delivery-audit.routes`: delivery audit is not
   available in this version yet
   ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)).
@@ -77,9 +82,14 @@ for Kafka with `acks=0` or a transactional producer (`transacted`,
 `failIfNoConsumers=false` (for example
 `dlq-uri=direct:park?failIfNoConsumers=false`), and for any other endpoint,
 such as `file:`. 0.3.x accepted these, and some of them could count a message
-as parked although no endpoint had accepted it. Point `dlq-uri` at a Kafka topic, or at a `direct:` route
-that the application consumes and that fails when it cannot park. See
+as parked although no endpoint had accepted it. Point `dlq-uri` at a Kafka
+topic, or at a `direct:` route that the application consumes and that fails
+when it cannot park. See
 [Terminal Kafka Failure](retry-dlq-replay.md#terminal-kafka-failure).
+
+A Kafka DLQ now gets one record per message also when the parked body is a
+collection; 0.3.6 sent one record per element, and none for an empty
+collection.
 
 ### A stopped exchange that fails is read again
 
@@ -110,7 +120,8 @@ which this version refuses (see above). 0.4 selects its message boundaries with
   starts only when every route is a Kafka input, or every route is an HTTP
   preview route.
 
-An enrolled route cannot be replayed into the input topic
+A selected route that is not a Kafka input is never replayed into the input
+topic
 ([#101](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/101)):
 startup refuses every selected route that is neither a Kafka input nor the HTTP
 preview, and the HTTP preview requires replay to be disabled. A replay
@@ -194,7 +205,10 @@ The changelog's Unreleased section has the details; in short:
 - **Redo needs a recording step store.** A replay whose `redoSteps` names a
   step is refused with `409 Conflict` when the step outcome store is `noop`,
   the default; 0.3.x had no such check. Resend without `redoSteps`, or use the
-  `postgres` step store. See [Retry, DLQ, and replay](retry-dlq-replay.md).
+  `postgres` step store. An application's own `StepOutcomeStore` that records
+  nothing should override `recordsDeliveredSteps()` to return `false`;
+  otherwise redo is still accepted. See
+  [Retry, DLQ, and replay](retry-dlq-replay.md).
 - **Credential headers are withheld on every HTTP send.** A consumed record's
   credential headers and the consumer's `kafka.*` and `CamelKafka*` headers are
   left out of every send to an `http`, `https`, `netty-http` or `vertx-http`

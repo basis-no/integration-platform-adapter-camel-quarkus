@@ -86,8 +86,8 @@ route lifecycle.
 Set the readiness probe's timeout to 3–5 seconds: while the consumer
 reconnects, Camel's Kafka health check can take more than 2 seconds to answer.
 
-The adapter's own readiness check reports only an active test profile; see
-[Testing](testing.md).
+The adapter's own readiness check is always up; it only reports the test
+profile's state as data; see [Testing](testing.md).
 
 ## Verify Locally
 
