@@ -48,6 +48,21 @@ once for each processor that the adapter does not track and that is not
 asynchronous, such as `validate`. The
 warning is harmless: Camel bridges the processor itself. Fixed for 0.4.0.
 
+## Message Id Is Also Journaled by Another Integration
+
+A warning `Message id <id> is also journaled by integration <other>;
+integration <this> records attempt <n> under the same id` means two
+integrations journal the same `x-bip-message-id` to one Message Store. The
+store keeps one summary row per message id and one attempt row per id and
+attempt, so the integration that wrote last owns the message: the other one no
+longer sees it in its view and cannot replay it, and a send with the same step
+id is skipped as already delivered. The usual cause is an upstream integration
+that publishes to this integration's input with its own `x-bip-message-id`,
+which Camel's Kafka producer forwards by default. Set a new
+`x-bip-message-id` before publishing to another integration's input, and carry
+continuity in `x-bip-correlation-id`. The warning is logged once per pair of
+integrations, then at most every ten minutes with the number of such messages.
+
 ## Ambiguous Step Warning
 
 The adapter cannot prove whether the endpoint is a safe read or a durable write.
