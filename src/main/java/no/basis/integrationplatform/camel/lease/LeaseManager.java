@@ -151,6 +151,15 @@ public class LeaseManager extends ServiceSupport {
         registrations.computeIfAbsent(name, Registration::new).required = true;
     }
 
+    private double gaugeValue(String name) {
+        Registration registration = registrations.get(name);
+        if (registration == null) {
+            return Double.NaN;
+        }
+        Lease lease = registration.current;
+        return lease.isHeld() ? 1 : lease.isUncoordinated() ? 2 : lease.isStoppedWithoutStore() ? 3 : 0;
+    }
+
     /** Whether the named work may run only under its lease. */
     boolean isRequired(String name) {
         Registration registration = registrations.get(name);
@@ -208,12 +217,13 @@ public class LeaseManager extends ServiceSupport {
         }
     }
 
-    /** Forgets the named work: stops acquiring and deletes the lease it held. The work must have stopped. */
+    /** Forgets the named work: stops acquiring, deletes the lease it held and removes its gauge. The work must have stopped. */
     void release(String name) {
         Registration registration = registrations.remove(name);
         if (registration != null) {
             registration.wanted = false;
             registration.stop();
+            registration.removeGauge();
         }
     }
 
@@ -349,6 +359,8 @@ public class LeaseManager extends ServiceSupport {
         private volatile Lease current;
         private volatile boolean wanted;
         private volatile boolean required;
+        private Gauge gauge;
+        private MeterRegistry gaugeRegistry;
         private Activation activation;
         private long startExpectedAtNanos;
 
@@ -362,20 +374,32 @@ public class LeaseManager extends ServiceSupport {
             return new Lease(name, holder, state, timing, nanoTime, clock, () -> required);
         }
 
-        /** 1 while this replica holds the lease, 0 while it waits, 2 while the route runs uncoordinated. */
+        /**
+         * 1 while this replica holds the lease, 0 while it waits, 2 while the route runs uncoordinated,
+         * 3 while it needs its lease and stays stopped because there is no Key-Value Store. The gauge
+         * reads the route's current registration, so a route removed and added again reports its new one.
+         */
         private void registerGauge() {
             MeterRegistry registry = meters.get();
             if (registry == null) {
                 return;
             }
-            Gauge.builder("integration_single_active_lease", this,
-                            registration -> registration.current.isHeld() ? 1
-                                    : registration.current.isUncoordinated() ? 2 : 0)
-                    .description("Single-active lease of a polling route on this replica:"
-                            + " 1 held, 0 waiting, 2 running uncoordinated without a Key-Value Store")
+            gauge = Gauge.builder("integration_single_active_lease", LeaseManager.this,
+                            manager -> manager.gaugeValue(name))
+                    .description("Single-active lease of a polling route on this replica: 1 held, 0 waiting,"
+                            + " 2 running uncoordinated without a Key-Value Store, 3 stopped because it needs"
+                            + " its lease and there is no Key-Value Store")
                     .tag("route", name)
                     .strongReference(true)
                     .register(registry);
+            gaugeRegistry = registry;
+        }
+
+        private void removeGauge() {
+            if (gauge != null) {
+                gaugeRegistry.remove(gauge);
+                gauge = null;
+            }
         }
 
         private synchronized void expectStart() {

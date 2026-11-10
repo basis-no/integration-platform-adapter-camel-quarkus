@@ -51,12 +51,36 @@ class SingleActiveRequiredLeaseTest {
 
         assertTrue(optional.get() > 2, "without the table an ordinary polling route runs on every replica");
         assertEquals(0, required.get(), "a route the replica check accepted only because of its lease does nothing");
-        assertEquals(0, gauge("files-to-kafka"), "waiting");
+        assertEquals(3, gauge("files-to-kafka"), "stopped: it needs its lease and there is no Key-Value Store");
         assertEquals(2, gauge("refresh"), "uncoordinated");
 
         state.provisioned = true;
         await(() -> required.get() > 0);
         assertEquals(1, gauge("files-to-kafka"), "held once the table exists");
+    }
+
+    @Test
+    void aRemovedRouteLosesItsGaugeAndARouteAddedAgainReportsItsNewLease() throws Exception {
+        install();
+        RouteBuilder tick = new RouteBuilder() {
+            @Override
+            public void configure() {
+                from("timer:tick?period=20").routeId("tick").log("tick");
+            }
+        };
+        context.addRoutes(tick);
+        context.start();
+        await(() -> gauge("tick") == 1);
+
+        context.getRouteController().stopRoute("tick");
+        context.removeRoute("tick");
+        assertTrue(meters.find("integration_single_active_lease").tag("route", "tick").gauge() == null,
+                "the gauge of a removed route is removed");
+
+        context.addRoutes(tick);
+        await(() -> meters.find("integration_single_active_lease").tag("route", "tick").gauge() != null
+                && gauge("tick") == 1);
+        assertEquals(1, gauge("tick"), "the route added again reports its own lease");
     }
 
     private double gauge(String route) {

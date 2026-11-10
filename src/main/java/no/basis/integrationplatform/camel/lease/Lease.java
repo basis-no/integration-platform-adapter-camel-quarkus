@@ -75,6 +75,8 @@ final class Lease {
     private volatile long renewalSentNanos;
     private volatile long pendingSentNanos;
     private volatile long attemptSentNanos;
+    // A required lease kept closed because there is no Key-Value Store; cleared once a store call succeeds.
+    private volatile boolean stoppedWithoutStore;
 
     // Guarded by this. Store calls happen outside the lock; results are applied under it.
     private ObjectNode value;
@@ -129,6 +131,11 @@ final class Lease {
     /** Whether the work runs on every replica because there is no Key-Value Store to coordinate it. */
     boolean isUncoordinated() {
         return status == Status.UNCOORDINATED;
+    }
+
+    /** Whether the work needs its lease and stays stopped on every replica because there is no Key-Value Store. */
+    boolean isStoppedWithoutStore() {
+        return stoppedWithoutStore && status != Status.DETACHED;
     }
 
     /** Whether this replica holds the lease. */
@@ -205,26 +212,27 @@ final class Lease {
             currentValue = value;
         }
         try {
-            KeyValueStore store = resolveStore();
+            KeyValueStore store = state.get();
             if (current == Status.HELD) {
                 renew(store, currentValue);
             } else {
                 acquire(store);
             }
-        } catch (NoKeyValueStore e) {
-            // The application has no Key-Value Store: no Message Store datasource or app.name.
-            unavailable(e.getCause().getMessage());
-        } catch (KeyValueLimitException e) {
-            limited(e);
-        } catch (KeyValueStoreException e) {
-            if (KeyValueStores.notProvisioned(e)) {
+        } catch (RuntimeException e) {
+            // The store is a CDI client proxy: its producer runs on the first call, so a missing
+            // configuration surfaces here, from any call, possibly wrapped.
+            KeyValueStoreNotConfiguredException notConfigured = KeyValueStores.notConfigured(e);
+            if (notConfigured != null) {
+                // The application has no Key-Value Store: no Message Store datasource, or no app.name.
+                unavailable(notConfigured.getMessage());
+            } else if (e instanceof KeyValueLimitException limit) {
+                limited(limit);
+            } else if (e instanceof KeyValueStoreException failure && KeyValueStores.notProvisioned(failure)) {
                 unavailable("the Message Store has no " + KeyValueStores.TABLE + " table");
             } else {
+                // Anything else is not a missing store: keep the gate closed, as for an unreachable one.
                 unreachable(e);
             }
-        } catch (RuntimeException e) {
-            // Anything else is not a missing store: keep the gate closed, as for an unreachable one.
-            unreachable(e);
         } finally {
             ObjectNode deferred = null;
             synchronized (this) {
@@ -331,26 +339,6 @@ final class Lease {
         }
     }
 
-    /** Signals that the application has no Key-Value Store, as opposed to one that fails. */
-    private static final class NoKeyValueStore extends RuntimeException {
-        NoKeyValueStore(KeyValueStoreNotConfiguredException cause) {
-            super(cause.getMessage(), cause, false, false);
-        }
-    }
-
-    private KeyValueStore resolveStore() {
-        try {
-            return state.get();
-        } catch (RuntimeException e) {
-            for (Throwable cause = e; cause != null; cause = cause.getCause()) {
-                if (cause instanceof KeyValueStoreNotConfiguredException notConfigured) {
-                    throw new NoKeyValueStore(notConfigured);
-                }
-            }
-            throw e;
-        }
-    }
-
     private void acquire(KeyValueStore store) {
         long sent = nanoTime.getAsLong();
         ObjectNode candidate = JsonNodeFactory.instance.objectNode()
@@ -438,6 +426,7 @@ final class Lease {
     }
 
     private synchronized void provisioned() {
+        stoppedWithoutStore = false;
         if (status == Status.UNCOORDINATED) {
             LOG.info("Single-active route {} stops running on every replica: the Key-Value Store table exists now, so it"
                     + " waits for {}", name, key);
@@ -501,6 +490,7 @@ final class Lease {
                 lose();
             }
             open = false;
+            stoppedWithoutStore = true;
             if (reported != Reported.UNAVAILABLE) {
                 LOG.error("Single-active route {} stays stopped on every replica: it needs its lease, because"
                         + " several replicas are declared, but the Key-Value Store is unavailable ({}); it runs"

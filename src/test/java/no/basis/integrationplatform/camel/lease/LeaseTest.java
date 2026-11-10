@@ -505,6 +505,25 @@ class LeaseTest {
     }
 
     @Test
+    void aStoreProxyWhoseProducerFailsOnTheFirstCallRunsUncoordinated() {
+        // The real store is a CDI client proxy: resolving it never fails, its producer runs on the first
+        // call, and the container may wrap what the producer threw.
+        state.beforePutIfAbsent = () -> {
+            throw new RuntimeException("Error creating the bean", new KeyValueStoreNotConfiguredException(
+                    "Key-Value Store requires an active JDBC DataSource for the Message Store"));
+        };
+
+        assertEquals(OPENED, lease.attempt());
+        assertTrue(lease.isOpen());
+        assertTrue(lease.isUncoordinated());
+
+        Lease required = new Lease("poll-orders", "pod-a", () -> state, LeaseTiming.DEFAULT, clock::nanoTime, clock,
+                () -> true);
+        assertEquals(NONE, required.attempt(), "a required lease stays closed in the same case");
+        assertFalse(required.isOpen());
+    }
+
+    @Test
     void anyOtherFailureToCreateTheStoreKeepsTheGateClosed() {
         // An ambiguous datasource, a CDI failure: not a store that does not exist, so nothing runs uncoordinated.
         Lease misconfigured = lease("pod-a", () -> {

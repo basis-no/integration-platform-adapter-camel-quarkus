@@ -32,6 +32,7 @@ public final class SingleActiveRoutes {
     public static final String EXCLUDED_ROUTES = "basis.message-store.single-active.excluded-routes";
 
     private static final Set<String> SCHEDULED_SCHEMES = Set.of("timer", "quartz", "cron", "scheduler");
+    private static final Set<String> TRIGGER_SCHEMES = Set.of("timer", "quartz", "cron");
     private static final String MASTER_SCHEME = "master";
 
     private SingleActiveRoutes() {
@@ -141,6 +142,11 @@ public final class SingleActiveRoutes {
             }
         }
         return false;
+    }
+
+    /** Whether the URI is a trigger, whose exchanges the adapter gates: {@code timer}, {@code quartz} or {@code cron}. */
+    static boolean isTrigger(String uri) {
+        return uri != null && TRIGGER_SCHEMES.contains(scheme(uri));
     }
 
     private static String scheme(String uri) {

@@ -195,6 +195,9 @@ such route only on the replica that holds its lease, the Key-Value Store key
   Make such work idempotent across replicas.
 - **Give polling routes stable ids.** The lease is named after the route id;
   a generated id can differ between image versions.
+- **A polling endpoint whose consumer the adapter cannot gate** (neither a
+  scheduled-poll consumer nor a timer, Quartz or cron trigger) refuses to
+  start; list it in `basis.message-store.single-active.excluded-routes`.
 - **Without `bip_key_value`**, or without a Key-Value Store (no Message Store
   datasource or `app.name`), polling routes run on every replica as in 0.3.x,
   with one warning per route. An ingress normalization route that the replica

@@ -1,6 +1,7 @@
 package no.basis.integrationplatform.camel.lease;
 
 import no.basis.integrationplatform.camel.keyvalue.KeyValueStoreException;
+import no.basis.integrationplatform.camel.keyvalue.KeyValueStoreNotConfiguredException;
 
 import java.sql.SQLException;
 
@@ -12,6 +13,19 @@ final class KeyValueStores {
     private static final String UNDEFINED_TABLE = "42P01";
 
     private KeyValueStores() {
+    }
+
+    /**
+     * Returns the reason the application has no Key-Value Store, found anywhere in the failure's
+     * cause chain, or {@code null} when the failure is something else.
+     */
+    static KeyValueStoreNotConfiguredException notConfigured(Throwable failure) {
+        for (Throwable cause = failure; cause != null; cause = cause.getCause()) {
+            if (cause instanceof KeyValueStoreNotConfiguredException notConfigured) {
+                return notConfigured;
+            }
+        }
+        return null;
     }
 
     /**

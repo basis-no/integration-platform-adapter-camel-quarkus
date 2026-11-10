@@ -50,10 +50,19 @@ public class SingleActiveConsumerStrategy extends LifecycleStrategySupport {
                 || manager.current(route.getRouteId()) == null) {
             return;
         }
-        manager.expectStart(route.getRouteId());
         if (!(service instanceof ScheduledPollConsumer consumer)) {
-            return;
+            if (SingleActiveRoutes.isTrigger(route.getEndpoint().getEndpointUri())) {
+                // A timer, Quartz or cron trigger: the route policy gates each exchange instead.
+                manager.expectStart(route.getRouteId());
+                return;
+            }
+            // Gating its exchanges would drop items the consumer has already taken from its source.
+            throw new IllegalStateException("Polling route '" + route.getRouteId() + "' has a consumer ("
+                    + service.getClass().getName() + ") whose polls the adapter cannot hold back, so it cannot"
+                    + " run it on one replica at a time; list the route in " + SingleActiveRoutes.EXCLUDED_ROUTES
+                    + " to run it on every replica");
         }
+        manager.expectStart(route.getRouteId());
         PollingConsumerPollStrategy configured = consumer.getPollStrategy();
         if (configured instanceof GatedPollStrategy gated && route.getRouteId().equals(gated.routeId())) {
             return;

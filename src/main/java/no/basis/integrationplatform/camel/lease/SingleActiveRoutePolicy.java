@@ -3,7 +3,7 @@ package no.basis.integrationplatform.camel.lease;
 import org.apache.camel.Exchange;
 import org.apache.camel.Route;
 import org.apache.camel.support.RoutePolicySupport;
-import org.apache.camel.support.ScheduledPollEndpoint;
+import org.apache.camel.support.ScheduledPollConsumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -22,7 +22,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
  * expected start right before the consumer starts so an early tick waits. It
  * is released, after the work in flight has finished, when the route stops or
  * suspends, so a route an operator stops on one replica is taken over by
- * another. For a {@link ScheduledPollEndpoint} consumer the poll
+ * another. For a {@link ScheduledPollConsumer} the poll
  * is the work and the strategy gates it in the consumer. For a trigger consumer
  * (timer, quartz, cron) the exchange is the work: a trigger that fires while
  * the gate is closed first waits, bounded, for an acquisition attempt of this
@@ -34,7 +34,6 @@ final class SingleActiveRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(SingleActiveRoutePolicy.class);
 
     private final LeaseManager manager;
-    private volatile boolean gateExchanges;
     private final AtomicBoolean unregisteredWarned = new AtomicBoolean();
     // The lease instance whose first skipped trigger was logged at INFO; later skips log at DEBUG.
     private volatile Lease skipLogged;
@@ -48,7 +47,6 @@ final class SingleActiveRoutePolicy extends RoutePolicySupport {
         super.onInit(route);
         // Registered closed; the lease is acquired once Camel starts the consumer, not from the autoStartup flag.
         manager.lease(route.getRouteId());
-        gateExchanges = !(route.getEndpoint() instanceof ScheduledPollEndpoint);
     }
 
     @Override
@@ -88,7 +86,10 @@ final class SingleActiveRoutePolicy extends RoutePolicySupport {
 
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
-        if (!gateExchanges) {
+        // Decided by the consumer, as the poll gate is: a consumer whose polls are gated needs no
+        // exchange gate; any other consumer of a coordinated route is a trigger (others refuse to start).
+        if (route.getConsumer() instanceof ScheduledPollConsumer consumer
+                && consumer.getPollStrategy() instanceof GatedPollStrategy) {
             return;
         }
         String routeId = route.getRouteId();

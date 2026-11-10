@@ -31,19 +31,27 @@ public class SingleActiveRoutePolicyFactory implements RoutePolicyFactory {
 
     private final LeaseManager manager;
     private final Set<String> excluded;
+    private final boolean singleReplica;
 
     /**
      * Creates the factory on the replica's lease manager.
      *
      * @param manager lease manager of this replica
      * @param excludedRoutes ids of polling routes that run on every replica
+     * @param deploymentReplicas declared replica count, if the deployment sets it
      */
     @Inject
     public SingleActiveRoutePolicyFactory(
             LeaseManager manager,
-            @ConfigProperty(name = SingleActiveRoutes.EXCLUDED_ROUTES) Optional<String> excludedRoutes) {
+            @ConfigProperty(name = SingleActiveRoutes.EXCLUDED_ROUTES) Optional<String> excludedRoutes,
+            @ConfigProperty(name = "basis.message-store.deployment-replicas") Optional<Integer> deploymentReplicas) {
         this.manager = manager;
         this.excluded = SingleActiveRoutes.excludedRoutes(excludedRoutes);
+        this.singleReplica = deploymentReplicas.equals(Optional.of(1));
+    }
+
+    SingleActiveRoutePolicyFactory(LeaseManager manager, Optional<String> excludedRoutes) {
+        this(manager, excludedRoutes, Optional.empty());
     }
 
     SingleActiveRoutePolicyFactory(LeaseManager manager) {
@@ -69,6 +77,10 @@ public class SingleActiveRoutePolicyFactory implements RoutePolicyFactory {
                         + " is added later", SingleActiveRoutes.EXCLUDED_ROUTES, routeId);
                 continue;
             }
+            if (SingleActiveRoutes.isFiniteTimer(camelContext, definition)) {
+                // Never leased anyway; listing it changes nothing and is harmless.
+                continue;
+            }
             if (!SingleActiveRoutes.coordinates(camelContext, definition)) {
                 throw new IllegalStateException(SingleActiveRoutes.EXCLUDED_ROUTES + " lists '" + routeId
                         + "', which is not a route the adapter runs under a lease; list only the ids of timer,"
@@ -83,10 +95,15 @@ public class SingleActiveRoutePolicyFactory implements RoutePolicyFactory {
             return null;
         }
         if (SingleActiveRoutes.isFiniteTimer(camelContext, definition)) {
-            LOG.warn("Timer route {} has a finite repeatCount, so it runs on every replica, not under a lease:"
-                    + " a tick dropped on a replica without the lease, such as the new pod of a rolling update,"
-                    + " would never fire again. Make it idempotent across replicas, or use a recurring timer",
-                    routeId);
+            String message = "Timer route {} has a finite repeatCount, so it runs on every replica, not under a"
+                    + " lease: a tick dropped on a replica without the lease, such as the new pod of a rolling"
+                    + " update, would never fire again. Make it idempotent across replicas, or use a recurring"
+                    + " timer";
+            if (singleReplica || excluded.contains(routeId)) {
+                LOG.info(message, routeId);
+            } else {
+                LOG.warn(message, routeId);
+            }
             return null;
         }
         if (!SingleActiveRoutes.coordinates(camelContext, definition)) {

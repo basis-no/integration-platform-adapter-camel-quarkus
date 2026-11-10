@@ -31,7 +31,13 @@ A route is coordinated when its consumer polls on a schedule:
 - its scheme is `timer:`, `quartz:` or `cron:`, except a `timer:` with a
   finite `repeatCount` (see [Finite Timers](#finite-timers)).
 
-Property placeholders in the `from` URI are resolved first. Every other route
+Property placeholders in the `from` URI are resolved first. The work is gated
+by the consumer: a scheduled-poll consumer by its polls, a timer, Quartz or
+cron trigger by its exchanges. A route on a polling endpoint whose consumer is
+neither refuses to start, naming the route: the adapter could not hold its
+polls back, and stopping its exchanges would drop items the consumer has
+already taken. List such a route in
+`basis.message-store.single-active.excluded-routes` to run it on every replica. Every other route
 is left alone: `kafka:`, `platform-http:`, `jms:`/`sjms2:` queues,
 `azure-servicebus:` and other push consumers, `direct:` and `seda:`, and a
 `master:` route, which coordinates itself through the cluster service the
@@ -82,7 +88,8 @@ route:
 
 A `timer:` with a finite `repeatCount`, such as a one-shot initialization
 timer `timer:init?repeatCount=1`, is not coordinated: it runs on every replica,
-as before, and startup logs a WARN naming it. Under a lease its few ticks
+as before, and startup logs a WARN naming it (at INFO with one declared replica
+or when the route is listed in the exclusion property, which it may be). Under a lease its few ticks
 could be dropped for good: on the new pod of a rolling update the tick fires
 while the old pod still holds the lease, and a timer does not fire it again.
 Make such work idempotent across replicas (for example with a
@@ -161,8 +168,11 @@ renewal and one replica, possibly the same, acquires a new lease.
 
 With a Micrometer registry in the application, the gauge
 `integration_single_active_lease{route="<routeId>"}` reports each coordinated
-route on this replica: `1` while it holds the lease, `0` while it waits, and
-`2` while it runs uncoordinated without a Key-Value Store.
+route on this replica: `1` while it holds the lease, `0` while it waits, `2`
+while it runs uncoordinated without a Key-Value Store, and `3` while it needs
+its lease and stays stopped because there is no Key-Value Store. Exactly one
+replica should report `1` for a route; if no replica reports `1` or `2` for a
+route, nobody runs it. The gauge of a route that is removed is removed with it.
 
 The adapter logs the protocol with the route id and the holder: at INFO when a
 lease is acquired or released, at WARN when a route's gate closes because the
@@ -230,7 +240,8 @@ check of ingress normalization routes (see
 ## Without a Key-Value Store
 
 When the Message Store has no `bip_key_value` table, or the integration has no
-Message Store datasource or `app.name` (so it has no Key-Value Store), polling
+Message Store datasource, an inactive one (`quarkus.datasource.active=false`) or
+no `app.name` (so it has no Key-Value Store), polling
 routes work on every replica, as earlier adapter versions do, and the adapter
 logs one warning per route. Only these two conditions open the gate without a
 lease; any other failure to create or call the Key-Value Store keeps it closed.

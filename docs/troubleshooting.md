@@ -61,6 +61,9 @@ Common fail-fast causes include:
 - unsafe polling with missing or multiple declared replicas;
 - an id in `basis.message-store.single-active.excluded-routes` that names a
   route the adapter does not run under a lease;
+- a polling route whose consumer the adapter cannot gate (neither a
+  scheduled-poll consumer nor a timer, Quartz or cron trigger); list it in
+  `basis.message-store.single-active.excluded-routes`;
 - store schema version mismatch in `bip_contract`;
 - a Message Store without a table or column this adapter writes, for example
   one provisioned for an earlier adapter version. The error names the missing
@@ -141,7 +144,9 @@ deployment count in application properties; the deployment sets it.
   (ERROR "stays stopped on every replica: it needs its lease"): provision the
   table, or declare one replica.
 - The gauge `integration_single_active_lease{route=…}` shows this replica's
-  state: `1` held, `0` waiting, `2` uncoordinated.
+  state: `1` held, `0` waiting, `2` uncoordinated, `3` stopped because the
+  route needs its lease and there is no Key-Value Store. If no replica
+  reports `1` or `2` for a route, nobody runs it.
 
 ## Replayed Route Has a Missing Response Body
 

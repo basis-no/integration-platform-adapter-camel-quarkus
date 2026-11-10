@@ -21,9 +21,15 @@
   fire again. An ingress normalization route whose polling source is
   coordinated this way is accepted with several declared replicas, and then
   requires its lease: without `bip_key_value` it does no work and logs an
-  ERROR, instead of running on every replica. The gauge
+  ERROR, instead of running on every replica. A polling route whose consumer
+  the adapter cannot gate (neither a scheduled-poll consumer nor a timer,
+  Quartz or cron trigger) refuses to start unless it is excluded. The gauge
   `integration_single_active_lease{route}` reports 1 held, 0 waiting, 2
-  uncoordinated. See [Single-Active Routes](docs/single-active.md).
+  uncoordinated, 3 stopped because the route needs its lease and there is no
+  Key-Value Store. The Key-Value Store's first call fails with the new
+  `KeyValueStoreNotConfiguredException` (an `IllegalStateException`) when the
+  application has no Message Store datasource, an inactive one, or no
+  `app.name`. See [Single-Active Routes](docs/single-active.md).
   Upgrade: with `bip_key_value` provisioned, a polling route that ran on every
   replica now runs on one; list a route that must run on every replica (a
   per-replica cache refresh or heartbeat) in

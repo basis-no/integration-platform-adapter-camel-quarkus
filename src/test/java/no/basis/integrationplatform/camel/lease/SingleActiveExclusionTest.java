@@ -93,6 +93,76 @@ class SingleActiveExclusionTest {
     }
 
     @Test
+    void anExcludedFiniteTimerIsAccepted() throws Exception {
+        SingleActiveRoutePolicyFactory factory = install(Optional.of("init"));
+        context.addRoutes(new RouteBuilder() {
+            @Override
+            public void configure() {
+                from("timer:init?repeatCount=1").routeId("init").log("x");
+            }
+        });
+        context.start();
+
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> factory.verifyExclusions(context),
+                "a finite timer is never leased, so listing it is harmless");
+    }
+
+    @Test
+    void aPollingEndpointWhoseConsumerTheAdapterCannotGateRefusesToStartUnlessExcluded() throws Exception {
+        context.addComponent("pushpoll", new PushConsumerPollComponent());
+        install(Optional.empty());
+        context.addRoutes(new RouteBuilder() {
+            @Override
+            public void configure() {
+                from("pushpoll:items").routeId("push-items").log("x");
+            }
+        });
+
+        Exception error = assertThrows(Exception.class, context::start);
+        StringBuilder chain = new StringBuilder();
+        for (Throwable cause = error; cause != null; cause = cause.getCause()) {
+            chain.append(cause.getMessage()).append(' ');
+        }
+        String messages = chain.toString();
+        assertTrue(messages.contains("push-items"), messages);
+        assertTrue(messages.contains(SingleActiveRoutes.EXCLUDED_ROUTES), messages);
+    }
+
+    @Test
+    void anExcludedPollingEndpointWithAnUngateableConsumerStarts() throws Exception {
+        context.addComponent("pushpoll", new PushConsumerPollComponent());
+        install(Optional.of("push-items"));
+        context.addRoutes(new RouteBuilder() {
+            @Override
+            public void configure() {
+                from("pushpoll:items").routeId("push-items").log("x");
+            }
+        });
+
+        context.start();
+        assertEquals(org.apache.camel.ServiceStatus.Started, context.getRouteController().getRouteStatus("push-items"));
+    }
+
+    /** A polling endpoint whose consumer is event-driven, not a scheduled poll consumer. */
+    static final class PushConsumerPollComponent extends org.apache.camel.support.DefaultComponent {
+        @Override
+        protected org.apache.camel.Endpoint createEndpoint(String uri, String remaining,
+                                                           java.util.Map<String, Object> parameters) {
+            return new org.apache.camel.support.ScheduledPollEndpoint(uri, this) {
+                @Override
+                public org.apache.camel.Producer createProducer() {
+                    throw new UnsupportedOperationException();
+                }
+
+                @Override
+                public org.apache.camel.Consumer createConsumer(org.apache.camel.Processor processor) {
+                    return new org.apache.camel.support.DefaultConsumer(this, processor);
+                }
+            };
+        }
+    }
+
+    @Test
     void anExcludedIdThatIsNotAPollingRouteRefusesTheStart() throws Exception {
         SingleActiveRoutePolicyFactory factory = install(Optional.of("transform"));
         context.addRoutes(new RouteBuilder() {
