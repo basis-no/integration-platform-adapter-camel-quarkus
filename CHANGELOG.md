@@ -16,8 +16,12 @@
   offsets continues from them. A new consumer group, such as a new
   integration's or a changed `groupId`, now starts at the beginning of each
   partition's retained records instead of at the end; to start one at the end,
-  set its offsets with the Kafka tools before its first start. Kafka routes
-  that are not boundaries are not checked.
+  set its offsets with the Kafka tools before its first start. The same holds
+  for a group whose committed offsets expired on the broker (stopped for longer
+  than the broker's offset retention), and for a Kafka boundary without a
+  `groupId`, for which Camel generates a new group on every start: it now
+  reprocesses every retained record on each start. Give every Kafka boundary a
+  stable `groupId`. Kafka routes that are not boundaries are not checked.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,
