@@ -64,6 +64,7 @@ Start with the [documentation index](docs/index.md).
 | Publish a snapshot for remote acceptance or make a final release | [Releasing](docs/releasing.md) |
 | Find every property, default, environment variable, and safety note | [Configuration reference](docs/configuration.md) |
 | Diagnose startup, replay, persistence, or consumer problems | [Troubleshooting](docs/troubleshooting.md) |
+| Upgrade an integration from 0.3.x to the unreleased 0.4.0 | [Upgrading from 0.3.x to 0.4.0](docs/upgrading-to-0.4.md) |
 
 ## Current Status
 
@@ -86,10 +87,18 @@ Start with the [documentation index](docs/index.md).
   replay topic named by its row, and does not check that the route that
   recorded it still consumes that topic. The 0.3.x releases refuse both.
   Fixed for 0.4.0; see [Manual Replay](docs/retry-dlq-replay.md#manual-replay).
+- 0.3.x and 0.4.0-rc1 put no timeout on a Message Store call: an outcome or
+  step-outcome write that waits on a lock or on a database that stopped
+  answering holds the Kafka consumer thread without limit. Fixed for 0.4.0
+  with statement, lock and network timeouts; see
+  [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts).
 - 0.3.x and 0.4.0-rc1 let Camel warn at route start that the adapter's
   intercept strategy "does not return an AsyncProcessor instance", once per
   untracked processor such as `validate`. Harmless; fixed for 0.4.0. See
   [Troubleshooting](docs/troubleshooting.md#route-fails-at-startup).
+- On `main`, as on 0.3.6, the adapter warns when another integration already
+  journaled the same message id; see
+  [Troubleshooting](docs/troubleshooting.md#message-id-is-also-journaled-by-another-integration).
 - On `main`, a replay request with `redoSteps` is refused unless delivered
   steps are recorded (the `postgres` step store); see
   [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
@@ -110,6 +119,11 @@ Start with the [documentation index](docs/index.md).
 - On `main`, only a managed Kafka input is parked in the DLQ, as in 0.3.6; a
   request on an exchange of its own, or a timer or poller input, fails back to
   its caller. See [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- On `main`, the failure handling follows the input type: a Kafka boundary
+  parks in the DLQ, an HTTP audit-only boundary records `FAILED`, answers its
+  caller and is never replayable, and the two can run in one application; see
+  [Failure and Replay per Input Type](docs/retry-dlq-replay.md#failure-and-replay-per-input-type).
+  A `jms:queue:` input needs `acknowledgementModeName=CLIENT_ACKNOWLEDGE`.
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - The 0.3 line continues as a maintained series, with its current scope (one

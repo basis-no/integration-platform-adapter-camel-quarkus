@@ -11,6 +11,108 @@
   history and summary show the same expiry. A rolling-upgrade test runs the
   released 0.3.6 adapter next to this one against one Message Store. No schema
   change.
+- The adapter logs a warning when it journals a message id that another
+  integration already journaled on the same Message Store, as adapter 0.3.6
+  does: once per pair of integrations, then at most every ten minutes with the
+  number of such messages since. The Message Store keeps one summary row per
+  message id and one attempt row per id and attempt, so a downstream
+  integration that adopts the upstream's forwarded `x-bip-message-id` takes
+  over its rows; before, `main` did this without a log line. A replay by the
+  same integration is not reported. With the optional message recovery SQL or
+  row-level isolation between integrations, the refused write is the signal
+  instead. Give each integration its own `x-bip-message-id` and carry
+  continuity in `x-bip-correlation-id`. The warning goes away when each
+  integration owns its message ids
+  ([#30](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/30)).
+- The failure handling follows the input type instead of one global setting.
+  A Kafka boundary parks a failed message in the DLQ and commits after it, as
+  before. An HTTP audit-only boundary records `FAILED`, hands the failure back
+  to its caller and is never replayable (metadata-only, `replay_disabled_reason`
+  "a synchronous HTTP boundary is not replayable"), whatever
+  `basis.message-store.failure-mode` and `basis.message-store.replay.enabled`
+  say. So both can run in one application: add the HTTP route id to
+  `basis.message-store.boundary-routes` next to `auto`, for example
+  `auto,receive-order`. Before, the preview needed `failure-mode=record-failed` and
+  `replay.enabled=false`, and startup refused it next to a Kafka boundary. A
+  synchronous HTTP request remains not replayable in 0.4; to make its downstream
+  work replayable, publish it to the Kafka input. The docs have a table of what
+  happens to a failure, and where a replay starts, per input type
+  ([Failure and Replay per Input Type](docs/retry-dlq-replay.md#failure-and-replay-per-input-type)),
+  and the JMS rules for normalized queues
+  ([JMS Queues](docs/ingress-and-scaling.md#jms-queues)).
+  Upgrade: nothing to do for an existing configuration. A preview application
+  may drop `failure-mode=record-failed` and `replay.enabled=false`;
+  `record-failed` is still accepted, and still refused together with a Kafka
+  boundary. A `jms:queue:` normalization input needs
+  `acknowledgementModeName=CLIENT_ACKNOWLEDGE`: with camel-jms's default
+  `AUTO_ACKNOWLEDGE`, a message whose route failed is not delivered again
+  ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
+- Every statement of a Postgres sink or Postgres step outcome store call is
+  bounded: the call runs in its own transaction with a statement timeout
+  (`basis.message-store.statement-timeout`, default 10 s) and a lock timeout
+  (`basis.message-store.lock-timeout`, default 5 s), set for that transaction
+  only, each statement has a JDBC query timeout of the statement timeout, and
+  the JDBC network timeout is the statement timeout plus 5 seconds. At the
+  defaults a step-outcome call ends within about 10 s and the sink's record
+  (up to four statements) within about 40 s. Before, a call waited without
+  limit on a held lock or a database that stopped answering, and held the
+  Kafka consumer thread past `max.poll.interval.ms`. A timeout is a Message
+  Store failure: the record is not committed and is read again. Startup
+  refuses a timeout under 1 ms, or a lock timeout longer than the statement
+  timeout. On a connection already in an application transaction (such as a
+  JTA transaction), the step outcome store joins it as before and only the
+  query and network timeouts apply.
+  A commit that PostgreSQL reports with a warning is a store failure too: a
+  synchronous commit whose wait for the standby was cancelled returns with only
+  a warning ("committed locally, but might not have been replicated"), and the
+  record is now read again and its outcome written again (the writes are
+  idempotent) instead of being committed to Kafka. `statement_timeout` does not
+  end a synchronous commit's wait; the network timeout does. The call's own
+  transaction sets `client_min_messages` to `warning`, so that a role or
+  database setting of `error` cannot hide the warning.
+  Upgrade: an outcome or step-outcome statement that legitimately needs longer
+  fails now; raise the property. Set `loginTimeout` in the JDBC URL as well
+  (see [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts)).
+- [Upgrading from 0.3.x to 0.4.0](docs/upgrading-to-0.4.md) collects what to
+  do before upgrading, the behaviour that changed on purpose (the stricter
+  `dlq-uri` check, a stopped exchange that fails being read again,
+  `boundary-routes`, object-backed inputs parked as their claim check, with
+  its known limitation) and the upgrade actions below. The getting-started
+  page documents the Camel health bridge and the readiness probe timeout, and
+  the payload storage page the edge of the replay expiry cap, which until now
+  were only in the 0.3.6 notes.
+- Startup refuses a credential-like name in
+  `basis.message-store.step.output-checkpoint.header-names`, naming each one,
+  by the rule that masks header values in parked DLQ records (`Authorization`,
+  cookies, names containing `token`, `secret`, `session`, `auth` and the like,
+  names ending in `-key` or `_key`). A checkpoint is stored in the Message Store for the
+  payload retention and restored on replay, so a credential in it was kept and
+  reused. The documentation of output-producing side effects now says what a
+  crash between the call and the checkpoint write does (the step runs again
+  with the same `Idempotency-Key`, so the receiver must answer it with the same
+  output; pinned by a test), what a checkpoint stores, where, for how long, and
+  that the adapter does not encrypt it.
+  Upgrade: remove credential-like names from `header-names`; an application
+  that listed one no longer starts. Obtain a fresh credential on each attempt.
+  The rule goes by the name, so harmless headers such as `X-Partition-Key`,
+  `X-Idempotency-Key`, `X-Author` or `X-Session-Count` are refused too: copy
+  the value to an exchange property and list it in `property-names` instead.
+- A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
+  the endpoint named in the adapter's warnings mask credentials by the .NET
+  adapter's rule, so both adapters store the same value: besides what Camel's
+  `URISupport.sanitizeUri` masked, the whole user info
+  (`https://xxxxxx@host/…`) and the values of the query parameters `key`,
+  `code`, `sig`, `pwd`, names that are credential-like by the DLQ header rule
+  (such as `Signature`, `X-Amz-Credential` or a name ending in `-key`), and
+  names containing `passphrase`, `passcode`, `privatekey`, `accesskey`,
+  `accountkey` or `connectionstring`. An endpoint the patterns cannot mask
+  within about a second is stored as `xxxxxx`, instead of the step waiting on
+  the pattern (Camel's own sanitizer, which also runs when an application has
+  added keywords, has no such bound). See [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
+  Upgrade: new attempts store the masked value; rows recorded before keep
+  theirs. A query or tool that matched a stored endpoint's user name or one of
+  these parameter values no longer finds it in new rows. Step keys and
+  classification by node id are unchanged.
 - The `ip-slow-backend` route configuration caps each redelivery delay at 20
   seconds: it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before
   the configured failure mode applies. Before, the delays doubled up to Camel's

@@ -77,6 +77,13 @@ in the same transaction, so history and summary show the same expiry for its
 object attempts. A message whose earlier attempts were inline, or written by an
 older adapter version, keeps those attempt rows' own expiries.
 
+The cap counts from the earliest outcome still recorded. Recording the same
+attempt again replaces that attempt's outcome time, for example when the
+original record is consumed again after a replay. If it was the earliest
+outcome, a later replay's cap starts from the next earliest one, so it can
+reach past first receipt plus twice the retention by up to the time between
+those two outcomes.
+
 Cleanup removes inline bytes or the S3 object, sets `payload_deleted_at`, and
 marks the message non-replayable while retaining lifecycle audit. Bucket
 lifecycle rules are a safety net for orphaned objects, not the database source

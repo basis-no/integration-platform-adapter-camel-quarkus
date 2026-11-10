@@ -1,6 +1,9 @@
 package no.basis.integrationplatform.camel.store;
 
+import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.sql.Connection;
@@ -9,13 +12,19 @@ import java.sql.ResultSet;
 import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.sql.Types;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.time.temporal.ChronoUnit;
+import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 /** Transactionally upserts terminal attempts and current message state in Postgres. */
 public class PostgresMessageStoreSink implements MessageStoreSink {
+    private static final Logger LOG = LoggerFactory.getLogger(PostgresMessageStoreSink.class);
+    static final Duration SHARED_ID_WARNING_INTERVAL = Duration.ofMinutes(10);
     /** Canonical current-message table. */
     public static final String MESSAGE_LOG_TABLE = "bip_message_log";
     /** Canonical per-attempt history table. */
@@ -84,7 +93,14 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             select payload_expires_at from bip_message_log where message_id = ?
             """;
 
+    // The CTE reads another integration that already journaled this message id, without
+    // an extra round trip. Its snapshot is taken before the insert.
     private static final String UPSERT_MESSAGE_ATTEMPT_SQL = """
+            with other as (
+                select integration from bip_message_attempt
+                where message_id = ? and integration is distinct from ?
+                limit 1
+            )
             insert into bip_message_attempt (
                 message_id,
                 attempt,
@@ -136,6 +152,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 occurred_at = excluded.occurred_at,
                 steps_json = excluded.steps_json,
                 error = excluded.error
+            returning (select integration from other)
             """;
 
     private static final String UPDATE_ATTEMPT_EXPIRY_SQL = """
@@ -151,6 +168,9 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     private final DataSource dataSource;
     private final Duration retention;
     private final MessageStatusEventJson serializer;
+    private final MessageStoreTimeouts timeouts;
+    private final Clock clock;
+    private final Map<String, SharedIdReport> sharedIdReports = new ConcurrentHashMap<>();
 
     /**
      * Creates a direct Postgres outcome sink.
@@ -172,13 +192,63 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     }
 
     PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer) {
-        this(dataSource, serializer, null);
+        this(dataSource, serializer, (Duration) null);
     }
 
     PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Duration retention) {
+        this(dataSource, serializer, retention, MessageStoreTimeouts.DEFAULT);
+    }
+
+    PostgresMessageStoreSink(
+            DataSource dataSource, MessageStatusEventJson serializer, Duration retention, MessageStoreTimeouts timeouts) {
+        this(dataSource, serializer, retention, timeouts, Clock.systemUTC());
+    }
+
+    PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Clock clock) {
+        this(dataSource, serializer, null, MessageStoreTimeouts.DEFAULT, clock);
+    }
+
+    PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Duration retention,
+            MessageStoreTimeouts timeouts, Clock clock) {
         this.dataSource = dataSource;
         this.serializer = serializer;
+        this.clock = clock;
         this.retention = retention;
+        this.timeouts = timeouts;
+    }
+
+    /**
+     * bip_message_log keeps one row per message id and bip_message_attempt one per id and
+     * attempt, so two integrations on one Message Store can replace each other's rows. In a
+     * chain every message collides: warn once per integration pair, then at most every
+     * {@link #SHARED_ID_WARNING_INTERVAL} with the number of collisions since. Integration-owned
+     * message ids remove the collision, and with it this warning.
+     */
+    private void reportSharedMessageId(String other, MessageAttemptResult result) {
+        SharedIdReport report = sharedIdReports.computeIfAbsent(other + "\u0000" + result.integration(),
+                ignored -> new SharedIdReport());
+        long collisions = report.collisions.incrementAndGet();
+        Instant now = clock.instant();
+        synchronized (report) {
+            if (report.lastWarning != null && now.isBefore(report.lastWarning.plus(SHARED_ID_WARNING_INTERVAL))) {
+                return;
+            }
+            long since = collisions - report.collisionsAtLastWarning;
+            report.lastWarning = now;
+            report.collisionsAtLastWarning = collisions;
+            LOG.warn("Message id {} is also journaled by integration {}; integration {} records attempt {} under the "
+                            + "same id. The Message Store keeps one summary row per message id and one attempt row per "
+                            + "id and attempt, so the two integrations can replace each other's records. {} such "
+                            + "message(s) for this pair since the last warning. Mint a new x-bip-message-id per "
+                            + "integration and keep continuity in x-bip-correlation-id",
+                    result.messageId(), other, result.integration(), result.attempt(), since);
+        }
+    }
+
+    private static final class SharedIdReport {
+        private final AtomicLong collisions = new AtomicLong();
+        private long collisionsAtLastWarning;
+        private Instant lastWarning;
     }
 
     /**
@@ -194,7 +264,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             return requested;
         }
         Instant firstReceipt = result.occurredAt();
-        try (PreparedStatement statement = connection.prepareStatement(FIRST_RECEIPT_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, FIRST_RECEIPT_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.integration());
             try (ResultSet earliest = statement.executeQuery()) {
@@ -211,27 +281,21 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     @Override
     public void record(MessageAttemptResult result) {
-        try (Connection connection = dataSource.getConnection()) {
-            boolean previousAutoCommit = connection.getAutoCommit();
-            connection.setAutoCommit(false);
-            try {
+        try {
+            timeouts.inTransaction(dataSource, connection -> {
                 // History first, then the summary, as adapter 0.3.6 does: both lines take the row
                 // locks in one order, so they cannot deadlock during a rolling upgrade. The summary
                 // keeps an object payload's first expiry; the history row takes it within this
-                // transaction, so no reader sees the provisional value.
-                Instant requestedExpiry = cappedInlineExpiry(connection, result);
+                // transaction, so no reader sees the provisional value. The database keeps
+                // microseconds, so the requested expiry is bound at that precision.
+                Instant requestedExpiry = microseconds(cappedInlineExpiry(connection, result));
                 upsertMessageAttempt(connection, result, requestedExpiry);
                 Instant keptExpiry = upsertMessageLog(connection, result, requestedExpiry);
-                if ("s3_object".equals(result.payloadStorage()) && !sameMicrosecond(keptExpiry, requestedExpiry)) {
+                if ("s3_object".equals(result.payloadStorage()) && !Objects.equals(keptExpiry, requestedExpiry)) {
                     updateAttemptExpiry(connection, result, keptExpiry);
                 }
-                connection.commit();
-            } catch (Exception e) {
-                connection.rollback();
-                throw e;
-            } finally {
-                connection.setAutoCommit(previousAutoCommit);
-            }
+                return null;
+            });
         } catch (Exception e) {
             throw new MessageStoreSinkException("Failed to record message attempt " + result.messageId()
                     + "/" + result.attempt(), e);
@@ -240,7 +304,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     private void updateAttemptExpiry(Connection connection, MessageAttemptResult result, Instant payloadExpiresAt)
             throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPDATE_ATTEMPT_EXPIRY_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPDATE_ATTEMPT_EXPIRY_SQL)) {
             setTimestampOrNull(statement, 1, payloadExpiresAt);
             statement.setString(2, result.messageId());
             statement.setInt(3, result.attempt());
@@ -249,48 +313,54 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
         }
     }
 
-    // The database keeps microseconds; a requested expiry carries nanoseconds.
-    private static boolean sameMicrosecond(Instant stored, Instant requested) {
-        return Objects.equals(stored, requested == null ? null : requested.truncatedTo(ChronoUnit.MICROS));
+    private static Instant microseconds(Instant expiry) {
+        return expiry == null ? null : expiry.truncatedTo(ChronoUnit.MICROS);
     }
 
     private void upsertMessageAttempt(
             Connection connection,
             MessageAttemptResult result,
             Instant payloadExpiresAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_ATTEMPT_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPSERT_MESSAGE_ATTEMPT_SQL)) {
             statement.setString(1, result.messageId());
-            statement.setInt(2, result.attempt());
-            statement.setInt(3, result.schemaVersion());
-            statement.setString(4, result.correlationId());
-            statement.setString(5, result.contentType());
-            statement.setString(6, result.sourceSystem());
-            statement.setString(7, result.targetSystem());
-            statement.setString(8, result.payloadStorage());
-            setLongOrNull(statement, 9, result.payloadSizeBytes());
-            setBytesOrNull(statement, 10, result.payloadBytes());
-            statement.setString(11, result.payloadRef());
-            statement.setString(12, result.payloadSha256());
-            setTimestampOrNull(statement, 13, payloadExpiresAt);
-            setTimestampOrNull(statement, 14, result.payloadDeletedAt());
-            statement.setBoolean(15, result.replayable());
-            statement.setString(16, result.replayDisabledReason());
-            statement.setString(17, result.integration());
-            statement.setString(18, result.routeId());
-            statement.setString(19, result.status().name());
-            statement.setBoolean(20, result.autoRedelivered());
-            setIntegerOrNull(statement, 21, result.autoRedeliveryCount());
-            setIntegerOrNull(statement, 22, result.autoRedeliveryMax());
-            statement.setTimestamp(23, Timestamp.from(result.occurredAt()));
-            statement.setString(24, serializer.serializeSteps(result));
-            statement.setString(25, result.error());
-            statement.executeUpdate();
+            statement.setString(2, result.integration());
+            statement.setString(3, result.messageId());
+            statement.setInt(4, result.attempt());
+            statement.setInt(5, result.schemaVersion());
+            statement.setString(6, result.correlationId());
+            statement.setString(7, result.contentType());
+            statement.setString(8, result.sourceSystem());
+            statement.setString(9, result.targetSystem());
+            statement.setString(10, result.payloadStorage());
+            setLongOrNull(statement, 11, result.payloadSizeBytes());
+            setBytesOrNull(statement, 12, result.payloadBytes());
+            statement.setString(13, result.payloadRef());
+            statement.setString(14, result.payloadSha256());
+            setTimestampOrNull(statement, 15, payloadExpiresAt);
+            setTimestampOrNull(statement, 16, result.payloadDeletedAt());
+            statement.setBoolean(17, result.replayable());
+            statement.setString(18, result.replayDisabledReason());
+            statement.setString(19, result.integration());
+            statement.setString(20, result.routeId());
+            statement.setString(21, result.status().name());
+            statement.setBoolean(22, result.autoRedelivered());
+            setIntegerOrNull(statement, 23, result.autoRedeliveryCount());
+            setIntegerOrNull(statement, 24, result.autoRedeliveryMax());
+            statement.setTimestamp(25, Timestamp.from(result.occurredAt()));
+            statement.setString(26, serializer.serializeSteps(result));
+            statement.setString(27, result.error());
+            try (ResultSet upserted = statement.executeQuery()) {
+                String other = upserted.next() ? upserted.getString(1) : null;
+                if (other != null) {
+                    reportSharedMessageId(other, result);
+                }
+            }
         }
     }
 
     private Instant upsertMessageLog(Connection connection, MessageAttemptResult result, Instant requestedExpiry)
             throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_LOG_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPSERT_MESSAGE_LOG_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.correlationId());
             statement.setString(3, result.contentType());
@@ -326,7 +396,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
         if (!"s3_object".equals(result.payloadStorage())) {
             return requestedExpiry;
         }
-        try (PreparedStatement statement = connection.prepareStatement(MESSAGE_LOG_EXPIRY_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, MESSAGE_LOG_EXPIRY_SQL)) {
             statement.setString(1, result.messageId());
             try (ResultSet current = statement.executeQuery()) {
                 current.next();
