@@ -153,6 +153,33 @@ class PostgresKafkaMessageReplayServiceTest {
     }
 
     @Test
+    void aReplayRecordIsKeyedByTheStoredCorrelationIdAndHasNoKeyWithoutOne() throws Exception {
+        sink.record(result("message-keyed", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        sink.record(result("message-unkeyed", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        update("update bip_message_log set correlation_id = null where message_id = 'message-unkeyed'");
+
+        replayService.replay("message-keyed");
+        replayService.replay("message-unkeyed");
+
+        var keys = new java.util.HashMap<String, String>();
+        try (KafkaConsumer<String, byte[]> consumer = consumer()) {
+            consumer.subscribe(List.of(TOPIC));
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (keys.size() < 2 && System.nanoTime() < deadline) {
+                consumer.poll(Duration.ofMillis(500)).forEach(record -> {
+                    var id = record.headers().lastHeader(PlatformHeaders.MESSAGE_ID);
+                    String messageId = id == null ? null : new String(id.value(), StandardCharsets.UTF_8);
+                    if ("message-keyed".equals(messageId) || "message-unkeyed".equals(messageId)) {
+                        keys.put(messageId, record.key() == null ? "<none>" : record.key());
+                    }
+                });
+            }
+        }
+        assertEquals("order-456", keys.get("message-keyed"));
+        assertEquals("<none>", keys.get("message-unkeyed"));
+    }
+
+    @Test
     void rejectsNonReplayableMessageBeforePublishing() {
         sink.record(result("message-456", 1, null, false, "payload storage mode is metadata-only"));
 

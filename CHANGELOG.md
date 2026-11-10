@@ -17,6 +17,9 @@
   application's own `StepOutcomeStore` that records nothing should override
   `recordsDeliveredSteps()`. The public `PostgresKafkaMessageReplayService`
   constructor built from explicit dependencies keeps accepting redo.
+- The replay documentation says which key and partition a replay record gets,
+  what order a replay keeps, and how to resend several messages. A test pins
+  the replay record's key, also for a message without a correlation id.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,
