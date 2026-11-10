@@ -128,6 +128,11 @@ Start with the [documentation index](docs/index.md).
   normalization, replica-safety validation, Kafka activity counters with
   admission counting on by default (opt-in in 0.3.6), and the 0.3.6 Key-Value
   Store.
+- Delivery audit and non-Kafka input inspection from 0.3.5 and 0.3.6
+  (`basis.delivery-audit.routes`, `basis.input-audit.routes`) are not in this
+  development line yet; an application with either set refuses to start and
+  names what to use instead. See
+  [Settings Removed Since 0.3.x](docs/configuration.md#settings-removed-since-03x).
 - The `0.4` features have extensive local unit and Testcontainers coverage but
   are not released until the stacked changes are merged, released, and the
   remote acceptance campaign is complete.
