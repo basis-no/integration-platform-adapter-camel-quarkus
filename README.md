@@ -93,6 +93,13 @@ Start with the [documentation index](docs/index.md).
   input instead of the message the route left, and logs that a handled message
   is being parked. 0.3.6 fixed it, and so does 0.4.0; see
   [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- 0.3.x and 0.4.0-rc1 leave a Kafka boundary's consumer on Camel's default
+  `auto.offset.reset=latest`. A record whose outcome was not durable, on a
+  partition where the consumer group has no committed offset yet, is skipped
+  after Camel's reconnect instead of read again. Workaround: set
+  `camel.component.kafka.auto-offset-reset=earliest`. Fixed for 0.4.0, which
+  ships `earliest` and refuses to start a Kafka boundary with another value;
+  see [Configuration](docs/configuration.md#required-runtime-configuration).
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is

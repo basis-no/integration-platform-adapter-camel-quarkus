@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- A Kafka boundary's consumer resets to `earliest`, and a Kafka boundary route
+  whose consumer uses any other `auto.offset.reset` refuses to start, naming
+  the route and its endpoint. Before, the adapter left Camel's default `latest`
+  in place: after a record whose outcome was not durable, Camel's reconnect
+  resumes from the committed offset, and on a partition where the consumer
+  group had none yet it resumed at the end, so the record was never read again
+  and a later record's commit moved past it. The adapter now ships
+  `camel.component.kafka.auto-offset-reset=earliest`.
+  Upgrade: remove an `autoOffsetReset=latest` or `none` override from a Kafka
+  boundary's endpoint, its `additionalProperties.auto.offset.reset` and
+  `camel.component.kafka.auto-offset-reset`. A consumer group with committed
+  offsets continues from them. A new consumer group, such as a new
+  integration's or a changed `groupId`, now starts at the beginning of each
+  partition's retained records instead of at the end; to start one at the end,
+  set its offsets with the Kafka tools before its first start. Kafka routes
+  that are not boundaries are not checked.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,
