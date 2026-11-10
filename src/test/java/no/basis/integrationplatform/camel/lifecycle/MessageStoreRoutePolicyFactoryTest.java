@@ -162,6 +162,78 @@ class MessageStoreRoutePolicyFactoryTest {
                 .tag("signal", "record_published").gauge().value());
     }
 
+    @Test
+    void theAdapterShipsEarliestAsTheKafkaOffsetReset() throws Exception {
+        var defaults = new java.util.Properties();
+        try (var in = MessageStoreRoutePolicyFactoryTest.class.getResourceAsStream("/application.properties")) {
+            defaults.load(in);
+        }
+        assertEquals("earliest", defaults.getProperty("camel.component.kafka.auto-offset-reset"));
+    }
+
+    @Test
+    void acceptsAKafkaBoundaryThatResetsToEarliest() throws Exception {
+        try (var context = kafkaContext("earliest")) {
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory("auto", true, "dlq")
+                    .createRoutePolicy(context, "orders", route("kafka:bip.orders.in?brokers=localhost:9092")));
+        }
+    }
+
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource({
+            // Camel's own default, without the adapter's
+            ",kafka:bip.orders.in?brokers=localhost:9092,latest",
+            // the component default
+            "latest,kafka:bip.orders.in?brokers=localhost:9092,latest",
+            "none,kafka:bip.orders.in?brokers=localhost:9092,none",
+            // the endpoint option
+            "earliest,kafka:bip.orders.in?brokers=localhost:9092&autoOffsetReset=latest,latest",
+            // an additional consumer property, which Camel applies last
+            "earliest,kafka:bip.orders.in?brokers=localhost:9092&additionalProperties.auto.offset.reset=latest,latest"})
+    void refusesAKafkaBoundaryThatDoesNotResetToEarliest(String component, String uri, String effective) throws Exception {
+        try (var context = kafkaContext(component)) {
+            IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
+                    () -> factory("auto", true, "dlq").createRoutePolicy(context, "orders", route(uri)));
+            assertTrue(thrown.getMessage().startsWith("Kafka boundary route 'orders' (kafka://bip.orders.in) requires "
+                    + "autoOffsetReset=earliest, but its consumer uses auto.offset.reset=" + effective + "."),
+                    thrown.getMessage());
+        }
+    }
+
+    @Test
+    void doesNotCheckAKafkaRouteThatIsNotABoundary() throws Exception {
+        try (var context = kafkaContext("latest")) {
+            assertInstanceOf(RedoStepsRoutePolicy.class, factory("receive-order", false, "record-failed")
+                    .createRoutePolicy(context, "orders", route("kafka:bip.orders.in?brokers=localhost:9092")));
+        }
+    }
+
+    @Test
+    void aKafkaBoundaryWithAnotherOffsetResetDoesNotStart() throws Exception {
+        try (var context = kafkaContext("latest")) {
+            context.addRoutePolicyFactory(factory("auto", true, "dlq"));
+            context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
+                public void configure() {
+                    from("kafka:bip.orders.in?brokers=localhost:9092").routeId("orders").autoStartup(false).log("${body}");
+                }
+            });
+            Exception thrown = assertThrows(Exception.class, context::start);
+            Throwable cause = thrown;
+            while (cause != null && !(cause instanceof IllegalArgumentException)) cause = cause.getCause();
+            assertInstanceOf(IllegalArgumentException.class, cause, thrown.toString());
+            assertTrue(cause.getMessage().contains("requires autoOffsetReset=earliest"), cause.getMessage());
+        }
+    }
+
+    private static org.apache.camel.impl.DefaultCamelContext kafkaContext(String componentOffsetReset) {
+        var context = new org.apache.camel.impl.DefaultCamelContext();
+        if (componentOffsetReset != null) {
+            context.getComponent("kafka", org.apache.camel.component.kafka.KafkaComponent.class)
+                    .getConfiguration().setAutoOffsetReset(componentOffsetReset);
+        }
+        return context;
+    }
+
     @SuppressWarnings("unchecked")
     private static no.basis.integrationplatform.camel.traffic.TrafficSignals defaultSignals(
             io.micrometer.core.instrument.MeterRegistry registry) {
