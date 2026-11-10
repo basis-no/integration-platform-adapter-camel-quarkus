@@ -2,14 +2,13 @@ package no.basis.integrationplatform.camel.step;
 
 import com.fasterxml.jackson.core.type.TypeReference;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 
 import javax.sql.DataSource;
-import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.Map;
 import java.util.Optional;
@@ -110,6 +109,7 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             """;
 
     private final DataSource dataSource;
+    private final MessageStoreTimeouts timeouts;
 
     /**
      * Creates a Postgres step-outcome store.
@@ -117,7 +117,12 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
      * @param dataSource message-store datasource
      */
     public PostgresStepOutcomeStore(DataSource dataSource) {
+        this(dataSource, MessageStoreTimeouts.DEFAULT);
+    }
+
+    PostgresStepOutcomeStore(DataSource dataSource, MessageStoreTimeouts timeouts) {
         this.dataSource = dataSource;
+        this.timeouts = timeouts;
     }
 
     @Override
@@ -127,39 +132,45 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
 
     @Override
     public boolean wasDelivered(String idempotencyKey) {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement statement = connection.prepareStatement(WAS_DELIVERED_SQL)) {
-            statement.setString(1, idempotencyKey);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next();
-            }
-        } catch (SQLException e) {
+        try {
+            return timeouts.inTransaction(dataSource, connection -> {
+                try (PreparedStatement statement = connection.prepareStatement(WAS_DELIVERED_SQL)) {
+                    statement.setString(1, idempotencyKey);
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        return resultSet.next();
+                    }
+                }
+            });
+        } catch (Exception e) {
             throw new StepOutcomeStoreException("Failed to check step outcome for idempotency key " + idempotencyKey, e);
         }
     }
 
     @Override
     public Optional<StepOutputCheckpoint> readCheckpoint(String idempotencyKey) {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement statement = connection.prepareStatement(READ_CHECKPOINT_SQL)) {
-            statement.setString(1, idempotencyKey);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                if (!resultSet.next()) {
-                    return Optional.empty();
+        try {
+            return timeouts.inTransaction(dataSource, connection -> {
+                try (PreparedStatement statement = connection.prepareStatement(READ_CHECKPOINT_SQL)) {
+                    statement.setString(1, idempotencyKey);
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        if (!resultSet.next()) {
+                            return Optional.<StepOutputCheckpoint>empty();
+                        }
+                        Timestamp expiresAt = resultSet.getTimestamp("checkpoint_expires_at");
+                        return Optional.of(new StepOutputCheckpoint(
+                                resultSet.getString("checkpoint_storage"),
+                                resultSet.getBytes("checkpoint_body_bytes"),
+                                resultSet.getString("checkpoint_body_ref"),
+                                resultSet.getLong("checkpoint_body_size_bytes"),
+                                resultSet.getString("checkpoint_body_sha256"),
+                                resultSet.getString("checkpoint_body_encoding"),
+                                resultSet.getString("checkpoint_content_type"),
+                                expiresAt == null ? null : expiresAt.toInstant(),
+                                readMap(resultSet.getString("checkpoint_headers_json")),
+                                readMap(resultSet.getString("checkpoint_properties_json"))));
+                    }
                 }
-                Timestamp expiresAt = resultSet.getTimestamp("checkpoint_expires_at");
-                return Optional.of(new StepOutputCheckpoint(
-                        resultSet.getString("checkpoint_storage"),
-                        resultSet.getBytes("checkpoint_body_bytes"),
-                        resultSet.getString("checkpoint_body_ref"),
-                        resultSet.getLong("checkpoint_body_size_bytes"),
-                        resultSet.getString("checkpoint_body_sha256"),
-                        resultSet.getString("checkpoint_body_encoding"),
-                        resultSet.getString("checkpoint_content_type"),
-                        expiresAt == null ? null : expiresAt.toInstant(),
-                        readMap(resultSet.getString("checkpoint_headers_json")),
-                        readMap(resultSet.getString("checkpoint_properties_json"))));
-            }
+            });
         } catch (Exception e) {
             throw new StepOutcomeStoreException(
                     "Failed to read output checkpoint for idempotency key " + idempotencyKey, e);
@@ -182,20 +193,23 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     }
 
     private void record(StepResult step, StepStatus status, String sql, StepOutputCheckpoint checkpoint) {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, step.idempotencyKey());
-            statement.setString(2, messageId(step.idempotencyKey()));
-            statement.setString(3, step.step());
-            statement.setString(4, status.name());
-            statement.setString(5, step.endpointUri());
-            statement.setString(6, step.targetRef());
-            statement.setString(7, step.error());
-            statement.setTimestamp(8, Timestamp.from(step.occurredAt()));
-            if (status == StepStatus.DELIVERED) {
-                setCheckpoint(statement, checkpoint);
-            }
-            statement.executeUpdate();
+        try {
+            timeouts.inTransaction(dataSource, connection -> {
+                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+                    statement.setString(1, step.idempotencyKey());
+                    statement.setString(2, messageId(step.idempotencyKey()));
+                    statement.setString(3, step.step());
+                    statement.setString(4, status.name());
+                    statement.setString(5, step.endpointUri());
+                    statement.setString(6, step.targetRef());
+                    statement.setString(7, step.error());
+                    statement.setTimestamp(8, Timestamp.from(step.occurredAt()));
+                    if (status == StepStatus.DELIVERED) {
+                        setCheckpoint(statement, checkpoint);
+                    }
+                    return statement.executeUpdate();
+                }
+            });
         } catch (Exception e) {
             throw new StepOutcomeStoreException("Failed to record " + status + " step outcome for "
                     + step.idempotencyKey(), e);

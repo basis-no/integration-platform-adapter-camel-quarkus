@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Every call of the Postgres sink and the Postgres step outcome store is
+  bounded: it runs in its own transaction with a statement timeout
+  (`basis.message-store.statement-timeout`, default 10 s) and a lock timeout
+  (`basis.message-store.lock-timeout`, default 5 s), set for that transaction
+  only, and with the JDBC network timeout set to the statement timeout plus
+  5 seconds. Before, a call waited without limit on a held lock or a database
+  that stopped answering, and held the Kafka consumer thread past
+  `max.poll.interval.ms`. A timeout is a Message Store failure: the record is
+  not committed and is read again. Startup refuses a timeout that is not
+  positive, or a lock timeout longer than the statement timeout.
+  Upgrade: an outcome or step-outcome call that legitimately needs longer
+  fails now; raise the property. Set `loginTimeout` in the JDBC URL as well
+  (see [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts)).
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,

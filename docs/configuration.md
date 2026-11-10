@@ -11,6 +11,8 @@ into integration repositories.
 | `basis.message-store.sink` | `BASIS_MESSAGE_STORE_SINK` | `log`, `postgres`, `kafka`; default `log` | Deployment profile. Production uses `postgres`; `kafka` requires a separate lifecycle consumer. |
 | `basis.message-store.status-topic` | `BASIS_MESSAGE_STORE_STATUS_TOPIC` | topic; default `bip.message.status` | Deployment-owned. Used only by the Kafka sink. |
 | `basis.message-store.step-outcome-store` | `BASIS_MESSAGE_STORE_STEP_OUTCOME_STORE` | `noop`, `postgres`; default `noop` | Deployment profile. Production replay protection requires `postgres`. |
+| `basis.message-store.statement-timeout` | `BASIS_MESSAGE_STORE_STATEMENT_TIMEOUT` | positive duration such as `10s`; default `10s` | Deployment-owned. Longest a statement of one outcome or step-outcome call may run (Postgres `statement_timeout`, set for that call's transaction only). The call's JDBC network timeout is this value plus 5 seconds. Keep it well under the Kafka `max.poll.interval.ms`. See [Message Store call timeouts](#message-store-call-timeouts). |
+| `basis.message-store.lock-timeout` | `BASIS_MESSAGE_STORE_LOCK_TIMEOUT` | positive duration, at most the statement timeout; default `5s` | Deployment-owned. Longest such a statement may wait for a lock (Postgres `lock_timeout`, for that call's transaction only). |
 | `basis.message-store.test-profile` | `BASIS_MESSAGE_STORE_TEST_PROFILE` | `disabled`, `no-persistence`, `no-commit`, `no-persistence-no-commit`; default `disabled` | Test-only; non-default values are unsafe in production. |
 | `basis.message-store.allow-test-profiles` | `BASIS_MESSAGE_STORE_ALLOW_TEST_PROFILES` | boolean; default `false` | Explicit test guard. Production deployments should keep `false`. |
 | `basis.message-store.dlq-uri` | `BASIS_MESSAGE_STORE_DLQ_URI` | A fixed, non-transactional `kafka:` URI (not `acks=0`) or the application's own `direct:` route; default `kafka:bip.message.dlq` | Deployment-owned terminal parking endpoint. The adapter records `DLQ` and commits only after this endpoint accepted the record. |
@@ -95,6 +97,41 @@ The operator can bound the adapter pool with
 through the JDBC URL and mounted CA certificate. These are Quarkus/JDBC settings,
 not a grant of database ownership. Network and PostgreSQL permissions enforce
 the boundary even if integration code attempts another query.
+
+## Message Store call timeouts
+
+The Postgres sink and the Postgres step outcome store run on the Kafka
+consumer thread. Each of their calls (recording an attempt's outcome, checking
+or recording a step outcome, reading an output checkpoint) runs in its own
+transaction with:
+
+- `statement_timeout` = `basis.message-store.statement-timeout` (default 10 s)
+  and `lock_timeout` = `basis.message-store.lock-timeout` (default 5 s), set
+  with `set_config(..., true)` for that transaction only, so a pooled connection
+  keeps no session setting;
+- the JDBC network timeout (the PostgreSQL driver's socket timeout) set to the
+  statement timeout plus 5 seconds for the call and restored afterwards, so a
+  database that stops answering without closing the connection ends the call too.
+
+A call that reaches a timeout fails like any other Message Store failure: the
+attempt is not durable, so its Kafka offset is not committed and the record is
+read again (see [Message Lifecycle](message-lifecycle.md)). Startup refuses a
+timeout that is zero or negative, or a lock timeout longer than the statement
+timeout.
+
+Getting a connection is bounded by the deployment's datasource settings, which
+the adapter does not set:
+
+| Setting | Default | Recommendation |
+| --- | --- | --- |
+| `quarkus.datasource.jdbc.acquisition-timeout` | 5 seconds (Quarkus) | Keep it at a few seconds. It bounds the wait for a pooled connection, including one that is still being opened. |
+| `connectTimeout` in the JDBC URL | 10 seconds (PostgreSQL driver) | Keep it. |
+| `loginTimeout` in the JDBC URL | none (PostgreSQL driver) | Set it, for example `?loginTimeout=10`, so that opening a connection to a database that accepts the connection but never completes the login ends. |
+
+Keep every one of these, together with the route's own retries and receiver
+timeouts, well under the Kafka `max.poll.interval.ms` (300 seconds by
+default). The replay service, the startup checks and the Key-Value Store are
+not covered by these timeouts.
 
 Kafka security settings above apply to the Camel component (input and DLQ) and
 to the adapter's direct replay/status producers. A custom application-created

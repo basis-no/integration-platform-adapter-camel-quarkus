@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.store;
 
+import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
 import javax.sql.DataSource;
@@ -144,6 +145,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     private final DataSource dataSource;
     private final Duration retention;
     private final MessageStatusEventJson serializer;
+    private final MessageStoreTimeouts timeouts;
 
     /**
      * Creates a direct Postgres outcome sink.
@@ -169,9 +171,15 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     }
 
     PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Duration retention) {
+        this(dataSource, serializer, retention, MessageStoreTimeouts.DEFAULT);
+    }
+
+    PostgresMessageStoreSink(
+            DataSource dataSource, MessageStatusEventJson serializer, Duration retention, MessageStoreTimeouts timeouts) {
         this.dataSource = dataSource;
         this.serializer = serializer;
         this.retention = retention;
+        this.timeouts = timeouts;
     }
 
     /**
@@ -204,19 +212,12 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     @Override
     public void record(MessageAttemptResult result) {
-        try (Connection connection = dataSource.getConnection()) {
-            boolean previousAutoCommit = connection.getAutoCommit();
-            connection.setAutoCommit(false);
-            try {
+        try {
+            timeouts.inTransaction(dataSource, connection -> {
                 Instant payloadExpiresAt = upsertMessageLog(connection, result, cappedInlineExpiry(connection, result));
                 upsertMessageAttempt(connection, result, payloadExpiresAt);
-                connection.commit();
-            } catch (Exception e) {
-                connection.rollback();
-                throw e;
-            } finally {
-                connection.setAutoCommit(previousAutoCommit);
-            }
+                return null;
+            });
         } catch (Exception e) {
             throw new MessageStoreSinkException("Failed to record message attempt " + result.messageId()
                     + "/" + result.attempt(), e);
