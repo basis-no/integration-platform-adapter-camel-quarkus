@@ -11,6 +11,32 @@
   history and summary show the same expiry. A rolling-upgrade test runs the
   released 0.3.6 adapter next to this one against one Message Store. No schema
   change.
+- The `ip-slow-backend` route configuration caps each redelivery delay at 20
+  seconds: it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before
+  the configured failure mode applies. Before, the delays doubled up to Camel's
+  default cap of 60 seconds and waited 195 seconds, which together with seven
+  attempts could outlast the Kafka consumer's 300-second
+  `max.poll.interval.ms`; Kafka then removed the consumer from its group and
+  delivered the record again, so it could run, and be parked, more than once.
+  The number of redeliveries and the first delay are unchanged. The interval
+  covers all records of one poll: for a route on `ip-slow-backend`, set
+  `maxPollRecords=1` on its Kafka input or raise `maxPollIntervalMs`. See
+  [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
+- The application refuses to start when `basis.delivery-audit.routes` or
+  `basis.input-audit.routes` (`BASIS_DELIVERY_AUDIT_ROUTES`,
+  `BASIS_INPUT_AUDIT_ROUTES`) has a value. Adapter 0.3.5 and 0.3.6 offered
+  delivery audit and non-Kafka input inspection through them; this version
+  does not implement either, and before this change it ignored the settings,
+  so an upgraded integration lost its audit rows without notice. The error names
+  each setting and what to use instead; an empty value only logs a warning.
+  Upgrade: remove `basis.delivery-audit.routes` (delivery audit is not
+  available in this version yet, see
+  [#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)).
+  Replace `basis.input-audit.routes` with the HTTP audit-only preview for an
+  HTTP input, or ingress normalization to Kafka for a file, timer or poller
+  input. See
+  [Settings Removed Since 0.3.x](docs/configuration.md#settings-removed-since-03x).
+
 - A Kafka record whose outcome could not be made durable is read again with a
   growing wait. Before, while the outcome write, a step outcome or the DLQ
   publish kept failing, for example during a Message Store outage, the record

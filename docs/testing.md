@@ -15,6 +15,20 @@ matters. Generate public API documentation separately:
 ./mvnw -DskipTests javadoc:javadoc
 ```
 
+### Startup smoke
+
+[`integration-tests/startup-smoke`](../integration-tests/startup-smoke/README.md)
+is a Quarkus application that depends on the installed adapter jar and boots it
+without Kafka or a database. It checks bean discovery, which routes get the
+message-store policy, the shipped Kafka consumer defaults and the Key-Value
+Store's lazy datasource. CI runs it after `./mvnw install`:
+
+```sh
+./mvnw install
+version="$(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout)"
+./mvnw -f integration-tests/startup-smoke/pom.xml -Dadapter.version="$version" verify
+```
+
 ### Restricted writer against the message recovery SQL
 
 `RestrictedLoginWriterIT` runs the journal writer, the delivered-step store and
