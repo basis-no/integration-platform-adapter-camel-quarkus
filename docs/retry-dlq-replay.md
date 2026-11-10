@@ -86,10 +86,36 @@ earlier try. Only a receiver that deduplicates on that key avoids a second
 effect. Republishing the parked record under a new message id changes the key,
 so even such a receiver applies it again.
 
+## Failure and Replay per Input Type
+
+What happens to a message whose route failed after its retries, and where a
+replay starts, follows the input type. One application may combine them; no
+global setting is needed.
+
+| Input | After the retries | Source | Recorded | Replay |
+| --- | --- | --- | --- | --- |
+| Kafka boundary | parked in the DLQ with the consumed input | offset committed after the DLQ accepted it; not committed if the outcome or the parking is not durable | `DLQ` | from the Kafka input topic |
+| HTTP audit-only boundary | handed back to the caller (HTTP error) | none: the caller has the answer | `FAILED`, metadata-only | not replayable |
+| HTTP intake that publishes to Kafka | handed back to the caller | none | at the Kafka boundary | from the Kafka input topic |
+| File, FTP, SFTP normalized to Kafka | handed back to the file consumer | the file is not moved and is read again on a later poll | at the Kafka boundary, once published | from the Kafka input topic, not the file |
+| Timer or database poll normalized to Kafka | handed back to the poll | depends on the poll: the next run finds the item again only if it is still selected | at the Kafka boundary, once published | from the Kafka input topic |
+| JMS queue normalized to Kafka | handed back to the JMS consumer | with `CLIENT_ACKNOWLEDGE`, not acknowledged, so the broker delivers it again | at the Kafka boundary, once published | from the Kafka input topic, not the queue |
+
+A normalized input is recorded at the Kafka boundary that consumes the
+canonical topic, so its replay starts there and never reads the file, queue or
+poll again. A synchronous HTTP request has no replay: a replay could not answer
+the original caller. Accept the request and publish it to Kafka to make the
+downstream work replayable. See [Ingress and Scaling](ingress-and-scaling.md)
+for the configuration of each input.
+
+`basis.message-store.failure-mode` can stay unset (default `dlq`). Its other
+value, `record-failed`, turns DLQ parking off for the whole application;
+startup refuses it when the application has a Kafka boundary, since it would
+remove that boundary's recovery path.
+
 ## Terminal Kafka Failure
 
-`basis.message-store.failure-mode=dlq` is required for Kafka lifecycle
-boundaries. After retries are exhausted, the adapter sends the original
+After a Kafka boundary's retries are exhausted, the adapter sends the original
 captured payload to `basis.message-store.dlq-uri`, preserves the envelope, adds
 `x-bip-error` and `x-bip-dlq-at`, records `DLQ`, and only then commits the input
 offset. A replay's `x-bip-redo-steps` is not carried; see [Redo Steps](#redo-steps).
@@ -184,9 +210,9 @@ The historical Kafka DLQ record remains after recovery. Postgres is
 authoritative for current lifecycle state, so a later successful replay changes
 the message to `COMPLETED` while retaining both attempts and replay audit.
 
-`record-failed` is reserved for explicit non-Kafka audit-only boundaries. It
-records `FAILED` and propagates the exception to the source; using it on a Kafka
-boundary is rejected because it would remove the recovery path.
+Any other input is not parked: the dead letter channel parks only a managed
+Kafka input and hands every other failure back to its source (see
+[Failure and Replay per Input Type](#failure-and-replay-per-input-type)).
 
 ## Manual Replay
 

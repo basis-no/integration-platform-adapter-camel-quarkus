@@ -6,6 +6,8 @@ import no.basis.integrationplatform.camel.ingress.IngressNormalizationConfig;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import org.apache.camel.model.RouteDefinition;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.provider.CsvSource;
+import org.junit.jupiter.params.ParameterizedTest;
 
 import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -54,28 +56,25 @@ class MessageStoreRoutePolicyFactoryTest {
                 thrown.getMessage());
     }
 
-    @Test
-    void rejectsReplayableNonKafkaBoundaryWithoutReplayTarget() {
-        MessageStoreRoutePolicyFactory factory = factory("receive-order", true, "record-failed");
+    @ParameterizedTest
+    @CsvSource({"true,dlq", "false,dlq", "true,record-failed", "false,record-failed"})
+    void anHttpBoundaryStartsWithAnyGlobalFailureModeAndReplaySetting(boolean replayEnabled, String failureMode) {
+        // The failure mode follows the input type: an HTTP boundary records FAILED and answers
+        // its caller, and is never replayable, whatever the global settings say.
+        MessageStoreRoutePolicyFactory factory = factory("receive-order", replayEnabled, failureMode);
 
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> factory.createRoutePolicy(null, "receive-order", route("platform-http:/orders")));
-
-        assertEquals(
-                "Non-Kafka boundary route 'receive-order' requires basis.message-store.replay.enabled=false until a replay target is configured",
-                thrown.getMessage());
+        assertInstanceOf(MessageStoreRoutePolicy.class,
+                factory.createRoutePolicy(null, "receive-order", route("platform-http:/orders")));
     }
 
     @Test
-    void rejectsKafkaDlqModeForNonKafkaBoundary() {
-        MessageStoreRoutePolicyFactory factory = factory("receive-order", false, "dlq");
+    void kafkaAndHttpBoundariesStartTogetherInOneApplication() {
+        MessageStoreRoutePolicyFactory factory = factory("orders,receive-order", true, "dlq");
 
-        IllegalArgumentException thrown = assertThrows(IllegalArgumentException.class,
-                () -> factory.createRoutePolicy(null, "receive-order", route("platform-http:/orders")));
-
-        assertEquals(
-                "Non-Kafka boundary route 'receive-order' requires basis.message-store.failure-mode=record-failed",
-                thrown.getMessage());
+        assertInstanceOf(MessageStoreRoutePolicy.class,
+                factory.createRoutePolicy(null, "orders", route("kafka:bip.orders.in")));
+        assertInstanceOf(MessageStoreRoutePolicy.class,
+                factory.createRoutePolicy(null, "receive-order", route("platform-http:/orders")));
     }
 
     @Test
@@ -86,7 +85,10 @@ class MessageStoreRoutePolicyFactoryTest {
                 () -> factory.createRoutePolicy(null, "orders", route("kafka:bip.orders.in")));
 
         assertEquals(
-                "Kafka boundary route 'orders' requires basis.message-store.failure-mode=dlq",
+                "Kafka boundary route 'orders' parks a failed message in the DLQ, but "
+                        + "basis.message-store.failure-mode=record-failed turns parking off for the whole "
+                        + "application. Remove the setting (the default is dlq): an HTTP audit-only boundary "
+                        + "records FAILED and answers its caller with any setting",
                 thrown.getMessage());
     }
 

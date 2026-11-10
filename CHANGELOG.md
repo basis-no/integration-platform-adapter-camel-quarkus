@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- The failure handling follows the input type instead of one global setting.
+  A Kafka boundary parks a failed message in the DLQ and commits after it, as
+  before. An HTTP audit-only boundary records `FAILED`, hands the failure back
+  to its caller and is never replayable (metadata-only, `replay_disabled_reason`
+  "a synchronous HTTP boundary is not replayable"), whatever
+  `basis.message-store.failure-mode` and `basis.message-store.replay.enabled`
+  say. So both can run in one application: list the HTTP route id in
+  `basis.message-store.boundary-routes` together with the Kafka input route
+  ids. Before, the preview needed `failure-mode=record-failed` and
+  `replay.enabled=false`, and startup refused it next to a Kafka boundary. A
+  synchronous HTTP request remains not replayable in 0.4; to make its downstream
+  work replayable, publish it to the Kafka input. The docs have a table of what
+  happens to a failure, and where a replay starts, per input type
+  ([Failure and Replay per Input Type](docs/retry-dlq-replay.md#failure-and-replay-per-input-type)),
+  and the JMS rules for normalized queues
+  ([JMS Queues](docs/ingress-and-scaling.md#jms-queues)).
+  Upgrade: nothing to do for an existing configuration. A preview application
+  may drop `failure-mode=record-failed` and `replay.enabled=false`;
+  `record-failed` is still accepted, and still refused together with a Kafka
+  boundary. A `jms:queue:` normalization input needs
+  `acknowledgementModeName=CLIENT_ACKNOWLEDGE`: with camel-jms's default
+  `AUTO_ACKNOWLEDGE`, a message whose route failed is not delivered again
+  ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
 - The `ip-slow-backend` route configuration caps each redelivery delay at 20
   seconds: it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before
   the configured failure mode applies. Before, the delays doubled up to Camel's

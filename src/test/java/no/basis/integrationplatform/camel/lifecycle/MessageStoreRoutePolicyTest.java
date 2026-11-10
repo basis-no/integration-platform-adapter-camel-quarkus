@@ -519,7 +519,7 @@ class MessageStoreRoutePolicyTest {
         assertEquals("downstream unavailable", sink.result.error());
         assertEquals("metadata_only", sink.result.payloadStorage());
         assertFalse(sink.result.replayable());
-        assertEquals("replay disabled by policy", sink.result.replayDisabledReason());
+        assertEquals("a synchronous HTTP boundary is not replayable", sink.result.replayDisabledReason());
     }
 
     @Test
