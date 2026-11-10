@@ -146,7 +146,7 @@ eight requests before the message is parked. Set
 `camel.component.http.automatic-retries-disabled=true` to leave every retry to
 the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
 and for routes on the `ip-slow-backend` configuration, whose own redeliveries
-already use much of the poll interval.
+already use about a third of the poll interval.
 
 - `COMPLETED`: route processing finished and the outcome was safely recorded.
 - `DLQ`: retries were exhausted and the message was parked for operator action.
@@ -217,9 +217,30 @@ within-attempt event-ordering guarantee.
 The global route configuration applies to all routes unless a route opts into a
 named variant:
 
-- default: 3 redeliveries, 1 second initial delay, exponential backoff.
-- `ip-slow-backend`: 6 redeliveries, 5 second initial delay, exponential backoff.
+- default: 3 redeliveries after 1, 2 and 4 seconds, 7 seconds of waiting in
+  all.
+- `ip-slow-backend`: 6 redeliveries after 5, 10, 20, 20, 20 and 20 seconds, 95
+  seconds in all. From 0.3.7 each delay is capped at 20 seconds; before, the
+  delays doubled up to Camel's default cap of 60 seconds and waited 195
+  seconds.
 - `ip-no-retry`: no redelivery before DLQ.
+
+On a Kafka input the waits run on the consumer thread, between attempts that
+take their own time. `max.poll.interval.ms` (300 seconds by default) bounds the
+time between two polls, and the consumer processes every record of a poll
+before it polls again (up to 500 records, Camel's default `maxPollRecords`), so
+the budget covers all records of one poll, not one record. If they take longer,
+Kafka removes the consumer from its group and the uncommitted records are
+delivered again, so a record can run, and be parked, more than once. With
+`ip-slow-backend`, one record that exhausts its retries waits 95 seconds, so
+three such records in one poll already take most of the interval. For a route
+on `ip-slow-backend`, set `maxPollRecords=1` on the Kafka input, or raise
+`maxPollIntervalMs` on it to cover the records of a poll. With one record per
+poll, about 200 seconds remain for its seven attempts: bound each receiver call
+well inside that with `responseTimeout` and `connectTimeout` (see the timeout
+table below for the forms Camel applies), and turn the HTTP client's own retry
+off with `camel.component.http.automatic-retries-disabled=true`, since it can
+double the requests in each attempt.
 
 All variants use `basis.message-store.dlq-uri`, defaulting to
 `kafka:bip.message.dlq`. When the dead letter channel parks a message, the
