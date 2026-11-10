@@ -42,6 +42,9 @@ Common fail-fast causes include:
 - normalization without the durable Postgres step store;
 - unsafe polling with missing or multiple declared replicas;
 - store schema version mismatch in `bip_contract`;
+- a Message Store without a table or column this adapter writes, for example
+  one provisioned for an earlier adapter version. The error names the missing
+  columns and the statements that add them;
 - a Message Store statement or lock timeout under 1 ms, or a lock timeout
   longer than the statement timeout.
 
