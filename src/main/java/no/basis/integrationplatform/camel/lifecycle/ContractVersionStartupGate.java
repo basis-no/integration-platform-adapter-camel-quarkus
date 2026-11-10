@@ -32,9 +32,25 @@ import java.util.function.Supplier;
  * earlier adapter version: every outcome would otherwise fail to record, and each Kafka
  * record would be processed again and again. One catalog query checks them against the
  * schema the adapter ships in {@code db/message-store/}.</p>
+ *
+ * <p>Camel Quarkus starts the Camel context before the {@link StartupEvent}
+ * that runs this check, so work the adapter starts on its own, such as
+ * acquiring the lease of a polling route, consults {@link #outcome()} and
+ * waits for {@link Outcome#PASSED} rather than running against a Message
+ * Store the adapter is about to refuse.</p>
  */
 @ApplicationScoped
 public class ContractVersionStartupGate {
+    /** The state of the startup check. */
+    public enum Outcome {
+        /** The check has not run yet. */
+        PENDING,
+        /** The check passed, or there was nothing to check. */
+        PASSED,
+        /** The check failed; the adapter refuses to start. */
+        FAILED
+    }
+
     /** Contract major implemented by this adapter. */
     public static final int EXPECTED_CONTRACT_MAJOR = 1;
 
@@ -60,6 +76,7 @@ public class ContractVersionStartupGate {
     private final Supplier<DataSource> dataSource;
     private final int maxAttempts;
     private final long retryDelayMs;
+    private volatile Outcome outcome = Outcome.PENDING;
 
     /**
      * Creates the startup gate from the effective sink and step store and the optional datasource.
@@ -110,12 +127,32 @@ public class ContractVersionStartupGate {
     }
 
     /**
+     * Returns the state of the check: pending until the startup event ran it,
+     * then passed or failed for the rest of the process.
+     *
+     * @return the outcome so far
+     */
+    public Outcome outcome() {
+        return outcome;
+    }
+
+    /**
      * @throws IllegalStateException when the provisioned contract major differs
      *         from {@link #EXPECTED_CONTRACT_MAJOR}, or when the store lacks a table or
      *         column this adapter writes; failing fast beats silently writing a
      *         mismatched schema shape.
      */
     void verify() {
+        try {
+            doVerify();
+            outcome = Outcome.PASSED;
+        } catch (RuntimeException e) {
+            outcome = Outcome.FAILED;
+            throw e;
+        }
+    }
+
+    private void doVerify() {
         boolean postgresSink = "postgres".equals(sinkMode);
         if (!postgresSink && schema.isEmpty()) {
             return;

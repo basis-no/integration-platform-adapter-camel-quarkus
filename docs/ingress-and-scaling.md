@@ -5,8 +5,8 @@
 | Source shape | Recommended boundary | Replay | Replica rule |
 | --- | --- | --- | --- |
 | Kafka topic | Kafka consumer route | full | same consumer group |
-| File/FTP/SFTP | normalize to canonical Kafka topic | from Kafka boundary | one replica or `master:` |
-| Timer/database poll | normalize each real source item to Kafka | from Kafka boundary | one replica or `master:` |
+| File/FTP/SFTP | normalize to canonical Kafka topic | from Kafka boundary | one replica at a time through the adapter's lease, or `master:` |
+| Timer/database poll | normalize each real source item to Kafka | from Kafka boundary | one replica at a time through the adapter's lease, or `master:` |
 | JMS/SJMS queue | normalize to Kafka | from Kafka boundary | broker competing consumers |
 | Synchronous HTTP | explicit audit-only preview | disabled | application-specific |
 
@@ -139,11 +139,21 @@ replay starts at Kafka and does not reread the original file, queue, or poll.
 
 ## Singleton Polling
 
+The adapter runs every polling route (timer, cron, Quartz, scheduler, and
+scheduled-poll consumers such as file, FTP/SFTP and SQL) on one replica at a
+time, coordinated through a lease in the integration's Key-Value Store, unless
+the route is listed in `basis.message-store.single-active.excluded-routes`.
+See [Single-Active Routes](single-active.md) for how the lease works, its
+timings and the failover times.
+
 The deployment sets `basis.message-store.deployment-replicas` from the
-Kubernetes Deployment's replica count. An uncoordinated polling route is accepted only with one
-declared replica. With multiple replicas, wrap the source in Camel `master:`
-and configure `camel-quarkus-kubernetes-cluster-service` plus its Kubernetes
-leader-election permissions:
+Kubernetes Deployment's replica count. An ingress normalization route whose
+polling source the adapter coordinates through its lease is accepted with any
+declared replica count. An uncoordinated polling route, including one listed
+in `basis.message-store.single-active.excluded-routes`, is accepted only with
+one declared replica. A source can also be coordinated by Camel `master:` with
+`camel-quarkus-kubernetes-cluster-service` and its Kubernetes leader-election
+permissions:
 
 ```yaml
 from:

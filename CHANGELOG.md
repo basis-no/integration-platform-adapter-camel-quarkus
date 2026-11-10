@@ -2,6 +2,29 @@
 
 ## Unreleased
 
+- Polling routes run on one replica at a time. Every route whose consumer polls
+  on a schedule (`timer:`, `quartz:`, `cron:`, `scheduler:`, and Camel
+  scheduled-poll consumers such as `file:`, `ftp:`, `sftp:` and `sql:`) does
+  its work only on the replica that holds the route's lease, the Key-Value
+  Store key `lease/<routeId>`: a 30 second lease renewed every 10 seconds, so
+  another replica takes over within about 10 seconds after an orderly stop and
+  within about 40 seconds after a crash. Routes start and stop as before; the
+  lease gates each poll or trigger inside the route. `master:`, Kafka, HTTP,
+  broker-queue, `direct:` and `seda:` routes are not gated. Without
+  `bip_key_value`, or without a Key-Value Store (no Message Store datasource or
+  `app.name`), polling routes run on every replica as before, with one warning
+  per route; an unreachable Key-Value Store keeps their work stopped. A route
+  listed in the new `basis.message-store.single-active.excluded-routes` runs on
+  every replica. An ingress normalization route whose polling source is
+  coordinated this way is accepted with several declared replicas. See
+  [Single-Active Routes](docs/single-active.md).
+  Upgrade: with `bip_key_value` provisioned, a polling route that ran on every
+  replica now runs on one; list a route that must run on every replica (a
+  per-replica cache refresh or heartbeat) in
+  `basis.message-store.single-active.excluded-routes`. Give polling routes
+  stable ids, since the lease is named after the route id. The first ticks
+  after startup wait for the Message Store check and the lease, so a one-shot
+  timer may fire up to a few seconds later or, on a standby, not at all.
 - A Kafka record whose outcome could not be made durable is read again with a
   growing wait. Before, while the outcome write, a step outcome or the DLQ
   publish kept failing, for example during a Message Store outage, the record

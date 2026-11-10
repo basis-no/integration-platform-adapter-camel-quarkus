@@ -118,6 +118,10 @@ A rejected write throws `KeyValueLimitException`; repeating it fails the
 same way. An unavailable store throws `KeyValueStoreException`, as does a
 Message Store without `bip_key_value`, with a message that the Message Store has no `bip_key_value` table.
 
+The adapter keeps the lease of each polling route under `lease/<routeId>` (see
+[Single-Active Routes](single-active.md)). These keys count toward the limits
+above; the application must not write keys under `lease/`.
+
 ## Expiry and Environments
 
 Once state is used, the adapter deletes this integration's expired keys in

@@ -57,6 +57,7 @@ Start with the [documentation index](docs/index.md).
 | Classify endpoint sends and prevent duplicate effects | [Steps and idempotency](docs/steps-and-idempotency.md) |
 | Understand retry, DLQ, resend, and redo | [Retry, DLQ, and replay](docs/retry-dlq-replay.md) |
 | Use Kafka, files, polls, JMS, HTTP, or multiple replicas | [Ingress and scaling](docs/ingress-and-scaling.md) |
+| Run timers and polling routes on one replica at a time | [Single-active routes](docs/single-active.md) |
 | Configure Postgres-inline and S3 payload storage | [Payload storage](docs/payload-storage.md) |
 | Run local tests or deliberately suppress commits | [Testing](docs/testing.md) |
 | Count Kafka admissions and publications for activity alerts | [Kafka activity metrics](docs/activity-metrics.md) |

@@ -4,6 +4,7 @@ import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.ingress.IngressNormalizationConfig;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
+import org.apache.camel.impl.DefaultCamelContext;
 import org.apache.camel.model.RouteDefinition;
 import org.junit.jupiter.api.Test;
 
@@ -96,7 +97,12 @@ class MessageStoreRoutePolicyFactoryTest {
         RouteDefinition route = route("file:/input");
         route.routeConfigurationId(PlatformRouteConfiguration.INGRESS_NORMALIZATION);
 
-        assertInstanceOf(RedoStepsRoutePolicy.class, factory.createRoutePolicy(null, "file-to-kafka", route));
+        DefaultCamelContext context = new DefaultCamelContext();
+        try {
+            assertInstanceOf(RedoStepsRoutePolicy.class, factory.createRoutePolicy(context, "file-to-kafka", route));
+        } finally {
+            context.stop();
+        }
         factory.validateConfiguredNormalizationRoutes(null);
     }
 

@@ -39,6 +39,8 @@ Common fail-fast causes include:
 - normalization route also selected as a lifecycle boundary;
 - normalization without the durable Postgres step store;
 - unsafe polling with missing or multiple declared replicas;
+- an id in `basis.message-store.single-active.excluded-routes` that names no
+  polling route of the application;
 - store schema version mismatch in `bip_contract`;
 - a Message Store without a table or column this adapter writes, for example
   one provisioned for an earlier adapter version. The error names the missing
@@ -82,10 +84,25 @@ adapter intentionally fails closed when claim-check metadata does not match.
 
 ## Polling Works with One Replica but Not Several
 
-Uncoordinated polling is rejected with more than one replica. Use `master:`
-with the Kubernetes cluster service and leader-election RBAC, use a broker
-queue with competing consumers, or keep exactly one replica. Do not hardcode
-the deployment count in application properties; the deployment sets it.
+A polling route runs on the replica that holds its lease (see
+[Single-Active Routes](single-active.md)); on the other replicas it is started
+but does no work. The holder is the Key-Value Store key `lease/<routeId>`. A
+route listed in `basis.message-store.single-active.excluded-routes` is not
+coordinated, so an ingress normalization route on it is rejected with more
+than one declared replica: remove it from the list, use `master:` with the
+Kubernetes cluster service and leader-election RBAC, use a broker queue with
+competing consumers, or keep exactly one replica. Do not hardcode the
+deployment count in application properties; the deployment sets it.
+
+## A Polling Route Does Nothing
+
+- Another replica holds `lease/<routeId>`: the route works there. After a crash
+  the lease expires within 30 seconds.
+- The Key-Value Store is unreachable: the route's work stays stopped on every
+  replica (WARN "waits: the Key-Value Store is unreachable") until it is
+  reachable again.
+- The Message Store check has not passed or failed at startup: no lease is
+  taken until it passes.
 
 ## Replayed Route Has a Missing Response Body
 
