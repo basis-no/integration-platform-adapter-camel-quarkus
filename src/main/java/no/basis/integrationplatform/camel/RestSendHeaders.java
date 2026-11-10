@@ -3,23 +3,13 @@ package no.basis.integrationplatform.camel;
 import org.apache.camel.CamelContext;
 import org.apache.camel.Endpoint;
 import org.apache.camel.Exchange;
-import org.apache.camel.Route;
-import org.apache.camel.model.EndpointRequiredDefinition;
-import org.apache.camel.model.ProcessorDefinitionHelper;
 import org.apache.camel.spi.HeaderFilterStrategy;
 import org.apache.camel.spi.HeaderFilterStrategyAware;
 import org.apache.camel.spi.InterceptSendToEndpoint;
 import org.apache.camel.spi.PropertyConfigurerGetter;
-import org.apache.camel.model.ModelCamelContext;
-import org.apache.camel.model.RouteDefinition;
 import org.apache.camel.support.EndpointHelper;
-import org.apache.camel.support.LifecycleStrategySupport;
-import org.apache.camel.util.URISupport;
 
 import java.lang.reflect.Method;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
@@ -34,11 +24,11 @@ import java.util.Map;
  * rest filter, built for the endpoint's path and query parameters. The exchange keeps its
  * headers, so the path and query bind as before.
  * <p>
- * A {@code rest:} endpoint that is a route's input, a REST DSL service, is left alone: its
- * consumer component reads the same parameters, and the filter must never become a consumer's.
- * So a route may not also send to that endpoint: {@link RouteCheck} refuses a route whose static
- * send targets a {@code rest:} endpoint another route consumes from, and a route that consumes
- * from a {@code rest:} endpoint that was set up for sends before its route was added.
+ * The consumer of a {@code rest:} endpoint that is a route's input, a REST DSL service, reads the
+ * same parameters, and the filter must never become a consumer's. So the endpoint's parameters
+ * are replaced by a view that shows the filter to every caller except Camel's
+ * {@code RestEndpoint.createConsumer}, which sees them as they were. A send through an endpoint
+ * that a route also consumes from is then filtered as any other.
  * <p>
  * Covered producer components: {@code http}, {@code vertx-http} and {@code netty-http}, also
  * subclassed. Their rest filters are loaded by name, since the adapter has no compile dependency
@@ -69,23 +59,93 @@ final class RestSendHeaders {
      * application's own filter if it set one.
      */
     static void seed(Endpoint rest) {
-        if (isRouteInput(rest)) {
-            return;
-        }
         Map<String, Object> parameters = parameters(rest);
-        Object own = parameters.get(HEADER_FILTER_STRATEGY);
-        if (own instanceof ForwardedCredentialHeaders.RecordFilter) {
+        if (parameters instanceof SendParameters) {
             return;
         }
-        HeaderFilterStrategy filter = own == null ? new RestFilter(rest)
-                : ForwardedCredentialHeaders.recordFilter(resolve(rest.getCamelContext(), own));
+        var view = new SendParameters(rest, parameters);
         try {
-            parameters.put(HEADER_FILTER_STRATEGY, filter);
-        } catch (RuntimeException e) {
+            rest.getClass().getMethod("setParameters", Map.class).invoke(rest, view);
+        } catch (ReflectiveOperationException | RuntimeException e) {
             throw unfiltered(rest, e);
         }
-        if (parameters.get(HEADER_FILTER_STRATEGY) != filter) {
+        if (parameters(rest) != view || !(view.get(HEADER_FILTER_STRATEGY) instanceof ForwardedCredentialHeaders.RecordFilter)) {
             throw unfiltered(rest, null);
+        }
+    }
+
+    /**
+     * A {@code rest:} endpoint's parameters with the record filter as {@code headerFilterStrategy},
+     * around the filter the parameters name, if any. Only Camel's consumer creation, which reads
+     * them from {@code RestEndpoint.createConsumer}, sees them without it; every other reader,
+     * the rest producer factories included, sees the filter. A snapshot is returned for
+     * iteration, as the factories copy the parameters before they use them.
+     */
+    static final class SendParameters extends java.util.AbstractMap<String, Object> {
+        private final Endpoint rest;
+        private final Map<String, Object> parameters;
+        private RestFilter restFilter;
+        private Object own;
+        private HeaderFilterStrategy composed;
+
+        SendParameters(Endpoint rest, Map<String, Object> parameters) {
+            this.rest = rest;
+            this.parameters = parameters;
+        }
+
+        private static boolean consumerCreation() {
+            return StackWalker.getInstance().walk(frames -> frames.anyMatch(
+                    frame -> frame.getClassName().equals(REST_ENDPOINT) && frame.getMethodName().equals("createConsumer")));
+        }
+
+        private synchronized HeaderFilterStrategy sendFilter() {
+            Object current = parameters.get(HEADER_FILTER_STRATEGY);
+            if (current == null) {
+                if (restFilter == null) {
+                    restFilter = new RestFilter(rest);
+                }
+                return restFilter;
+            }
+            if (composed == null || current != own) {
+                composed = ForwardedCredentialHeaders.recordFilter(resolve(rest.getCamelContext(), current));
+                own = current;
+            }
+            return composed;
+        }
+
+        private Map<String, Object> seen() {
+            if (consumerCreation()) {
+                return parameters;
+            }
+            Map<String, Object> copy = new java.util.LinkedHashMap<>(parameters);
+            copy.put(HEADER_FILTER_STRATEGY, sendFilter());
+            return copy;
+        }
+
+        @Override
+        public java.util.Set<Entry<String, Object>> entrySet() {
+            return java.util.Collections.unmodifiableMap(seen()).entrySet();
+        }
+
+        @Override
+        public Object get(Object key) {
+            return HEADER_FILTER_STRATEGY.equals(key) ? seen().get(key) : parameters.get(key);
+        }
+
+        @Override
+        public boolean containsKey(Object key) {
+            return HEADER_FILTER_STRATEGY.equals(key) ? seen().containsKey(key) : parameters.containsKey(key);
+        }
+
+        @Override
+        public Object put(String key, Object value) {
+            return parameters.put(key, value);
+        }
+
+        @Override
+        public Object remove(Object key) {
+            // The filter stays in place for sends; a factory removes it only from its own copy.
+            return HEADER_FILTER_STRATEGY.equals(key) && !consumerCreation() ? sendFilter() : parameters.remove(key);
         }
     }
 
@@ -111,81 +171,6 @@ final class RestSendHeaders {
             return endpoint instanceof HeaderFilterStrategyAware aware ? aware.getHeaderFilterStrategy() : null;
         } catch (RuntimeException e) {
             return null;
-        }
-    }
-
-    /**
-     * Whether a route consumes from the endpoint. The REST DSL adds its services as routes
-     * from {@code rest:} endpoints before Camel creates their endpoints.
-     */
-    static boolean isRouteInput(Endpoint rest) {
-        if (!(rest.getCamelContext() instanceof ModelCamelContext model)) {
-            return false;
-        }
-        String uri = normalized(rest.getCamelContext(), rest.getEndpointUri());
-        for (RouteDefinition route : List.copyOf(model.getRouteDefinitions())) {
-            String input = route.getInput() == null ? null : route.getInput().getEndpointUri();
-            if (input != null && uri != null && uri.equals(normalized(rest.getCamelContext(), input))) {
-                return true;
-            }
-        }
-        return false;
-    }
-
-    private static String normalized(CamelContext context, String uri) {
-        try {
-            return URISupport.normalizeUri(context.resolvePropertyPlaceholders(uri));
-        } catch (Exception e) {
-            return uri;
-        }
-    }
-
-    /**
-     * Refuses, when a route is added, a send that would go through an unfiltered {@code rest:}
-     * endpoint because a route consumes from it, and a consumer of a {@code rest:} endpoint
-     * whose parameters carry the record filter.
-     */
-    static final class RouteCheck extends LifecycleStrategySupport {
-        @Override
-        public void onRoutesAdd(Collection<Route> added) {
-            List<Route> routes = new ArrayList<>(added);
-            if (!added.isEmpty()) {
-                routes.addAll(added.iterator().next().getCamelContext().getRoutes());
-            }
-            Map<String, String> inputs = new HashMap<>();
-            for (Route route : routes) {
-                Endpoint endpoint = route.getEndpoint();
-                while (endpoint instanceof InterceptSendToEndpoint intercepted && intercepted.getOriginalEndpoint() != endpoint) {
-                    endpoint = intercepted.getOriginalEndpoint();
-                }
-                if (endpoint == null || !isRestEndpoint(endpoint)) {
-                    continue;
-                }
-                if (parameters(endpoint).get(HEADER_FILTER_STRATEGY) instanceof ForwardedCredentialHeaders.RecordFilter) {
-                    throw new IllegalStateException("Route " + route.getRouteId() + " consumes from the rest: endpoint "
-                            + EndpointUriMasking.mask(endpoint.getEndpointUri()) + ", which was set up for rest: sends "
-                            + "before the route was added, so its consumer would use the sends' header filter. Give the "
-                            + "route's input and the sends different URIs, for example an explicit host= on the sends");
-                }
-                inputs.put(normalized(endpoint.getCamelContext(), endpoint.getEndpointUri()), route.getRouteId());
-            }
-            if (inputs.isEmpty() || !(routes.getFirst().getCamelContext() instanceof ModelCamelContext model)) {
-                return;
-            }
-            for (RouteDefinition route : List.copyOf(model.getRouteDefinitions())) {
-                for (EndpointRequiredDefinition send
-                        : ProcessorDefinitionHelper.filterTypeInOutputs(route.getOutputs(), EndpointRequiredDefinition.class)) {
-                    String uri = send.getEndpointUri();
-                    String consumer = uri == null ? null : inputs.get(normalized(model, uri));
-                    if (consumer != null) {
-                        throw new IllegalStateException("Route " + route.getRouteId() + " sends to the rest: endpoint "
-                                + EndpointUriMasking.mask(uri) + ", which route " + consumer + " consumes from. The "
-                                + "adapter cannot keep a consumed Kafka record's credential headers off a send through "
-                                + "a route's input endpoint; give the send a different URI, for example an explicit "
-                                + "host=");
-                    }
-                }
-            }
         }
     }
 

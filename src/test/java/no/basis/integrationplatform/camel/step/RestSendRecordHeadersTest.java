@@ -33,6 +33,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -303,34 +304,52 @@ class RestSendRecordHeadersTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"http", "vertx-http", "netty-http"})
-    void aSendThroughARoutesRestInputDoesNotStart(String producer) throws Exception {
-        int port;
-        try (var socket = new java.net.ServerSocket(0)) {
-            port = socket.getLocalPort();
-        }
-        int servicePort = port;
+    @CsvSource({"http,to", "http,toD", "http,wireTap", "http,enrich", "http,recipientList", "http,routingSlip",
+            "http,dynamicRouter", "http,template",
+            "vertx-http,to", "vertx-http,toD", "vertx-http,wireTap", "vertx-http,enrich", "vertx-http,template",
+            "netty-http,to", "netty-http,toD", "netty-http,wireTap", "netty-http,enrich", "netty-http,template"})
+    void aSendThroughARoutesRestInputIsFilteredAndItsConsumerServes(String producer, String eip) throws Exception {
+        int port = freePort();
+        List<Set<String>> received = Collections.synchronizedList(new ArrayList<>());
+        String rest = "rest:post:orders/{id}";
         context.addRoutes(new RouteBuilder() {
             public void configure() {
-                restConfiguration().component("netty-http").port(servicePort).producerComponent(producer).host("127.0.0.1");
-                // Both resolve to one rest: endpoint, which the adapter leaves unfiltered for its consumer.
-                from("rest:post:orders/{id}").routeId("svc").setBody(constant("ok"));
-                from("direct:record").routeId("record").to("rest:post:orders/{id}").id("post-rest");
+                restConfiguration().component("netty-http").port(port).producerComponent(producer).host("127.0.0.1");
+                // The service and the send resolve to one rest: endpoint.
+                from(rest).routeId("svc")
+                        .process(e -> received.add(new TreeSet<>(e.getMessage().getHeaders().keySet().stream()
+                                .map(name -> name.toLowerCase(Locale.ROOT)).toList())))
+                        .setBody(constant("ok"));
+                var route = from("direct:record").routeId("record");
+                switch (eip) {
+                    case "to" -> route.to(rest).id("post-rest");
+                    case "toD" -> route.toD(rest).id("post-rest");
+                    case "wireTap" -> route.wireTap(rest);
+                    case "enrich" -> route.enrich(rest);
+                    case "recipientList" -> route.recipientList(constant(rest));
+                    case "routingSlip" -> route.routingSlip(constant(rest));
+                    case "dynamicRouter" -> route.dynamicRouter(new OnceRouter(rest));
+                    default -> route.process(e -> e.getContext().createProducerTemplate().send(rest, e));
+                }
             }
         });
+        context.start();
+        send(context, Map.of("Authorization", CALLER_AUTHORIZATION));
 
-        Exception failure = assertThrows(Exception.class, context::start);
-        assertTrue(causes(failure).contains("Route record sends to the rest: endpoint"), causes(failure));
-        assertTrue(causes(failure).contains("route svc consumes from"), causes(failure));
-        assertTrue(requests.isEmpty());
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+        while (received.isEmpty() && System.nanoTime() < deadline) {
+            Thread.sleep(50);
+        }
+        assertEquals(1, received.size(), received.toString());
+        Set<String> names = received.getFirst();
+        assertFalse(names.contains("authorization"), "The record's credential is not sent: " + names);
+        assertTrue(names.stream().noneMatch(name -> name.startsWith("kafka.") || name.startsWith("camelkafka")), names.toString());
+        assertTrue(names.contains("x-route-token"), "Other headers are sent: " + names);
     }
 
     @Test
-    void aRestEndpointSetUpForSendsBeforeItsRouteWasAddedDoesNotStart() throws Exception {
-        int port;
-        try (var socket = new java.net.ServerSocket(0)) {
-            port = socket.getLocalPort();
-        }
+    void aRestEndpointResolvedBeforeItsRouteIsAddedStillServesUnchanged() throws Exception {
+        int port = freePort();
         context.getRestConfiguration().setComponent("netty-http");
         context.getRestConfiguration().setPort(port);
         context.getRestConfiguration().setProducerComponent("http");
@@ -341,15 +360,46 @@ class RestSendRecordHeadersTest {
             }
         });
         context.start();
-        // Resolved while no route consumes from it, so it is set up as for a send.
+        // Resolved while no route consumes from it, so the adapter has seen it as a send's.
         Endpoint early = context.getEndpoint("rest:get:x/{id}");
-
-        Exception failure = assertThrows(Exception.class, () -> context.addRoutes(new RouteBuilder() {
+        context.addRoutes(new RouteBuilder() {
             public void configure() {
-                from(early).routeId("early").setBody(constant("ok"));
+                from(early).routeId("early").setHeader("X-Reply", constant("r")).setBody(constant("ok"));
             }
-        }));
-        assertTrue(causes(failure).contains("Route early consumes from the rest: endpoint"), causes(failure));
+        });
+
+        Endpoint consumer = context.getRoute("early").getConsumer().getEndpoint();
+        assertFalse(String.valueOf(filterOf(consumer)).contains("RestSendHeaders"), String.valueOf(filterOf(consumer)));
+        var response = java.net.http.HttpClient.newHttpClient().send(java.net.http.HttpRequest.newBuilder(
+                java.net.URI.create("http://127.0.0.1:" + port + "/x/o-1")).GET().build(),
+                java.net.http.HttpResponse.BodyHandlers.ofString());
+        assertEquals(200, response.statusCode());
+        assertEquals("ok", response.body());
+        assertEquals("r", response.headers().firstValue("X-Reply").orElse(null));
+    }
+
+    private static int freePort() throws java.io.IOException {
+        try (var socket = new java.net.ServerSocket(0)) {
+            return socket.getLocalPort();
+        }
+    }
+
+    /** A dynamic router that routes once to the given URI. */
+    private static final class OnceRouter extends org.apache.camel.support.ExpressionAdapter {
+        private final String uri;
+
+        OnceRouter(String uri) {
+            this.uri = uri;
+        }
+
+        @Override
+        public Object evaluate(Exchange exchange) {
+            if (exchange.getProperty("routed") != null) {
+                return null;
+            }
+            exchange.setProperty("routed", true);
+            return uri;
+        }
     }
 
     // The Camel internals this relies on, per component, without the adapter installed.

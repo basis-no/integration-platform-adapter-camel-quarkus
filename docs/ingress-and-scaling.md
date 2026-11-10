@@ -88,15 +88,13 @@ with the record's headers. The path and query bind from the exchange's headers
 as before, also from a header the request leaves out. A `rest:` send through
 another producer component fails when its producer is created, or at its first
 request if it reuses an endpoint created before, instead of sending the headers.
-A `rest:` endpoint that is a route's input, a REST DSL service, is not given
-that parameter: its consumer keeps the consumer component's own header filter.
-(A `netty-http` consumer's endpoint is a `netty-http` endpoint like any other,
-so its filter is wrapped with the record's headers, as above; that affects only
-the headers of its response.) Because such an endpoint is unfiltered for sends,
-a route whose `to`, `toD` or `wireTap` targets the same `rest:` URI as a route's
-input does not start; give the send a URI of its own, for example with an
-explicit `host=`. A route that consumes from a `rest:` endpoint the adapter set
-up for sends before that route was added does not start either.
+The consumer of a `rest:` endpoint that is a route's input, a REST DSL service,
+never sees that parameter: Camel's consumer creation reads the endpoint's
+parameters as they were, so the consumer keeps the consumer component's own
+header filter. (A `netty-http` consumer's endpoint is a `netty-http` endpoint
+like any other, so its filter is wrapped with the record's headers, as above;
+that affects only the headers of its response.) A send through a `rest:`
+endpoint that a route also consumes from is filtered like any other.
 
 An HTTP endpoint whose header filter the adapter cannot extend fails when it is
 created, so its route does not start. An endpoint without a header filter sends
@@ -104,9 +102,7 @@ no headers and is left as it is. Not covered: an endpoint that Camel creates for
 a single send without registering it, such as one from a `toD` with
 `cacheSize=-1`; an endpoint whose header filter an application replaces after
 the endpoint was registered; a rest producer factory that ignores the
-`headerFilterStrategy` producer parameter; a `ProducerTemplate` send, an
-`enrich`, or a `toD` whose URI is chosen when it sends, that resolves to a
-`rest:` endpoint a route consumes from; and components other than these
+`headerFilterStrategy` producer parameter; and components other than these
 four. Remove the headers before such a send:
 Camel's header that holds the record's whole header set, under both names, with
 `removeHeader("kafka.HEADERS")` and `removeHeader("CamelKafkaHeaders")`, and
