@@ -55,7 +55,11 @@ Common fail-fast causes include:
   one provisioned for an earlier adapter version. The error names the missing
   columns and the statements that add them;
 - a Message Store statement or lock timeout under 1 ms, or a lock timeout
-  longer than the statement timeout.
+  longer than the statement timeout;
+- a setting of adapter 0.3.x that this version does not read
+  (`basis.delivery-audit.routes`, `basis.input-audit.routes`); the error names
+  each one and what to use instead. See
+  [Settings Removed Since 0.3.x](configuration.md#settings-removed-since-03x).
 
 Treat these as configuration errors. Do not bypass them in business routes.
 

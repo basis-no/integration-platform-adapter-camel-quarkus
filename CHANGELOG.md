@@ -26,6 +26,21 @@
   Upgrade: an outcome or step-outcome statement that legitimately needs longer
   fails now; raise the property. Set `loginTimeout` in the JDBC URL as well
   (see [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts)).
+- The application refuses to start when `basis.delivery-audit.routes` or
+  `basis.input-audit.routes` (`BASIS_DELIVERY_AUDIT_ROUTES`,
+  `BASIS_INPUT_AUDIT_ROUTES`) has a value. Adapter 0.3.5 and 0.3.6 offered
+  delivery audit and non-Kafka input inspection through them; this version
+  does not implement either, and before this change it ignored the settings,
+  so an upgraded integration lost its audit rows without notice. The error names
+  each setting and what to use instead; an empty value only logs a warning.
+  Upgrade: remove `basis.delivery-audit.routes` (delivery audit is not
+  available in this version yet, see
+  [#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)).
+  Replace `basis.input-audit.routes` with the HTTP audit-only preview for an
+  HTTP input, or ingress normalization to Kafka for a file, timer or poller
+  input. See
+  [Settings Removed Since 0.3.x](docs/configuration.md#settings-removed-since-03x).
+
 - A Kafka record whose outcome could not be made durable is read again with a
   growing wait. Before, while the outcome write, a step outcome or the DLQ
   publish kept failing, for example during a Message Store outage, the record

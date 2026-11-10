@@ -46,6 +46,19 @@ into integration repositories.
 | `basis.message-store.kafka.ssl-truststore-location` | `BASIS_MESSAGE_STORE_KAFKA_SSL_TRUSTSTORE_LOCATION` | unset | Mounted CA/truststore path. Hostname verification remains enabled. |
 | `basis.message-store.kafka.ssl-truststore-type` | `BASIS_MESSAGE_STORE_KAFKA_SSL_TRUSTSTORE_TYPE` | `JKS` by default | Use `PEM` for a mounted broker CA certificate. |
 
+## Settings Removed Since 0.3.x
+
+This version does not read these settings of adapter 0.3.5 and 0.3.6. So that
+an upgraded integration does not lose their effect without notice, the
+application refuses to start when one of them has a value, from any
+configuration source, including its environment variable. An empty value, which
+disabled the feature in 0.3.x, only logs a warning; remove it.
+
+| 0.3.x setting | Environment variable | What 0.3.x did | Instead, in this version |
+| --- | --- | --- | --- |
+| `basis.delivery-audit.routes` | `BASIS_DELIVERY_AUDIT_ROUTES` | Recorded each request to the selected `direct:` routes as its own non-replayable row | Not available yet ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)). Remove the setting to start without it. |
+| `basis.input-audit.routes` | `BASIS_INPUT_AUDIT_ROUTES` | Recorded each run of the selected non-Kafka input routes as a non-replayable row | For an HTTP input, the [HTTP audit-only preview](ingress-and-scaling.md#http-audit-only-preview) (`basis.message-store.boundary-routes=<route id>`, `failure-mode=record-failed`, `replay.enabled=false`), which cannot be combined with adapter-managed Kafka boundaries in the same application. For a file, timer or poller input, normalize it to Kafka with `basis.message-store.ingress.normalization-routes`. Inspection of other non-Kafka inputs without Kafka is not available yet ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)). |
+
 ## Required Runtime Configuration
 
 These are integration/runtime dependencies rather than adapter-owned options:
