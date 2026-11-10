@@ -192,6 +192,91 @@ class PostgresKafkaMessageReplayServiceTest {
     }
 
     @Test
+    void refusesRedoWithoutTheStepLedgerBeforeAuditOrPublication() {
+        sink.record(result("message-789", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        var withoutLedger = new PostgresKafkaMessageReplayService(
+                dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", context, "order-pipeline", false);
+        long published = published(TOPIC);
+
+        MessageReplayException thrown = assertThrows(MessageReplayException.class, () -> withoutLedger.replay(
+                new MessageReplayRequest("message-789", "operator@example.com", "Redo the upload", List.of("sftp"))));
+
+        assertEquals("Message message-789 is not replayable with redoSteps: they need"
+                + " a step outcome store that records delivered steps, such as"
+                + " basis.message-store.step-outcome-store=postgres; with noop every step runs on every replay."
+                + " Resend without redoSteps.", thrown.getMessage());
+        assertNothingAuditedOrPublished(TOPIC, published);
+    }
+
+    @Test
+    void theStepStoreInUseDecidesWhetherRedoIsAccepted() {
+        sink.record(result("message-791", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        var redo = new MessageReplayRequest("message-791", "operator@example.com", "Redo the upload", List.of("sftp"));
+        var recording = new no.basis.integrationplatform.camel.step.StepOutcomeStore() {
+            public boolean wasDelivered(String key) { return false; }
+            public void recordDelivered(StepResult step) { }
+            public void recordFailed(StepResult step) { }
+        };
+
+        assertThrows(MessageReplayException.class,
+                () -> configured(new no.basis.integrationplatform.camel.step.NoopStepOutcomeStore()).replay(redo));
+        assertThrows(MessageReplayException.class, () -> configured(null).replay(redo));
+        // An application's own store that records delivered steps, in place of the adapter's.
+        assertEquals(2, configured(recording).replay(redo).attempt());
+    }
+
+    @Test
+    void theStepStoreIsResolvedOnceForAllRedoRequests() {
+        var redo = new MessageReplayRequest("message-792", "operator@example.com", "Redo the upload", List.of("sftp"));
+        var service = configured(new no.basis.integrationplatform.camel.step.NoopStepOutcomeStore());
+
+        assertThrows(MessageReplayException.class, () -> service.replay(redo));
+        assertThrows(MessageReplayException.class, () -> service.replay(redo));
+
+        assertEquals(1, resolutions.get(), "A dependent store must not be created again for every request");
+    }
+
+    private final java.util.concurrent.atomic.AtomicInteger resolutions = new java.util.concurrent.atomic.AtomicInteger();
+
+    @SuppressWarnings("unchecked")
+    private PostgresKafkaMessageReplayService configured(no.basis.integrationplatform.camel.step.StepOutcomeStore store) {
+        var dataSources = (jakarta.enterprise.inject.Instance<DataSource>) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[]{jakarta.enterprise.inject.Instance.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "isResolvable" -> true;
+                    case "get" -> dataSource;
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+        var stores = (jakarta.enterprise.inject.Instance<no.basis.integrationplatform.camel.step.StepOutcomeStore>)
+                java.lang.reflect.Proxy.newProxyInstance(getClass().getClassLoader(),
+                        new Class<?>[]{jakarta.enterprise.inject.Instance.class},
+                        (proxy, method, args) -> switch (method.getName()) {
+                            case "isResolvable" -> store != null;
+                            case "get" -> {
+                                resolutions.incrementAndGet();
+                                yield store;
+                            }
+                            default -> throw new UnsupportedOperationException(method.getName());
+                        });
+        return new PostgresKafkaMessageReplayService(dataSources, java.util.Optional.of(KAFKA.getBootstrapServers()),
+                "bip.%s.in", no.basis.integrationplatform.camel.payload.PayloadObjectStore.disabled(), context,
+                "order-pipeline", stores);
+    }
+
+    @Test
+    void replaysWithoutRedoAndIgnoresBlankRedoEntriesWithoutTheStepLedger() {
+        sink.record(result("message-790", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        var withoutLedger = new PostgresKafkaMessageReplayService(
+                dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", context, "order-pipeline", false);
+        long published = published(TOPIC);
+
+        withoutLedger.replay(MessageReplayRequest.forMessage("message-790"));
+        withoutLedger.replay(new MessageReplayRequest("message-790", null, null, List.of(" ")));
+
+        assertEquals(published + 2, published(TOPIC));
+    }
+
+    @Test
     void refusesAnotherIntegrationsMessageBeforeAuditOrPublication() {
         sink.record(result("other-message", 1, "<Input/>".getBytes(StandardCharsets.UTF_8), true, null,
                 "other-integration"));
