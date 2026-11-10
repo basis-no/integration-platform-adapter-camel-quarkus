@@ -53,8 +53,8 @@ class EndpointUriMaskingTest {
                 Arguments.of("https://target.example/a?redirect=https://a:secret@h\rhttps://b:pw@h", "https://target.example/a?redirect=https://a:xxxxxx@h\rhttps://b:pw@h"),
                 Arguments.of("https://target.example/a?redirect=https://a:secret@h\nhttps://b:pw@h", "https://target.example/a?redirect=https://a:xxxxxx@h\nhttps://b:pw@h"),
                 Arguments.of("https://target.example/a?redirect=https://a:secret@h\u0085https://b:pw@h", "https://target.example/a?redirect=https://a:xxxxxx@h\u0085https://b:pw@h"),
-                Arguments.of("https://target.example/a?redirect=https://a:secret@h https://b:pw@h", "https://target.example/a?redirect=https://a:xxxxxx@h https://b:pw@h"),
-                Arguments.of("https://target.example/a?redirect=https://a:secret@h https://b:pw@h", "https://target.example/a?redirect=https://a:xxxxxx@h https://b:pw@h"));
+                Arguments.of("https://target.example/a?redirect=https://a:secret@h\u2028https://b:pw@h", "https://target.example/a?redirect=https://a:xxxxxx@h\u2028https://b:pw@h"),
+                Arguments.of("https://target.example/a?redirect=https://a:secret@h\u2029https://b:pw@h", "https://target.example/a?redirect=https://a:xxxxxx@h\u2029https://b:pw@h"));
     }
 
     @ParameterizedTest
@@ -117,6 +117,36 @@ class EndpointUriMaskingTest {
         assertEquals(camelRecords, URISupport.sanitizeUri(endpointUri), "the .NET case's Camel value");
         assertEquals(expected, EndpointUriMasking.mask(endpointUri));
         assertNotEquals(camelRecords, expected);
+    }
+
+    /**
+     * Parameter names are decoded as .NET's Uri.UnescapeDataString decodes them: an escape that is
+     * not valid UTF-8 stays as written, and only ASCII hex digits make an escape.
+     */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "%61%75%74%68|auth",
+            "%FAuth|%FAuth",
+            "%C3%A9%FA|\u00e9%FA",
+            "%E2%82%41|%E2%82A",
+            "%F0%9F%98%80|\ud83d\ude00",
+            "%C0%80|%C0%80",
+            "%ED%A0%80|%ED%A0%80",
+            "%F4%90%80%80|%F4%90%80%80",
+            "a+b%2|a+b%2",
+            "%\u0661\u0661|%\u0661\u0661"})
+    void decodesNamesAsDotNetDoes(String encoded, String decoded) {
+        assertEquals(decoded, EndpointUriMasking.percentDecode(encoded));
+    }
+
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            // An invalid escape stays as written, so the name still contains "auth".
+            "https://target.example/a?%FAuth=s&page=2|https://target.example/a?%FAuth=xxxxxx&page=2",
+            // A valid escape is decoded: "%73ig" is "sig".
+            "https://target.example/a?%73ig=s&page=2|https://target.example/a?%73ig=xxxxxx&page=2"})
+    void masksAParameterByItsDecodedName(String endpointUri, String expected) {
+        assertEquals(expected, EndpointUriMasking.mask(endpointUri));
     }
 
     /** Mirrors .NET MaskEndpointUriRecordsNothingOfAUriThePatternsCannotMaskInTime. */

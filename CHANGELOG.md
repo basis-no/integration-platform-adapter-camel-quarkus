@@ -11,8 +11,8 @@
   (such as `Signature`, `X-Amz-Credential` or a name ending in `-key`), and
   names containing `passphrase`, `passcode`, `privatekey`, `accesskey`,
   `accountkey` or `connectionstring`. An endpoint the patterns cannot mask
-  within one second is stored as `xxxxxx`, instead of the step waiting on the
-  pattern. See [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
+  within about a second is stored as `xxxxxx`, instead of the step waiting on
+  the pattern. See [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
   Upgrade: new attempts store the masked value; rows recorded before keep
   theirs. A query or tool that matched a stored endpoint's user name or one of
   these parameter values no longer finds it in new rows. Step keys and

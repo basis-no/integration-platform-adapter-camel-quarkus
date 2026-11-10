@@ -3,9 +3,10 @@ package no.basis.integrationplatform.camel;
 import org.apache.camel.util.SensitiveUtils;
 import org.apache.camel.util.URISupport;
 
-import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
@@ -24,7 +25,7 @@ import java.util.regex.Pattern;
  * {@code accountkey} or {@code connectionstring}. Both rules read the URI as given, and a run of
  * masked characters becomes one {@code xxxxxx}. Keywords an application adds with
  * {@link URISupport#addSanitizeKeywords(String)} are masked as well; the .NET adapter has no such
- * setting. A URI the patterns cannot mask within one second is recorded as {@code xxxxxx}.
+ * setting. A URI the patterns cannot mask within about a second is recorded as {@code xxxxxx}.
  */
 public final class EndpointUriMasking {
     /** The mask written in place of a credential. */
@@ -41,7 +42,9 @@ public final class EndpointUriMasking {
             Pattern.CASE_INSENSITIVE);
     private static final Pattern CAMEL_USER_INFO_PASSWORD = Pattern.compile("(.*://.*?:)(.*)(@)");
 
+    // One deadline covers both patterns, so a URI takes at most about a second to mask.
     private static final long MASK_TIMEOUT_NANOS = 1_000_000_000L;
+    private static final java.lang.reflect.Field EXTRA_SECRETS = extraSecretsField();
 
     private EndpointUriMasking() {
     }
@@ -56,99 +59,133 @@ public final class EndpointUriMasking {
         if (endpointUri == null) {
             return null;
         }
-        List<Character> characters = new ArrayList<>();
-        List<Integer> sources = new ArrayList<>();
+        Sanitized camel;
         try {
-            camelSanitized(endpointUri, characters, sources, System.nanoTime() + MASK_TIMEOUT_NANOS);
+            camel = camelSanitized(endpointUri, System.nanoTime() + MASK_TIMEOUT_NANOS);
         } catch (MaskTimeout e) {
             return MASK;
         }
         boolean[] adapterMasked = adapterMaskedCharacters(endpointUri);
         StringBuilder masked = new StringBuilder(endpointUri.length());
         int index = 0;
-        while (index < characters.size()) {
-            if (!isMasked(index, sources, adapterMasked)) {
-                masked.append(characters.get(index++));
+        while (index < camel.length()) {
+            if (!camel.isMasked(index, adapterMasked)) {
+                masked.append(camel.text.charAt(index++));
                 continue;
             }
             // A run of Camel's masks and characters this rule masks becomes one mask; a run of
             // Camel's masks alone stays as Camel wrote it.
             int run = index;
             boolean adds = false;
-            for (; index < characters.size() && isMasked(index, sources, adapterMasked); index++) {
-                adds |= sources.get(index) >= 0;
+            for (; index < camel.length() && camel.isMasked(index, adapterMasked); index++) {
+                adds |= camel.sources[index] >= 0;
             }
-            if (adds) {
-                masked.append(MASK);
-            } else {
-                for (; run < index; run++) {
-                    masked.append(characters.get(run));
-                }
-            }
+            masked.append(adds ? MASK : camel.text.substring(run, index));
         }
         String result = masked.toString();
-        String camel = URISupport.sanitizeUri(endpointUri);
-        if (!camel.equals(sanitizedText(characters))) {
-            // Camel masks something the patterns above do not, such as keywords the application
-            // added; mask that too, so nothing Camel masks is stored.
+        if (hasAddedSanitizeKeywords() && !URISupport.sanitizeUri(endpointUri).equals(camel.text.toString())) {
+            // The application added keywords to Camel's sanitizer, which the patterns above do
+            // not know; mask those too, so nothing Camel masks is stored.
             return URISupport.sanitizeUri(result);
         }
         return result;
     }
 
-    private static boolean isMasked(int index, List<Integer> sources, boolean[] adapterMasked) {
-        int source = sources.get(index);
-        return source < 0 || adapterMasked[source];
+    /**
+     * Whether keywords were added with {@link URISupport#addSanitizeKeywords(String)}. Camel keeps
+     * them in a private field; if it cannot be read, assume they were, so Camel's own pass runs.
+     */
+    private static boolean hasAddedSanitizeKeywords() {
+        if (EXTRA_SECRETS == null) {
+            return true;
+        }
+        try {
+            return EXTRA_SECRETS.get(null) != null;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return true;
+        }
     }
 
-    private static String sanitizedText(List<Character> characters) {
-        StringBuilder text = new StringBuilder(characters.size());
-        characters.forEach(text::append);
-        return text.toString();
+    private static java.lang.reflect.Field extraSecretsField() {
+        try {
+            java.lang.reflect.Field field = URISupport.class.getDeclaredField("EXTRA_SECRETS");
+            field.setAccessible(true);
+            return field;
+        } catch (ReflectiveOperationException | RuntimeException e) {
+            return null;
+        }
     }
 
     /**
      * Camel's sanitizeUri: the parameter pattern replaced everywhere, then the user info pattern
      * once on that result. Each character keeps the index it had in the URI, or -1 for a mask.
      */
-    private static void camelSanitized(String uri, List<Character> characters, List<Integer> sources, long deadline) {
+    private static Sanitized camelSanitized(String uri, long deadline) {
+        Sanitized parameters = new Sanitized(uri.length() + MASK.length());
         Matcher parameter = CAMEL_SECRET_PARAMETER.matcher(new DeadlineText(uri, deadline));
         int position = 0;
         while (parameter.find()) {
             // "$1=xxxxxx": the name and '=' stay, the value becomes the mask.
-            appendSource(uri, position, parameter.start(2), characters, sources);
-            appendMask(characters, sources);
+            parameters.appendSource(uri, position, parameter.start(2));
+            parameters.appendMask();
             position = parameter.end(2);
         }
-        appendSource(uri, position, uri.length(), characters, sources);
+        parameters.appendSource(uri, position, uri.length());
 
-        Matcher userInfo = CAMEL_USER_INFO_PASSWORD.matcher(new DeadlineText(sanitizedText(characters), deadline));
+        Matcher userInfo = CAMEL_USER_INFO_PASSWORD.matcher(new DeadlineText(parameters.text.toString(), deadline));
         if (!userInfo.find()) {
-            return;
+            return parameters;
         }
         // "$1xxxxxx$3": the password becomes the mask.
-        int start = userInfo.start(2);
-        int end = userInfo.end(2);
-        List<Character> afterCharacters = new ArrayList<>(characters.subList(end, characters.size()));
-        List<Integer> afterSources = new ArrayList<>(sources.subList(end, sources.size()));
-        characters.subList(start, characters.size()).clear();
-        sources.subList(start, sources.size()).clear();
-        appendMask(characters, sources);
-        characters.addAll(afterCharacters);
-        sources.addAll(afterSources);
+        Sanitized sanitized = new Sanitized(parameters.length() + MASK.length());
+        sanitized.appendFrom(parameters, 0, userInfo.start(2));
+        sanitized.appendMask();
+        sanitized.appendFrom(parameters, userInfo.end(2), parameters.length());
+        return sanitized;
     }
 
-    private static void appendSource(String uri, int start, int end, List<Character> characters, List<Integer> sources) {
-        for (int index = start; index < end; index++) {
-            characters.add(uri.charAt(index));
-            sources.add(index);
+    /** Sanitized text, with the index each character had in the URI, or -1 for a mask. */
+    private static final class Sanitized {
+        private final StringBuilder text;
+        private int[] sources;
+
+        Sanitized(int capacity) {
+            text = new StringBuilder(capacity);
+            sources = new int[Math.max(capacity, 16)];
         }
-    }
 
-    private static void appendMask(List<Character> characters, List<Integer> sources) {
-        for (int index = 0; index < MASK.length(); index++) {
-            characters.add(MASK.charAt(index));
-            sources.add(-1);
+        int length() {
+            return text.length();
+        }
+
+        boolean isMasked(int index, boolean[] adapterMasked) {
+            return sources[index] < 0 || adapterMasked[sources[index]];
+        }
+
+        void appendSource(String uri, int start, int end) {
+            for (int index = start; index < end; index++) {
+                append(uri.charAt(index), index);
+            }
+        }
+
+        void appendMask() {
+            for (int index = 0; index < MASK.length(); index++) {
+                append(MASK.charAt(index), -1);
+            }
+        }
+
+        void appendFrom(Sanitized other, int start, int end) {
+            for (int index = start; index < end; index++) {
+                append(other.text.charAt(index), other.sources[index]);
+            }
+        }
+
+        private void append(char character, int source) {
+            if (text.length() == sources.length) {
+                sources = java.util.Arrays.copyOf(sources, sources.length * 2);
+            }
+            sources[text.length()] = source;
+            text.append(character);
         }
     }
 
@@ -235,40 +272,79 @@ public final class EndpointUriMasking {
     }
 
     /**
-     * Decodes %XX sequences as UTF-8, leaving an invalid sequence as it is and '+' as '+', as
-     * .NET's Uri.UnescapeDataString does.
+     * Decodes %XX sequences as .NET's Uri.UnescapeDataString does: a run of escaped bytes that
+     * forms valid UTF-8 becomes its characters, an escaped byte that does not start a valid UTF-8
+     * sequence stays as its %XX text, and '+' and an incomplete escape stay as they are.
      */
-    private static String percentDecode(String text) {
+    static String percentDecode(String text) {
         if (text.indexOf('%') < 0) {
             return text;
         }
         StringBuilder decoded = new StringBuilder(text.length());
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
         int index = 0;
         while (index < text.length()) {
-            char character = text.charAt(index);
-            if (character == '%' && isHex(text, index + 1) && isHex(text, index + 2)) {
-                bytes.write(Integer.parseInt(text.substring(index + 1, index + 3), 16));
+            int lead = escapedByte(text, index);
+            if (lead < 0) {
+                decoded.append(text.charAt(index++));
+                continue;
+            }
+            int length = lead < 0x80 ? 1 : lead >= 0xC2 && lead <= 0xDF ? 2 : lead >= 0xE0 && lead <= 0xEF ? 3
+                    : lead >= 0xF0 && lead <= 0xF4 ? 4 : 0;
+            String character = length == 0 ? null : utf8(text, index, length);
+            if (character == null) {
+                // Not the start of a valid sequence: keep this escape as written.
+                decoded.append(text, index, index + 3);
                 index += 3;
                 continue;
             }
-            flush(bytes, decoded);
             decoded.append(character);
-            index++;
+            index += 3 * length;
         }
-        flush(bytes, decoded);
         return decoded.toString();
     }
 
-    private static boolean isHex(String text, int index) {
-        return index < text.length() && Character.digit(text.charAt(index), 16) >= 0;
+    /** The UTF-8 character of the escaped bytes at the index, or null if they are not valid UTF-8. */
+    private static String utf8(String text, int index, int length) {
+        byte[] bytes = new byte[length];
+        for (int position = 0; position < length; position++) {
+            int value = escapedByte(text, index + 3 * position);
+            if (value < 0) {
+                return null;
+            }
+            bytes[position] = (byte) value;
+        }
+        try {
+            return StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString();
+        } catch (CharacterCodingException e) {
+            return null;
+        }
     }
 
-    private static void flush(ByteArrayOutputStream bytes, StringBuilder decoded) {
-        if (bytes.size() > 0) {
-            decoded.append(new String(bytes.toByteArray(), StandardCharsets.UTF_8));
-            bytes.reset();
+    /** The byte of a %XX escape at the index, or -1 if there is none. */
+    private static int escapedByte(String text, int index) {
+        if (index + 2 >= text.length() || text.charAt(index) != '%') {
+            return -1;
         }
+        int high = hexDigit(text.charAt(index + 1));
+        int low = hexDigit(text.charAt(index + 2));
+        return high < 0 || low < 0 ? -1 : high * 16 + low;
+    }
+
+    private static int hexDigit(char character) {
+        if (character >= '0' && character <= '9') {
+            return character - '0';
+        }
+        if (character >= 'a' && character <= 'f') {
+            return character - 'a' + 10;
+        }
+        if (character >= 'A' && character <= 'F') {
+            return character - 'A' + 10;
+        }
+        return -1;
     }
 
     /** Text that stops a regular expression once its deadline has passed. */

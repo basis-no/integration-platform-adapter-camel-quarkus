@@ -61,12 +61,12 @@ group by o.step_id, 2
 order by o.step_id, last_occurred_at desc;
 ```
 
+The query masks credentials again because rows recorded before adapter 0.4.0
+kept more of the endpoint; see [Stored Endpoints](#stored-endpoints).
+
 Renaming a generated id changes that step's key: replaying, redoing or resending
 a message recorded before the change sends it once more. Rename only once no
 such message will be processed again.
-
-The query masks credentials again because rows recorded before adapter 0.4.0
-kept more of the endpoint; see [Stored Endpoints](#stored-endpoints).
 
 ## Stored Endpoints
 
@@ -90,11 +90,12 @@ the steps it records, so both adapters store the same value for the same URI:
   `subscription-key`), but not `x-bip-*` or `Idempotency-Key`; also the names
   `key`, `code`, `sig` and `pwd`, and names containing `passphrase`,
   `passcode`, `privatekey`, `accesskey`, `accountkey` or `connectionstring`.
-  Parameter names are compared after percent-decoding, ignoring case.
+  Parameter names are compared after percent-decoding (an escape that is not
+  valid UTF-8 is compared as written), ignoring case.
 
 A run of masked characters becomes one `xxxxxx`. Keywords an application adds
 with `URISupport.addSanitizeKeywords` are masked too (the .NET adapter has no
-such setting). An endpoint the patterns cannot mask within one second is
+such setting). An endpoint the patterns cannot mask within about a second is
 stored as `xxxxxx`. The route still sends to the real endpoint; only the stored
 and logged copy is masked.
 
