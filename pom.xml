@@ -47,6 +47,7 @@
     <compiler-plugin.version>3.15.0</compiler-plugin.version>
     <dependency-plugin.version>3.8.1</dependency-plugin.version>
     <upgrade-test.released-version>0.3.6</upgrade-test.released-version>
+    <upgrade-test.skip>false</upgrade-test.skip>
     <surefire-plugin.version>3.5.4</surefire-plugin.version>
     <jandex-plugin.version>3.5.0</jandex-plugin.version>
     <javadoc-plugin.version>3.12.0</javadoc-plugin.version>
@@ -235,6 +236,7 @@
               </artifactItems>
               <outputDirectory>${project.build.directory}/released-adapter</outputDirectory>
               <stripVersion>true</stripVersion>
+              <skip>${upgrade-test.skip}</skip>
             </configuration>
           </execution>
         </executions>
@@ -264,6 +266,29 @@
   </build>
 
   <profiles>
+    <!-- A build that skips tests does not download the released adapter for the upgrade test. -->
+    <profile>
+      <id>skip-upgrade-test-download</id>
+      <activation>
+        <property>
+          <name>skipTests</name>
+        </property>
+      </activation>
+      <properties>
+        <upgrade-test.skip>true</upgrade-test.skip>
+      </properties>
+    </profile>
+    <profile>
+      <id>skip-upgrade-test-download-without-test-build</id>
+      <activation>
+        <property>
+          <name>maven.test.skip</name>
+        </property>
+      </activation>
+      <properties>
+        <upgrade-test.skip>true</upgrade-test.skip>
+      </properties>
+    </profile>
     <!-- Signed, source+javadoc-complete publication to Maven Central via the
          Sonatype Central Portal. Activated by the publish workflow;
          plain builds never need GPG. -->

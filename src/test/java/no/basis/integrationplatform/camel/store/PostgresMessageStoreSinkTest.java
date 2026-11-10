@@ -180,17 +180,22 @@ class PostgresMessageStoreSinkTest {
                     + "for each row execute function pg_temp.log_write()");
             statement.execute("create trigger log_summary after insert or update on bip_message_log "
                     + "for each row execute function pg_temp.log_write()");
-            var objects = new PostgresMessageStoreSink(singleConnection(connection), RETENTION);
-            objects.record(received(1, "s3_object", java.time.Duration.ZERO));
-            objects.record(received(2, "s3_object", java.time.Duration.ofDays(20)));
+            var sink = new PostgresMessageStoreSink(singleConnection(connection), RETENTION);
+            // Expiries carry nanoseconds, as the route policy's do; the database keeps microseconds.
+            var nanos = java.time.Duration.ofNanos(123);
+            sink.record(received("inline", 1, "postgres_inline", nanos));
+            sink.record(received("object", 1, "s3_object", nanos));
+            sink.record(received("object", 2, "s3_object", java.time.Duration.ofDays(20).plus(nanos)));
             var order = new java.util.ArrayList<String>();
             try (ResultSet rows = statement.executeQuery("select tbl from write_order order by seq")) {
                 while (rows.next()) order.add(rows.getString(1));
             }
             statement.execute("drop trigger log_attempt on bip_message_attempt");
             statement.execute("drop trigger log_summary on bip_message_log");
-            // The replay's history row takes the object's first expiry from the summary afterwards.
+            // An inline write and a first object write take two statements. Only the object's replay
+            // history row takes the first expiry from the summary afterwards.
             assertEquals(List.of("bip_message_attempt", "bip_message_log",
+                    "bip_message_attempt", "bip_message_log",
                     "bip_message_attempt", "bip_message_log", "bip_message_attempt"), order);
         }
     }

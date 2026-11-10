@@ -72,9 +72,10 @@ With the `postgres` sink, a replay captures an inline payload again and resets
 its expiry, capped at first receipt plus twice the retention. First receipt is
 the earliest outcome this integration recorded for the message. An S3 object
 payload keeps its first expiry together with its object: the summary row holds
-it, and the attempt row of every later attempt takes it from the summary in the
-same transaction, so history and summary always show the same expiry for an
-object.
+it, and an object attempt row written by this version takes it from the summary
+in the same transaction, so history and summary show the same expiry for its
+object attempts. A message whose earlier attempts were inline, or written by an
+older adapter version, keeps those attempt rows' own expiries.
 
 Cleanup removes inline bytes or the S3 object, sets `payload_deleted_at`, and
 marks the message non-replayable while retaining lifecycle audit. Bucket

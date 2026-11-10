@@ -49,6 +49,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -157,16 +158,19 @@ class RollingUpgradeWriteTest {
         }
 
         var failures = new CopyOnWriteArrayList<Throwable>();
+        var oldPodWrites = new AtomicInteger();
+        var newPodWrites = new AtomicInteger();
         var current = new PostgresMessageStoreSink(dataSource);
         MessageStoreSink countingCurrent = row -> {
             try {
                 current.record(row);
+                newPodWrites.incrementAndGet();
             } catch (RuntimeException e) {
                 failures.add(e);
                 throw e;
             }
         };
-        Object releasedSink = released.countingSink(released.sink(dataSource), failures);
+        Object releasedSink = released.countingSink(released.sink(dataSource), oldPodWrites, failures);
         String uri = "kafka:" + topic + "?brokers=" + brokers + "&groupId=" + group
                 + "&autoOffsetReset=earliest&autoCommitEnable=false&allowManualCommit=true&breakOnFirstError=true"
                 + "&maxPollRecords=5&pollTimeoutMs=100";
@@ -178,9 +182,14 @@ class RollingUpgradeWriteTest {
             awaitRows(records / 4);
             newPod.start();
             awaitRows(records / 2);
+            // Both versions write before the old pod leaves.
+            await(() -> newPodWrites.get() > 0, "the new pod to record a message");
             oldPod.stop();
             awaitRows(records);
         }
+
+        assertTrue(oldPodWrites.get() > 0 && newPodWrites.get() > 0,
+                "old pod " + oldPodWrites.get() + ", new pod " + newPodWrites.get() + " writes");
 
         assertEquals(List.of(), failures.stream().map(RollingUpgradeWriteTest::rootMessage).toList());
         assertEquals(Integer.toString(records), value("select count(*) from bip_message_log where status = 'COMPLETED'"));
@@ -198,6 +207,14 @@ class RollingUpgradeWriteTest {
             }
         });
         return context;
+    }
+
+    private static void await(java.util.function.BooleanSupplier condition, String what) throws InterruptedException {
+        long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(90);
+        while (!condition.getAsBoolean()) {
+            if (System.nanoTime() > deadline) throw new AssertionError("Timed out waiting for " + what);
+            Thread.sleep(100);
+        }
     }
 
     private void awaitRows(int expected) throws InterruptedException {
@@ -285,10 +302,12 @@ class RollingUpgradeWriteTest {
                     .getConstructor(DataSource.class).newInstance(dataSource);
         }
 
-        Object countingSink(Object sink, List<Throwable> failures) {
+        Object countingSink(Object sink, AtomicInteger writes, List<Throwable> failures) {
             return Proxy.newProxyInstance(loader, new Class<?>[] {sinkType}, (proxy, method, args) -> {
                 try {
-                    return method.invoke(sink, args);
+                    Object returned = method.invoke(sink, args);
+                    if (method.equals(record)) writes.incrementAndGet();
+                    return returned;
                 } catch (InvocationTargetException e) {
                     if (method.equals(record)) failures.add(e.getCause());
                     throw e.getCause();
@@ -315,6 +334,10 @@ class RollingUpgradeWriteTest {
         }
     }
 
+    /**
+     * Child-first for classes in the adapter's package only. Resources are parent-first, so
+     * {@code getResource} finds this build's files (such as the schema SQL), not the jar's.
+     */
     private static final class ChildFirst extends URLClassLoader {
         ChildFirst(URL jar, ClassLoader parent) {
             super(new URL[] {jar}, parent);

@@ -11,6 +11,7 @@ import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Objects;
 
 /** Transactionally upserts terminal attempts and current message state in Postgres. */
@@ -138,7 +139,8 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             """;
 
     private static final String UPDATE_ATTEMPT_EXPIRY_SQL = """
-            update bip_message_attempt set payload_expires_at = ? where message_id = ? and attempt = ?
+            update bip_message_attempt set payload_expires_at = ?
+            where message_id = ? and attempt = ? and payload_expires_at is distinct from ?
             """;
 
     // The earliest outcome recorded for this message by this integration: its first receipt.
@@ -220,7 +222,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 Instant requestedExpiry = cappedInlineExpiry(connection, result);
                 upsertMessageAttempt(connection, result, requestedExpiry);
                 Instant keptExpiry = upsertMessageLog(connection, result, requestedExpiry);
-                if (!Objects.equals(keptExpiry, requestedExpiry)) {
+                if ("s3_object".equals(result.payloadStorage()) && !sameMicrosecond(keptExpiry, requestedExpiry)) {
                     updateAttemptExpiry(connection, result, keptExpiry);
                 }
                 connection.commit();
@@ -242,8 +244,14 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             setTimestampOrNull(statement, 1, payloadExpiresAt);
             statement.setString(2, result.messageId());
             statement.setInt(3, result.attempt());
+            setTimestampOrNull(statement, 4, payloadExpiresAt);
             statement.executeUpdate();
         }
+    }
+
+    // The database keeps microseconds; a requested expiry carries nanoseconds.
+    private static boolean sameMicrosecond(Instant stored, Instant requested) {
+        return Objects.equals(stored, requested == null ? null : requested.truncatedTo(ChronoUnit.MICROS));
     }
 
     private void upsertMessageAttempt(
