@@ -73,6 +73,14 @@ to fail; let the failure reach the adapter.
   timer, refuses to start. So `all` starts only when every route is such an
   input.
 
+An enrolled route cannot be replayed into the input topic
+([#101](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/101)):
+startup refuses every selected route that is neither a Kafka input nor the HTTP
+preview, and the HTTP preview requires replay to be disabled. A replay
+publishes only when the message's last attempt was recorded by a Kafka route of
+this application that consumes the replay topic; a message recorded by a Kafka
+route on another topic is refused before any replay audit row is written.
+
 Leave `boundary-routes` at `auto` unless the application needs the HTTP
 preview.
 
