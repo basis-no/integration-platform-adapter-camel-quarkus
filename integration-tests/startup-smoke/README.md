@@ -12,6 +12,8 @@ It checks what only a packaged build shows:
   commit, break on first error, reconnect on a poll failure) reach the
   application's endpoint;
 - the Key-Value Store is discoverable without opening its inactive datasource;
+- a polling route runs uncoordinated, without a lease, since the inactive datasource
+  leaves the application without a Key-Value Store;
 - an internal request's failure reaches its caller without Kafka or a database.
 
 This is a test application, not a starting point for an integration. CI runs
