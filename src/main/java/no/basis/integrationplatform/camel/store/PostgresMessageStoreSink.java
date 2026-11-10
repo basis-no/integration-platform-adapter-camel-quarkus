@@ -11,6 +11,7 @@ import java.sql.Timestamp;
 import java.sql.Types;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.Objects;
 
 /** Transactionally upserts terminal attempts and current message state in Postgres. */
 public class PostgresMessageStoreSink implements MessageStoreSink {
@@ -136,6 +137,10 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 error = excluded.error
             """;
 
+    private static final String UPDATE_ATTEMPT_EXPIRY_SQL = """
+            update bip_message_attempt set payload_expires_at = ? where message_id = ? and attempt = ?
+            """;
+
     // The earliest outcome recorded for this message by this integration: its first receipt.
     private static final String FIRST_RECEIPT_SQL = """
             select min(occurred_at) from bip_message_attempt where message_id = ? and integration = ?
@@ -208,8 +213,16 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             boolean previousAutoCommit = connection.getAutoCommit();
             connection.setAutoCommit(false);
             try {
-                Instant payloadExpiresAt = upsertMessageLog(connection, result, cappedInlineExpiry(connection, result));
-                upsertMessageAttempt(connection, result, payloadExpiresAt);
+                // History first, then the summary, as adapter 0.3.6 does: both lines take the row
+                // locks in one order, so they cannot deadlock during a rolling upgrade. The summary
+                // keeps an object payload's first expiry; the history row takes it within this
+                // transaction, so no reader sees the provisional value.
+                Instant requestedExpiry = cappedInlineExpiry(connection, result);
+                upsertMessageAttempt(connection, result, requestedExpiry);
+                Instant keptExpiry = upsertMessageLog(connection, result, requestedExpiry);
+                if (!Objects.equals(keptExpiry, requestedExpiry)) {
+                    updateAttemptExpiry(connection, result, keptExpiry);
+                }
                 connection.commit();
             } catch (Exception e) {
                 connection.rollback();
@@ -220,6 +233,16 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
         } catch (Exception e) {
             throw new MessageStoreSinkException("Failed to record message attempt " + result.messageId()
                     + "/" + result.attempt(), e);
+        }
+    }
+
+    private void updateAttemptExpiry(Connection connection, MessageAttemptResult result, Instant payloadExpiresAt)
+            throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(UPDATE_ATTEMPT_EXPIRY_SQL)) {
+            setTimestampOrNull(statement, 1, payloadExpiresAt);
+            statement.setString(2, result.messageId());
+            statement.setInt(3, result.attempt());
+            statement.executeUpdate();
         }
     }
 

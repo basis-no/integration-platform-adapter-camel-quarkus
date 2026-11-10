@@ -71,7 +71,10 @@ adapter never claims replayability without durable bytes.
 With the `postgres` sink, a replay captures an inline payload again and resets
 its expiry, capped at first receipt plus twice the retention. First receipt is
 the earliest outcome this integration recorded for the message. An S3 object
-payload keeps its first expiry together with its object.
+payload keeps its first expiry together with its object: the summary row holds
+it, and the attempt row of every later attempt takes it from the summary in the
+same transaction, so history and summary always show the same expiry for an
+object.
 
 Cleanup removes inline bytes or the S3 object, sets `payload_deleted_at`, and
 marks the message non-replayable while retaining lifecycle audit. Bucket

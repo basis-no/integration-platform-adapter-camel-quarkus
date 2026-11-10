@@ -45,6 +45,8 @@
     <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
     <quarkus.platform.version>3.33.4</quarkus.platform.version>
     <compiler-plugin.version>3.15.0</compiler-plugin.version>
+    <dependency-plugin.version>3.8.1</dependency-plugin.version>
+    <upgrade-test.released-version>0.3.6</upgrade-test.released-version>
     <surefire-plugin.version>3.5.4</surefire-plugin.version>
     <jandex-plugin.version>3.5.0</jandex-plugin.version>
     <javadoc-plugin.version>3.12.0</javadoc-plugin.version>
@@ -211,11 +213,40 @@
         </executions>
       </plugin>
       <plugin>
+        <!-- The released 0.3.6 adapter, for the rolling-upgrade test only: it runs on its own
+             class loader next to this build, never on the test or runtime classpath. -->
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>${dependency-plugin.version}</version>
+        <executions>
+          <execution>
+            <id>released-adapter-for-upgrade-test</id>
+            <phase>process-test-resources</phase>
+            <goals>
+              <goal>copy</goal>
+            </goals>
+            <configuration>
+              <artifactItems>
+                <artifactItem>
+                  <groupId>no.basis.integrationplatform</groupId>
+                  <artifactId>integration-platform-adapter-camel-quarkus</artifactId>
+                  <version>${upgrade-test.released-version}</version>
+                  <type>jar</type>
+                </artifactItem>
+              </artifactItems>
+              <outputDirectory>${project.build.directory}/released-adapter</outputDirectory>
+              <stripVersion>true</stripVersion>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>${surefire-plugin.version}</version>
         <configuration>
           <useModulePath>false</useModulePath>
           <systemPropertyVariables>
+            <released.adapter.jar>${project.build.directory}/released-adapter/integration-platform-adapter-camel-quarkus.jar</released.adapter.jar>
+            <released.adapter.version>${upgrade-test.released-version}</released.adapter.version>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
           </systemPropertyVariables>
         </configuration>

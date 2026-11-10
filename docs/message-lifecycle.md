@@ -74,6 +74,11 @@ different problems and production direct-Postgres mode uses both.
 - `bip_contract`: store schema version (`contract_major`) checked at adapter
   startup, together with the tables and columns the adapter writes.
 
+The `postgres` sink writes an outcome in one transaction, the attempt row first
+and then the summary row, as adapter 0.3.6 does. Both lines take the two rows'
+locks in the same order, so pods of either version can write the same message
+during a rolling upgrade without deadlocking each other.
+
 In production the database operator provisions the schema outside
 integration pods. SQL resources in the adapter JAR exist for local tests, not
 application-owned migrations.
