@@ -97,6 +97,9 @@ Start with the [documentation index](docs/index.md).
   input instead of the message the route left, and logs that a handled message
   is being parked. 0.3.6 fixed it, and so does 0.4.0; see
   [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- On `main`, a Kafka record whose outcome could not be made durable is read
+  again with a growing wait instead of several times a second; see
+  [Reading a record again](docs/retry-dlq-replay.md#reading-a-record-again).
 - 0.3.x and 0.4.0-rc1 leave a Kafka boundary's consumer on Camel's default
   `auto.offset.reset=latest`. A record whose outcome was not durable, on a
   partition where the consumer group has no committed offset yet, is skipped
@@ -124,6 +127,11 @@ Start with the [documentation index](docs/index.md).
   normalization, replica-safety validation, Kafka activity counters with
   admission counting on by default (opt-in in 0.3.6), and the 0.3.6 Key-Value
   Store.
+- Delivery audit and non-Kafka input inspection from 0.3.5 and 0.3.6
+  (`basis.delivery-audit.routes`, `basis.input-audit.routes`) are not in this
+  development line yet; an application with either set refuses to start and
+  names what to use instead. See
+  [Settings Removed Since 0.3.x](docs/configuration.md#settings-removed-since-03x).
 - The `0.4` features have extensive local unit and Testcontainers coverage but
   are not released until the stacked changes are merged, released, and the
   remote acceptance campaign is complete.

@@ -4,15 +4,32 @@
 
 The global route configuration applies unless a route selects a variant:
 
-| Configuration | Redeliveries | Initial delay | Terminal behavior |
-| --- | ---: | ---: | --- |
-| default | 3 | 1 second | configured failure mode |
-| `ip-slow-backend` | 6 | 5 seconds | configured failure mode |
-| `ip-no-retry` | 0 | none | configured failure mode |
-| `bip-ingress-normalization` | 3 | 1 second | propagate to source |
+| Configuration | Redeliveries | Delays | Total wait | Terminal behavior |
+| --- | ---: | --- | ---: | --- |
+| default | 3 | 1, 2, 4 seconds | 7 seconds | configured failure mode |
+| `ip-slow-backend` | 6 | 5, 10, 20, 20, 20, 20 seconds | 95 seconds | configured failure mode |
+| `ip-no-retry` | 0 | none | none | configured failure mode |
+| `bip-ingress-normalization` | 3 | 1, 2, 4 seconds | 7 seconds | propagate to source |
 
-Retries use exponential backoff. Automatic redelivery does not increment the
-message attempt; it adds diagnostics to that attempt.
+Retries use exponential backoff; `ip-slow-backend` caps each delay at 20
+seconds. Automatic redelivery does not increment the message attempt; it adds
+diagnostics to that attempt.
+
+On a Kafka input the waits run on the consumer thread, between attempts that
+take their own time. `max.poll.interval.ms` (300 seconds by default) bounds the
+time between two polls, and the consumer processes every record of a poll
+before it polls again (up to 500 records, Camel's default `maxPollRecords`), so
+the budget covers all records of one poll, not one record. If they take longer,
+Kafka removes the consumer from its group and the uncommitted records are
+delivered again. With `ip-slow-backend`, one record that exhausts its retries
+waits 95 seconds, so three such records in one poll already take most of the
+interval. For a route on `ip-slow-backend`, set `maxPollRecords=1` on the
+Kafka input, or raise `maxPollIntervalMs` on it to cover the records of a poll.
+With one record per poll, about 200 seconds remain for its seven attempts:
+bound each receiver call well inside that with `responseTimeout` and
+`connectTimeout` (see the table below for the forms Camel applies), and turn
+the HTTP client's own retry off, as described next, since it can double the
+requests in each attempt.
 
 The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
 client inside Camel's `http` component (Apache HttpClient 5.5 and its default
@@ -31,7 +48,7 @@ eight requests before the message is parked. Set
 `camel.component.http.automatic-retries-disabled=true` to leave every retry to
 the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
 and for routes on the `ip-slow-backend` configuration, whose own redeliveries
-already use much of the poll interval.
+already use about a third of the poll interval.
 
 On Camel 4's `http` component, bound a receiver call with `responseTimeout`
 and `connectTimeout`. Camel accepts some timeout options without applying them,
@@ -88,6 +105,29 @@ waits until the DLQ accepts the record. Each attempt logs at ERROR. A record
 that the DLQ endpoint can never accept, for example one above the DLQ topic's
 size limit, keeps its partition waiting until an operator fixes the DLQ or
 moves the consumer group past it.
+
+### Reading a record again
+
+A Kafka record whose outcome could not be made durable, because the outcome
+write, a step outcome check or write, or the DLQ publish failed, is not
+committed and is read again. The first time, it is read again at once. If the
+same record comes back with its outcome still not durable, the adapter waits
+before handing it back: 1 second, doubling on each further read, at most 30
+seconds. The wait is also kept to half the consumer's effective
+`max.poll.interval.ms` (an `additionalProperties` value overrides the named
+option) less the time since the records of the poll that returned it began to
+be processed, including the records before it, so that the consumer polls again
+within its interval. This relies on `break-on-first-error=true`, the adapter's
+default, under which a record that is read again ends its poll; without it
+there is no wait. A committed outcome on the partition, or a later record,
+starts again at once. The consumer waits for it, also when the route completes
+on another thread, so the consumer's other partitions wait too, as they do
+after any record that is read again. The wait ends early when the application
+stops. Before, the record was read again at once
+for as long as the failure lasted, several times a second, and each read ran
+the route again, including sends that the step store did not skip and another
+DLQ record for a message that was parked. A record whose topic, partition and
+offset the adapter did not see at the start is read again at once, as before.
 
 `basis.message-store.dlq-uri` must name one fixed endpoint that reports a
 failed publish as an error: a `kafka:` endpoint whose producer waits for the
