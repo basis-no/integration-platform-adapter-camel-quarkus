@@ -1,9 +1,12 @@
 package no.basis.integrationplatform.camel.step;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
+import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.lifecycle.PayloadCapturePolicy;
 import no.basis.integrationplatform.camel.lifecycle.PayloadMode;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
@@ -23,6 +26,7 @@ import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.TreeSet;
 
 /**
  * Captures and restores durable outputs for safely skipped replay steps. A restore verifies the
@@ -31,6 +35,7 @@ import java.util.Set;
 @ApplicationScoped
 public class StepOutputCheckpointService {
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String HEADER_NAMES_PROPERTY = "basis.message-store.step.output-checkpoint.header-names";
     // The largest array the JVM allocates, less the byte that detects a longer object.
     private static final long MAX_RESTORED_OBJECT_BYTES = Integer.MAX_VALUE - 9L;
 
@@ -69,7 +74,7 @@ public class StepOutputCheckpointService {
                     long objectMaxBytes,
             @ConfigProperty(name = "basis.message-store.payload.retention-days", defaultValue = "30")
                     long retentionDays,
-            @ConfigProperty(name = "basis.message-store.step.output-checkpoint.header-names")
+            @ConfigProperty(name = HEADER_NAMES_PROPERTY)
                     Optional<String> headerNames,
             @ConfigProperty(name = "basis.message-store.step.output-checkpoint.property-names")
                     Optional<String> propertyNames) {
@@ -102,6 +107,28 @@ public class StepOutputCheckpointService {
         this.integrationName = integrationName;
         this.headerNames = parseNames(headerNames);
         this.propertyNames = parseNames(propertyNames);
+        refuseCredentialHeaders(this.headerNames);
+    }
+
+    void validateAtStartup(@Observes StartupEvent ignored) {
+        // Construction refuses a credential-like checkpoint header.
+    }
+
+    private static void refuseCredentialHeaders(Set<String> names) {
+        Set<String> refused = new TreeSet<>(String.CASE_INSENSITIVE_ORDER);
+        for (String name : names) {
+            if (PlatformRouteConfiguration.isCredentialHeader(name)) {
+                refused.add(name);
+            }
+        }
+        if (!refused.isEmpty()) {
+            // A checkpoint is stored in the Message Store and set on the exchange again on every
+            // replay, so a credential in it would be kept for the payload retention and reused.
+            throw new IllegalArgumentException(HEADER_NAMES_PROPERTY + " names credential-like headers "
+                    + String.join(", ", refused) + ". A checkpoint is stored in the Message Store and "
+                    + "restored on replay, so it must not hold credentials; remove them from the list and "
+                    + "obtain a fresh credential on each attempt instead.");
+        }
     }
 
     void ensureCaptureAvailable(String stepId) {
