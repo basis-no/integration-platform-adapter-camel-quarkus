@@ -119,6 +119,11 @@ Start with the [documentation index](docs/index.md).
 - On `main`, only a managed Kafka input is parked in the DLQ, as in 0.3.6; a
   request on an exchange of its own, or a timer or poller input, fails back to
   its caller. See [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- On `main`, the failure handling follows the input type: a Kafka boundary
+  parks in the DLQ, an HTTP audit-only boundary records `FAILED`, answers its
+  caller and is never replayable, and the two can run in one application; see
+  [Failure and Replay per Input Type](docs/retry-dlq-replay.md#failure-and-replay-per-input-type).
+  A `jms:queue:` input needs `acknowledgementModeName=CLIENT_ACKNOWLEDGE`.
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - The 0.3 line continues as a maintained series, with its current scope (one

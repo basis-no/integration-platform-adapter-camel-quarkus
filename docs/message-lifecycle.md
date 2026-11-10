@@ -31,8 +31,8 @@ The Camel adapter records one terminal outcome per message attempt:
 
 - `COMPLETED`: route processing and required outcome recording succeeded.
 - `DLQ`: retries were exhausted and the DLQ endpoint accepted the record.
-- `FAILED`: terminal failure was recorded without a Kafka DLQ, as used by the
-  explicit non-Kafka audit-only preview. At a Kafka boundary, `FAILED` means the
+- `FAILED`: terminal failure was recorded without a Kafka DLQ, as at an HTTP
+  audit-only boundary, which hands the failure back to its caller. At a Kafka boundary, `FAILED` means the
   failure was not parked, for example because the DLQ publish failed or a step
   outcome could not be recorded; the offset is not committed and the record is
   read again.
