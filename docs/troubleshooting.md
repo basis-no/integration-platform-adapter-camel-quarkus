@@ -59,6 +59,11 @@ Common fail-fast causes include:
 - normalization route also selected as a lifecycle boundary;
 - normalization without the durable Postgres step store;
 - unsafe polling with missing or multiple declared replicas;
+- an id in `basis.message-store.single-active.excluded-routes` that names a
+  route the adapter does not run under a lease;
+- a polling route whose consumer the adapter cannot gate (neither a
+  scheduled-poll consumer nor a timer, Quartz or cron trigger); list it in
+  `basis.message-store.single-active.excluded-routes`;
 - store schema version mismatch in `bip_contract`;
 - a Message Store without a table or column this adapter writes, for example
   one provisioned for an earlier adapter version. The error names the missing
@@ -139,10 +144,33 @@ adapter intentionally fails closed when claim-check metadata does not match.
 
 ## Polling Works with One Replica but Not Several
 
-Uncoordinated polling is rejected with more than one replica. Use `master:`
-with the Kubernetes cluster service and leader-election RBAC, use a broker
-queue with competing consumers, or keep exactly one replica. Do not hardcode
-the deployment count in application properties; the deployment sets it.
+A polling route runs on the replica that holds its lease (see
+[Single-Active Routes](single-active.md)); on the other replicas it is started
+but does no work. The holder is the Key-Value Store key `lease/<routeId>`. A
+route listed in `basis.message-store.single-active.excluded-routes` is not
+coordinated, so an ingress normalization route on it is rejected with more
+than one declared replica: remove it from the list, use `master:` with the
+Kubernetes cluster service and leader-election RBAC, use a broker queue with
+competing consumers, or keep exactly one replica. Do not hardcode the
+deployment count in application properties; the deployment sets it.
+
+## A Polling Route Does Nothing
+
+- Another replica holds `lease/<routeId>`: the route works there. After a crash
+  the lease expires within 30 seconds.
+- The Key-Value Store is unreachable: the route's work stays stopped on every
+  replica (WARN "waits: the Key-Value Store is unreachable") until it is
+  reachable again.
+- The Message Store check has not passed or failed at startup: no lease is
+  taken until it passes.
+- The route is an ingress normalization route the replica check accepted
+  because of its lease, and the Message Store has no `bip_key_value` table
+  (ERROR "stays stopped on every replica: it needs its lease"): provision the
+  table, or declare one replica.
+- The gauge `integration_single_active_lease{route=…}` shows this replica's
+  state: `1` held, `0` waiting, `2` uncoordinated, `3` stopped because the
+  route needs its lease and there is no Key-Value Store. If no replica
+  reports `1` or `2` for a route, nobody runs it.
 
 ## Replayed Route Has a Missing Response Body
 

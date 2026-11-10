@@ -92,6 +92,19 @@ class ContractVersionStartupGateTest {
     }
 
     @Test
+    void recordsTheOutcomeOfTheCheckForWorkThatWaitsForIt() throws Exception {
+        ContractVersionStartupGate nothingToCheck =
+                new ContractVersionStartupGate("log", "noop", true, () -> null, 1, 0L);
+        assertEquals(ContractVersionStartupGate.Outcome.PENDING, nothingToCheck.outcome(), "unknown until the check ran");
+        assertDoesNotThrow(nothingToCheck::verify);
+        assertEquals(ContractVersionStartupGate.Outcome.PASSED, nothingToCheck.outcome(), "nothing to check counts as passed");
+
+        ContractVersionStartupGate refused = new ContractVersionStartupGate("log", "postgres", true, () -> null, 1, 0L);
+        assertThrows(IllegalStateException.class, refused::verify);
+        assertEquals(ContractVersionStartupGate.Outcome.FAILED, refused.outcome(), "a failure is recorded for the process");
+    }
+
+    @Test
     void refusesThePostgresStepStoreWithoutADataSource() {
         IllegalStateException thrown = assertThrows(IllegalStateException.class,
                 new ContractVersionStartupGate("log", "postgres", true, () -> null, 1, 0L)::verify);

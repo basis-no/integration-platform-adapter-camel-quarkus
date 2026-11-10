@@ -96,3 +96,7 @@ and earlier, remain unknown for these metrics. This telemetry adds no
 resend, manual-commit, Message Store schema or application-database requirement.
 
 See [configuration](configuration.md) for property names and environment mappings.
+
+The adapter also exports `integration_single_active_lease{route}`, the lease
+state of each polling route on this replica, which is not an activity counter;
+see [Single-Active Routes](single-active.md#seeing-the-holder).
