@@ -126,10 +126,17 @@ class PostgresKafkaMessageReplayServiceTest {
 
         try (KafkaConsumer<String, byte[]> consumer = consumer()) {
             consumer.subscribe(List.of(TOPIC));
-            var records = consumer.poll(Duration.ofSeconds(10));
+            // Other tests publish to the same topic on the shared broker.
+            var records = new java.util.ArrayList<org.apache.kafka.clients.consumer.ConsumerRecord<String, byte[]>>();
+            consumer.poll(Duration.ofSeconds(10)).forEach(candidate -> {
+                var id = candidate.headers().lastHeader(PlatformHeaders.MESSAGE_ID);
+                if (id != null && "message-123".equals(new String(id.value(), StandardCharsets.UTF_8))) {
+                    records.add(candidate);
+                }
+            });
 
-            assertEquals(1, records.count());
-            var record = records.iterator().next();
+            assertEquals(1, records.size());
+            var record = records.getFirst();
             assertEquals("order-456", record.key());
             assertEquals("payload-body", new String(record.value(), StandardCharsets.UTF_8));
             assertEquals("message-123", header(record, PlatformHeaders.MESSAGE_ID));
@@ -143,6 +150,33 @@ class PostgresKafkaMessageReplayServiceTest {
             // The redo header wire format is the same JSON array as the audit column.
             assertEquals("[\"sftp\"]", header(record, PlatformHeaders.REDO_STEPS));
         }
+    }
+
+    @Test
+    void aReplayRecordIsKeyedByTheStoredCorrelationIdAndHasNoKeyWithoutOne() throws Exception {
+        sink.record(result("message-keyed", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        sink.record(result("message-unkeyed", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        update("update bip_message_log set correlation_id = null where message_id = 'message-unkeyed'");
+
+        replayService.replay("message-keyed");
+        replayService.replay("message-unkeyed");
+
+        var keys = new java.util.HashMap<String, String>();
+        try (KafkaConsumer<String, byte[]> consumer = consumer()) {
+            consumer.subscribe(List.of(TOPIC));
+            long deadline = System.nanoTime() + Duration.ofSeconds(10).toNanos();
+            while (keys.size() < 2 && System.nanoTime() < deadline) {
+                consumer.poll(Duration.ofMillis(500)).forEach(record -> {
+                    var id = record.headers().lastHeader(PlatformHeaders.MESSAGE_ID);
+                    String messageId = id == null ? null : new String(id.value(), StandardCharsets.UTF_8);
+                    if ("message-keyed".equals(messageId) || "message-unkeyed".equals(messageId)) {
+                        keys.put(messageId, record.key() == null ? "<none>" : record.key());
+                    }
+                });
+            }
+        }
+        assertEquals("order-456", keys.get("message-keyed"));
+        assertEquals("<none>", keys.get("message-unkeyed"));
     }
 
     @Test
