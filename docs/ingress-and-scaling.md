@@ -162,29 +162,34 @@ multi-replica poll fails startup rather than risking duplicate discovery.
 - Set `acknowledgementModeName=CLIENT_ACKNOWLEDGE` on a `jms:queue:`
   normalization input (or on the `jms` component). Then the message is
   acknowledged when the route completes, after the Kafka publish, and a failure
-  makes the broker deliver it again. With camel-jms's default
+  makes the broker deliver it again. The acknowledgement is per JMS session, so
+  keep one consumer per session (camel-jms's default). With camel-jms's default
   `AUTO_ACKNOWLEDGE`, a message whose route failed after its retries is not
   delivered again and is lost; the adapter does not check this yet
   ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
-- Do not combine `transacted=true` with this pattern: a transacted session's
-  rollback and the adapter's acknowledgement after the Kafka publish are two
-  different recovery mechanisms for the same failure.
+- After a failure the broker delivers the message again at once. A message that
+  keeps failing is handled by the broker's own delivery limit and dead-letter
+  address (Apache ActiveMQ Artemis moves it after 10 deliveries by default), not
+  by the adapter's DLQ. Configure them on the broker.
+- `transacted=true` is not tested with this pattern and is not covered by these
+  rules; see #123.
 - JMS topics (non-competing subscribers) are not supported for normalization:
   every replica would receive and publish every message.
 - Order is kept per queue up to the Kafka publish; after it, per Kafka key and
   partition only.
-- Checked with Apache ActiveMQ Artemis in the adapter's tests; other brokers are
-  not qualified.
+- Checked with `jms:` and Apache ActiveMQ Artemis in the adapter's tests.
+  `sjms:` and `sjms2:` and other brokers are not verified.
 
 ## HTTP Audit-Only Preview
 
 An explicitly selected `platform-http:` route may record terminal audit without
-claiming Kafka commit, DLQ, or replay semantics. List its route id in
-`basis.message-store.boundary-routes`, together with the application's Kafka
-input routes if it has any (`auto` selects Kafka consumers only):
+claiming Kafka commit, DLQ, or replay semantics. Add its route id to
+`basis.message-store.boundary-routes`, next to `auto`, which keeps selecting
+every Kafka consumer (a list of ids alone would leave out a Kafka route added
+later):
 
 ```properties
-basis.message-store.boundary-routes=orders-input,receive-order
+basis.message-store.boundary-routes=auto,receive-order
 basis.message-store.sink=postgres
 ```
 

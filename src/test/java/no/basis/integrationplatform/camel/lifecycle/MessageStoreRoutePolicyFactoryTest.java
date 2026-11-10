@@ -58,18 +58,40 @@ class MessageStoreRoutePolicyFactoryTest {
 
     @ParameterizedTest
     @CsvSource({"true,dlq", "false,dlq", "true,record-failed", "false,record-failed"})
-    void anHttpBoundaryStartsWithAnyGlobalFailureModeAndReplaySetting(boolean replayEnabled, String failureMode) {
+    void anHttpBoundaryBehavesAlikeWithAnyGlobalFailureModeAndReplaySetting(boolean replayEnabled, String failureMode) {
         // The failure mode follows the input type: an HTTP boundary records FAILED and answers
         // its caller, and is never replayable, whatever the global settings say.
-        MessageStoreRoutePolicyFactory factory = factory("receive-order", replayEnabled, failureMode);
-
-        assertInstanceOf(MessageStoreRoutePolicy.class,
+        var rows = new java.util.ArrayList<no.basis.integrationplatform.camel.model.MessageAttemptResult>();
+        var factory = new MessageStoreRoutePolicyFactory(rows::add, "adapter-test", "postgres-inline",
+                PayloadCapturePolicy.DEFAULT_MAX_BYTES, 30, replayEnabled, failureMode, "receive-order");
+        var policy = assertInstanceOf(MessageStoreRoutePolicy.class,
                 factory.createRoutePolicy(null, "receive-order", route("platform-http:/orders")));
+        var exchange = new org.apache.camel.support.DefaultExchange(new org.apache.camel.impl.DefaultCamelContext());
+        exchange.getMessage().setBody("<Order/>");
+        exchange.setException(new IllegalStateException("downstream unavailable"));
+        org.apache.camel.Route route = (org.apache.camel.Route) java.lang.reflect.Proxy.newProxyInstance(
+                getClass().getClassLoader(), new Class<?>[]{org.apache.camel.Route.class},
+                (proxy, method, args) -> switch (method.getName()) {
+                    case "getRouteId", "getId" -> "receive-order";
+                    case "toString" -> "route(receive-order)";
+                    default -> throw new UnsupportedOperationException(method.getName());
+                });
+
+        policy.onExchangeBegin(route, exchange);
+        policy.onExchangeDone(route, exchange);
+
+        assertEquals(1, rows.size());
+        assertEquals(no.basis.integrationplatform.camel.model.MessageStatus.FAILED, rows.getFirst().status());
+        assertEquals("metadata_only", rows.getFirst().payloadStorage());
+        assertEquals(false, rows.getFirst().replayable());
+        assertEquals("a synchronous HTTP boundary is not replayable", rows.getFirst().replayDisabledReason());
+        assertEquals("downstream unavailable", exchange.getException().getMessage(),
+                "The failure stays on the exchange for the caller");
     }
 
     @Test
     void kafkaAndHttpBoundariesStartTogetherInOneApplication() {
-        MessageStoreRoutePolicyFactory factory = factory("orders,receive-order", true, "dlq");
+        MessageStoreRoutePolicyFactory factory = factory("auto,receive-order", true, "dlq");
 
         assertInstanceOf(MessageStoreRoutePolicy.class,
                 factory.createRoutePolicy(null, "orders", route("kafka:bip.orders.in")));

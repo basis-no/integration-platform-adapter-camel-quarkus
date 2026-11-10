@@ -37,7 +37,7 @@ class MixedBoundaryFailureModeTest {
         var commits = new AtomicInteger();
         var factory = new MessageStoreRoutePolicyFactory(
                 rows::add, "order-pipeline", "postgres-inline", 1_048_576, 30, true, "dlq",
-                "orders-input,receive-order");
+                "auto,receive-order");
         // The policies the factory gives each input type; the routes below stand in for the
         // Kafka consumer and the platform-http endpoint.
         RoutePolicy kafkaPolicy = factory.createRoutePolicy(
@@ -101,6 +101,57 @@ class MixedBoundaryFailureModeTest {
         assertEquals(3, http.autoRedeliveryCount());
         assertFalse(http.replayable());
         assertEquals("a synchronous HTTP boundary is not replayable", http.replayDisabledReason());
+        assertEquals("metadata_only", http.payloadStorage());
+    }
+
+    @Test
+    void aRealHttpRequestGetsTheErrorAndIsRecordedFailedUnderTheDefaultDlqMode() throws Exception {
+        var rows = new CopyOnWriteArrayList<MessageAttemptResult>();
+        var parked = new CopyOnWriteArrayList<String>();
+        int port;
+        try (var socket = new java.net.ServerSocket(0)) {
+            port = socket.getLocalPort();
+        }
+        try (var context = new DefaultCamelContext()) {
+            var server = new org.apache.camel.component.platform.http.vertx.VertxPlatformHttpServerConfiguration();
+            server.setBindHost("127.0.0.1");
+            server.setBindPort(port);
+            context.addService(new org.apache.camel.component.platform.http.vertx.VertxPlatformHttpServer(server));
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            // The default failure mode and replay setting, and the boundary selection the docs give.
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(
+                    rows::add, "order-pipeline", "postgres-inline", 1_048_576, 30, true, "dlq", "auto,receive-order"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                @Override
+                public void configure() {
+                    from("platform-http:/orders?httpMethodRestrict=POST").routeId("receive-order")
+                            .routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .process(e -> { throw new IllegalStateException("downstream unavailable"); });
+                    from("direct:parking").routeId("parking").errorHandler(noErrorHandler())
+                            .process(e -> parked.add(e.getMessage().getBody(String.class)));
+                }
+            });
+            context.start();
+
+            var response = java.net.http.HttpClient.newHttpClient().send(
+                    java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/orders"))
+                            .header(PlatformHeaders.MESSAGE_ID, "order-2")
+                            .POST(java.net.http.HttpRequest.BodyPublishers.ofString("<Order/>"))
+                            .build(),
+                    java.net.http.HttpResponse.BodyHandlers.ofString());
+
+            assertEquals(500, response.statusCode(), "The caller gets the failure as an HTTP error");
+        }
+
+        assertTrue(parked.isEmpty(), "An HTTP input is never parked");
+        MessageAttemptResult http = row(rows, "order-2");
+        assertEquals(MessageStatus.FAILED, http.status());
+        assertEquals("downstream unavailable", http.error());
+        assertFalse(http.replayable());
         assertEquals("metadata_only", http.payloadStorage());
     }
 

@@ -458,7 +458,9 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         if (isPayloadReference(exchange)) {
             resolvePayloadReference(exchange, body);
             if (boundaryKind == MessageBoundaryKind.HTTP) {
-                notReplayable(exchange, HTTP_NOT_REPLAYABLE);
+                // The route still reads the referenced object, but the row keeps no reference:
+                // nothing could replay it, and the object belongs to the caller.
+                metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
             }
             return;
         }
@@ -530,11 +532,6 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         } else if (body instanceof String) {
             exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, body);
         }
-    }
-
-    private void notReplayable(Exchange exchange, String reason) {
-        exchange.setProperty(PlatformExchangeProperties.REPLAYABLE, false);
-        exchange.setProperty(PlatformExchangeProperties.REPLAY_DISABLED_REASON, reason);
     }
 
     private void metadataOnly(Exchange exchange, String reason) {

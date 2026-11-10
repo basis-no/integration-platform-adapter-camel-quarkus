@@ -41,7 +41,7 @@ class RemovedSettingsValidatorTest {
                         "basis.input-audit.routes", "receive-file"))));
 
         assertTrue(failure.getMessage().contains("basis.input-audit.routes: for an HTTP input"));
-        assertTrue(failure.getMessage().contains("list its route id in basis.message-store.boundary-routes"));
+        assertTrue(failure.getMessage().contains("add its route id to basis.message-store.boundary-routes, for example auto,<route id>"));
         assertTrue(failure.getMessage().contains("basis.message-store.ingress.normalization-routes"));
     }
 

@@ -39,7 +39,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BooleanSupplier;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.junit.jupiter.api.Assertions.fail;
 
 /**
@@ -118,7 +117,9 @@ class InputTypeFailureTest {
             context.start();
 
             Files.writeString(inbox.resolve("order.xml"), "file-order");
-            context.createProducerTemplate().sendBody("jms:queue:" + queue, "jms-order");
+            try (var template = context.createProducerTemplate()) {
+                template.sendBody("jms:queue:" + queue, "jms-order");
+            }
             var producerProperties = new HashMap<String, Object>(Map.of("bootstrap.servers", brokers));
             producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
             producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
@@ -128,8 +129,6 @@ class InputTypeFailureTest {
 
             // File: the first delivery exhausted its tries and the file stayed where it was.
             await(() -> tries.containsKey("file") && tries.get("file").get() >= 4, "the file's first delivery");
-            assertTrue(Files.exists(inbox.resolve("order.xml")) || tries.get("file").get() > 4,
-                    "A file whose delivery failed is not moved");
             // Both normalized inputs arrive in the end, through their source's own second delivery.
             await(() -> completed(rows, "file-order") && completed(rows, "jms-order"),
                     () -> "both normalized inputs; tries " + tries + ", rows " + rows.stream()
@@ -143,6 +142,8 @@ class InputTypeFailureTest {
         assertEquals(List.of("kafka-order"), parked, "Only the Kafka input is parked; the sources keep theirs");
     }
 
+    // A fifth try can only come from the source delivering the item again: for the file, the next
+    // poll reading the same, unmoved file; for the queue, the broker's redelivery.
     private static void failFirstDelivery(Map<String, AtomicInteger> tries, String source) {
         if (tries.computeIfAbsent(source, s -> new AtomicInteger()).incrementAndGet() <= 4) {
             throw new IllegalStateException(source + " publish unavailable");

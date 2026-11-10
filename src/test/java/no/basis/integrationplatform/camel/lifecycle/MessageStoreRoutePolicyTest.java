@@ -26,6 +26,7 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
@@ -518,6 +519,49 @@ class MessageStoreRoutePolicyTest {
         assertEquals(MessageStatus.FAILED, sink.result.status());
         assertEquals("downstream unavailable", sink.result.error());
         assertEquals("metadata_only", sink.result.payloadStorage());
+        assertFalse(sink.result.replayable());
+        assertEquals("a synchronous HTTP boundary is not replayable", sink.result.replayDisabledReason());
+    }
+
+    @Test
+    void anHttpRequestWithAClaimCheckIsRecordedMetadataOnlyAndNotReplayable() {
+        RecordingSink sink = new RecordingSink();
+        var reference = new PayloadReference(1, PayloadReference.STORAGE, "s3://payloads/orders/order-1",
+                5, "a".repeat(64), "application/xml", Instant.now().plus(Duration.ofDays(1)).toString());
+        PayloadObjectStore store = new PayloadObjectStore() {
+            @Override
+            public PayloadReference store(String integration, String messageId, InputStream payload,
+                                          Long declaredSize, String contentType, Instant expiresAt, long maxBytes) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public InputStream open(PayloadReference ignored) {
+                return new java.io.ByteArrayInputStream("<a/>\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+            }
+
+            @Override
+            public void verify(PayloadReference ignored) {
+            }
+        };
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                sink, "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1, 1024, Duration.ofDays(30), true),
+                MessageBoundaryKind.HTTP, false, store);
+        Exchange exchange = exchange();
+        exchange.getMessage().setBody(reference.toJsonBytes());
+        exchange.getMessage().setHeader(PlatformHeaders.PAYLOAD_STORAGE, reference.storage());
+        exchange.getMessage().setHeader(PlatformHeaders.PAYLOAD_REF, reference.ref());
+        exchange.getMessage().setHeader(PlatformHeaders.PAYLOAD_SIZE, Long.toString(reference.sizeBytes()));
+        exchange.getMessage().setHeader(PlatformHeaders.PAYLOAD_SHA256, reference.sha256());
+
+        policy.onExchangeBegin(route("receive-order"), exchange);
+        assertInstanceOf(InputStream.class, exchange.getMessage().getBody(), "The route still reads the object");
+        policy.onExchangeDone(route("receive-order"), exchange);
+
+        assertEquals(MessageStatus.COMPLETED, sink.result.status());
+        assertEquals("metadata_only", sink.result.payloadStorage());
+        assertNull(sink.result.payloadRef());
         assertFalse(sink.result.replayable());
         assertEquals("a synchronous HTTP boundary is not replayable", sink.result.replayDisabledReason());
     }

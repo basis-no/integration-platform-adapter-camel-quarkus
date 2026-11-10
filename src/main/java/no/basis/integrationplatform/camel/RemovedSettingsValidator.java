@@ -35,8 +35,8 @@ class RemovedSettingsValidator {
                             + "remove the setting to start without it"),
             new Removed("basis.input-audit.", "basis.input-audit.routes",
                     "for an HTTP input, select the route as an audit-only HTTP boundary "
-                            + "(list its route id in basis.message-store.boundary-routes, together with the "
-                            + "application's Kafka input routes if it has any); for a file, timer or poller input, "
+                            + "(add its route id to basis.message-store.boundary-routes, for example "
+                            + "auto,<route id>); for a file, timer or poller input, "
                             + "normalize it to Kafka (basis.message-store.ingress.normalization-routes); "
                             + "inspection of other non-Kafka inputs is not available in adapter 0.4 yet (see "
                             + "https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)"));

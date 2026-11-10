@@ -8,9 +8,9 @@
   to its caller and is never replayable (metadata-only, `replay_disabled_reason`
   "a synchronous HTTP boundary is not replayable"), whatever
   `basis.message-store.failure-mode` and `basis.message-store.replay.enabled`
-  say. So both can run in one application: list the HTTP route id in
-  `basis.message-store.boundary-routes` together with the Kafka input route
-  ids. Before, the preview needed `failure-mode=record-failed` and
+  say. So both can run in one application: add the HTTP route id to
+  `basis.message-store.boundary-routes` next to `auto`, for example
+  `auto,receive-order`. Before, the preview needed `failure-mode=record-failed` and
   `replay.enabled=false`, and startup refused it next to a Kafka boundary. A
   synchronous HTTP request remains not replayable in 0.4; to make its downstream
   work replayable, publish it to the Kafka input. The docs have a table of what
