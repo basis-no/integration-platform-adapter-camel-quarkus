@@ -37,16 +37,33 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
   [Steps and idempotency](steps-and-idempotency.md). How 0.4.0 will require a
   role is still being designed
   ([#68](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/68)).
-- **Delivery audit and input inspection.** 0.3.5 and 0.3.6 record `direct:`
-  request routes named in `basis.delivery-audit.routes` and non-Kafka inputs
-  named in `basis.input-audit.routes`. This branch has neither, and
-  `boundary-routes` does not replace them. On this build the two settings are
-  ignored without an error;
-  [#94](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/94)
-  makes startup refuse them, naming the 0.4 equivalent, and
-  [#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)
-  designs what 0.4 offers instead. See
-  [Not in This Build Yet](#not-in-this-build-yet).
+- **Remove the delivery-audit and input-audit settings.** 0.3.5 and 0.3.6
+  record `direct:` request routes named in `basis.delivery-audit.routes` and
+  non-Kafka inputs named in `basis.input-audit.routes`. This version implements
+  neither, and the application refuses to start when either setting has a
+  value, naming each one and what to use instead; an empty value only logs a
+  warning. Remove `basis.delivery-audit.routes`: delivery audit is not
+  available in this version yet
+  ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)).
+  Replace `basis.input-audit.routes` with the
+  [HTTP audit-only preview](ingress-and-scaling.md#http-audit-only-preview)
+  for an HTTP input, or ingress normalization to Kafka for a file, timer or
+  poller input. `boundary-routes` does not replace them. See
+  [Settings Removed Since 0.3.x](configuration.md#settings-removed-since-03x).
+- **Use `earliest` and a stable `groupId` on every Kafka boundary.** A Kafka
+  boundary's consumer resets to `earliest`, and a boundary route whose consumer
+  uses any other `auto.offset.reset` refuses to start, naming the route and
+  its endpoint. With 0.3.6's `latest`, a record that was not committed on a
+  partition without a committed offset could be skipped after a reconnect.
+  Remove an `autoOffsetReset=latest` or `none` override from the endpoint, its
+  `additionalProperties.auto.offset.reset` and
+  `camel.component.kafka.auto-offset-reset`. A consumer group with committed
+  offsets continues from them. A new group, a changed `groupId`, or a group
+  whose committed offsets expired on the broker now starts at the beginning of
+  each partition's retained records instead of at the end; to start one at the
+  end, set its offsets with the Kafka tools before its first start. A boundary
+  without a `groupId` gets a new group from Camel on every start, so it now
+  reprocesses every retained record on each start: give it a stable `groupId`.
 
 ## Behaviour That Changed on Purpose
 
@@ -76,8 +93,8 @@ to fail; let the failure reach the adapter.
 ### Which routes are recorded: `boundary-routes`
 
 0.3.6 made a message boundary of every Kafka input route, and recorded other
-routes only through the separate delivery-audit and input-audit settings
-above. 0.4 selects its message boundaries with
+routes only through the separate delivery-audit and input-audit settings,
+which this version refuses (see above). 0.4 selects its message boundaries with
 `basis.message-store.boundary-routes`:
 
 - `auto`, the default, selects Kafka consumer routes, as 0.3.6 did. Nothing
@@ -138,13 +155,33 @@ Also not on this branch yet:
   journaled by another integration, which then takes over that row; this
   branch does not warn yet
   ([#100](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/100)).
-- **Delivery audit** (`basis.delivery-audit.*`) and **input inspection**
-  (`basis.input-audit.*`); see [Before You Upgrade](#before-you-upgrade).
+- **Delivery audit** (`basis.delivery-audit.*`)
+  ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93));
+  startup refuses the setting, see [Before You Upgrade](#before-you-upgrade).
 
 ## Other Upgrade Actions from 0.3.6
 
 The changelog's Unreleased section has the details; in short:
 
+- **Shorter `ip-slow-backend` waits.** The `ip-slow-backend` route
+  configuration caps each redelivery delay at 20 seconds: 5, 10, 20, 20, 20
+  and 20 seconds, 95 seconds in all, instead of 0.3.6's 195 seconds (Camel's
+  default 60-second cap). `max.poll.interval.ms` covers every record of one
+  poll, so for a route on `ip-slow-backend` set `maxPollRecords=1` on its Kafka
+  input or raise `maxPollIntervalMs`. See
+  [Automatic Retry](retry-dlq-replay.md#automatic-retry).
+- **Spaced re-reads of a record whose outcome is not durable.** 0.3.6 read
+  such a record again at once, several times a second. Now the first read
+  again is at once, then each further read of the same record waits 1 s,
+  doubling, at most 30 s and at most half of `max.poll.interval.ms` less the
+  time its poll has already taken; a committed outcome resets the wait. The
+  consumer's other partitions wait with it. The outcome is still not committed.
+  Without `break-on-first-error=true` there is no wait.
+- **Requests on exchanges of their own fail back to their caller**, as in
+  0.3.6: only a managed Kafka input is parked. Unlike 0.3.6, such a failure no
+  longer logs the parking ERROR. A route that sends requests on exchanges of its
+  own must handle their failures, or let them fail the input; a timer or poller
+  route sees its failure instead of a DLQ record.
 - **Activity counters on by default.** An application with a Kafka boundary
   that did not set `basis.traffic.signals`, or set it empty, now exports the
   admission counter; on 0.3.6 an empty value turned counting off. Set
