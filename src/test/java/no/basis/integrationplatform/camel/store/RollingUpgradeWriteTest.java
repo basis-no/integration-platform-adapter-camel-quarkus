@@ -140,21 +140,8 @@ class RollingUpgradeWriteTest {
         String topic = "orders-" + UUID.randomUUID();
         String group = "orders-" + UUID.randomUUID();
         String brokers = KAFKA.getBootstrapServers();
-        int records = 400;
         try (var admin = AdminClient.create(Map.<String, Object>of("bootstrap.servers", brokers))) {
             admin.createTopics(List.of(new NewTopic(topic, 4, (short) 1))).all().get(20, TimeUnit.SECONDS);
-        }
-        var producerProperties = new HashMap<String, Object>();
-        producerProperties.put("bootstrap.servers", brokers);
-        producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-        producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
-        try (var producer = new KafkaProducer<String, String>(producerProperties)) {
-            for (int i = 0; i < records; i++) {
-                var record = new ProducerRecord<String, String>(topic, "key-" + (i % 16), "<Order n=\"" + i + "\"/>");
-                record.headers().add(PlatformHeaders.MESSAGE_ID, ("order-" + i).getBytes(StandardCharsets.UTF_8));
-                producer.send(record);
-            }
-            producer.flush();
         }
 
         var failures = new CopyOnWriteArrayList<Throwable>();
@@ -175,26 +162,86 @@ class RollingUpgradeWriteTest {
                 + "&autoOffsetReset=earliest&autoCommitEnable=false&allowManualCommit=true&breakOnFirstError=true"
                 + "&maxPollRecords=5&pollTimeoutMs=100";
 
-        // The old pods run first; the new pods join, the old ones leave, as in a rolling upgrade.
-        try (var oldPod = consumer(uri, released.policy(releasedSink, "orders"));
+        // Records keep arriving while the pods change, as in a live rolling upgrade, so the new pod
+        // has work after its group join whenever the rebalance completes.
+        int produced;
+        try (var traffic = new Traffic(brokers, topic);
+             var oldPod = consumer(uri, released.policy(releasedSink, "orders"));
              var newPod = consumer(uri, new MessageStoreRoutePolicy(countingCurrent, "orders"))) {
             oldPod.start();
-            awaitRows(records / 4);
+            await(() -> oldPodWrites.get() >= 20, "the old pod to record messages");
             newPod.start();
-            awaitRows(records / 2);
             // Both versions write before the old pod leaves.
             await(() -> newPodWrites.get() > 0, "the new pod to record a message");
             oldPod.stop();
-            awaitRows(records);
+            int afterOldPodLeft = newPodWrites.get();
+            await(() -> newPodWrites.get() > afterOldPodLeft, "the new pod to record after the old pod left");
+            produced = traffic.stop();
+            awaitRows(produced);
         }
 
         assertTrue(oldPodWrites.get() > 0 && newPodWrites.get() > 0,
                 "old pod " + oldPodWrites.get() + ", new pod " + newPodWrites.get() + " writes");
-
         assertEquals(List.of(), failures.stream().map(RollingUpgradeWriteTest::rootMessage).toList());
-        assertEquals(Integer.toString(records), value("select count(*) from bip_message_log where status = 'COMPLETED'"));
+        assertEquals(Integer.toString(produced), value("select count(*) from bip_message_log"));
+        assertEquals(Integer.toString(produced), value("select count(*) from bip_message_log where status = 'COMPLETED'"));
         assertEquals("0", value("select count(*) from bip_message_log where integration <> 'orders'"));
         assertConsistentRows();
+    }
+
+    /** Publishes records with their own message ids, one every few milliseconds, until stopped. */
+    private static final class Traffic implements AutoCloseable {
+        private static final int LIMIT = 20_000;
+        private final KafkaProducer<String, String> producer;
+        private final String topic;
+        private final AtomicInteger sent = new AtomicInteger();
+        private final java.util.concurrent.atomic.AtomicBoolean running = new java.util.concurrent.atomic.AtomicBoolean(true);
+        private final java.util.concurrent.atomic.AtomicReference<Throwable> failure = new java.util.concurrent.atomic.AtomicReference<>();
+        private final Thread thread;
+
+        Traffic(String brokers, String topic) {
+            var properties = new HashMap<String, Object>();
+            properties.put("bootstrap.servers", brokers);
+            properties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            properties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            this.producer = new KafkaProducer<>(properties);
+            this.topic = topic;
+            this.thread = new Thread(this::run, "rolling-upgrade-traffic");
+            thread.start();
+        }
+
+        private void run() {
+            try {
+                while (running.get() && sent.get() < LIMIT) {
+                    int n = sent.get();
+                    var record = new ProducerRecord<String, String>(topic, "key-" + (n % 16), "<Order n=\"" + n + "\"/>");
+                    record.headers().add(PlatformHeaders.MESSAGE_ID, ("order-" + n).getBytes(StandardCharsets.UTF_8));
+                    producer.send(record).get(10, TimeUnit.SECONDS);
+                    sent.incrementAndGet();
+                    Thread.sleep(5);
+                }
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            } catch (Exception e) {
+                failure.set(e);
+            }
+        }
+
+        /** Stops publishing and returns how many records the broker acknowledged. */
+        int stop() throws InterruptedException {
+            running.set(false);
+            thread.join(TimeUnit.SECONDS.toMillis(30));
+            if (failure.get() != null) throw new AssertionError("Publishing failed", failure.get());
+            assertTrue(sent.get() < LIMIT, "The pods did not change before " + LIMIT + " records");
+            return sent.get();
+        }
+
+        @Override
+        public void close() throws InterruptedException {
+            running.set(false);
+            thread.join(TimeUnit.SECONDS.toMillis(30));
+            producer.close();
+        }
     }
 
     private DefaultCamelContext consumer(String uri, RoutePolicy policy) throws Exception {
