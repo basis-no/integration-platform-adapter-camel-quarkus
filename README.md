@@ -7,7 +7,8 @@ commit, replay, and replay-aware side-effect tracking out of business routes.
 The adapter is self-contained: the documentation in [`docs/`](docs/index.md)
 describes the tables, topics and headers it uses, and the schema it expects
 ships in `src/main/resources/db/message-store/`. With the Postgres sink it
-checks at startup that `bip_contract` records store schema version 1.
+checks at startup that `bip_contract` records store schema version 1, and it
+refuses to start against a store that lacks a table or column it writes.
 
 ## Installation
 
