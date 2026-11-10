@@ -60,11 +60,17 @@ reviewing the `VALIDATED` deployment in the Central portal against
 `signing.json`. A reviewer cannot approve a run they started.
 
 Recovery never repeats a portal write. A re-run of `sign-upload` or `publish`
-refuses once the run holds deployment or publication state. Download that
-artifact and resume on the release workstation with `central-recovery.py`, as
-in [upload, validation and publication](#upload-validation-and-publication-are-separate).
-A polling timeout leaves the deployment on Central; resume with the same state
-file and without `--allow-upload`.
+always refuses, whatever state the run kept, because a runner can die after a
+portal write and before it keeps its state. Recover on the release workstation:
+first establish in the Central portal which deployments exist for the version
+and in which state. If the run kept current state, resume with it and
+`central-recovery.py`, as in
+[upload, validation and publication](#upload-validation-and-publication-are-separate);
+a polling timeout leaves the deployment on Central, so resume with the same
+state file and without `--allow-upload`. If the state is missing, or older than
+what the portal shows (for example `VALIDATED` state for a deployment the portal
+shows as publishing or published), do not resume from it: reconcile with the
+portal, and publish or drop the deployment there under the same approvals.
 
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
@@ -150,7 +156,7 @@ release manager reviews it before signing.
 Unsigned inspection cannot satisfy upload or readback on its own: Central rejects
 unsigned payloads, `central-recovery.py` requires a validated 24-entry signed
 bundle receipt, and `release-page.yml` requires the signed-entries digest that
-only the offline signer produces. Do not create a final tag from unsigned
+only a signing step produces, offline or in the protected `sign-upload` job. Do not create a final tag from unsigned
 inspection alone.
 
 ## Release-manager runbook
@@ -325,18 +331,22 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
 
 ## Key custody
 
-- The release key, its secret subkeys and its revocation certificate exist only
-  in the release workstation's GnuPG keyring and, as a passphrase-protected
-  export, in the team password manager backup. Never copy them to GitHub, CI,
-  agent or development hosts, shared drives, tickets or chat.
+- The primary release key, its revocation certificate and every secret subkey
+  except the dedicated CI signing subkey exist only in the release workstation's
+  GnuPG keyring and, as a passphrase-protected export, in the team password
+  manager backup. Never copy them to GitHub, CI, agent or development hosts,
+  shared drives, tickets or chat. The CI signing subkey and its Central token
+  exist only as secrets of the protected release environments; see
+  [Protected-tag release in CI](#protected-tag-release-in-ci).
 - The passphrase is entered only through pinentry and stored only in the team
   password manager. Never put it in files, scripts, environment variables, shell
   history or command arguments, and never use loopback pinentry or agent presets
   for the release key. `sign-candidate.py` has no passphrase input.
 - Keep the gpg-agent cache short and the workstation encrypted and locked when
   unattended. Coding agents never operate the release keyring.
-- Central tokens are generated per release window, live only in the release
-  shell session and are revoked after publication.
+- For an offline release, Central tokens are generated per release window, live
+  only in the release shell session and are revoked after publication. The
+  protected-tag path's token lives only in the release environments' secrets.
 - If the key or its backup may be compromised, publish its revocation
   certificate to both keyservers below, stop releases and rotate.
 - For the [protected-tag release](#protected-tag-release-in-ci), the primary key
