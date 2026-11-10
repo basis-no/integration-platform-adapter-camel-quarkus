@@ -37,6 +37,9 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import org.apache.kafka.common.errors.SerializationException;
+import org.apache.kafka.common.serialization.Deserializer;
+import java.nio.charset.StandardCharsets;
 
 /**
  * A record whose outcome is not durable, because the journal or the DLQ publish failed, is
@@ -224,6 +227,109 @@ class KafkaFailureProgressTest {
             assertNull(admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata()
                     .get(5, TimeUnit.SECONDS).get(new TopicPartition(input, 0)), "No offset was committed");
         }
+    }
+
+    /** Fails the first deserialization, as a poll-time failure that clears on its own. */
+    public static class TransientPollFailure implements Deserializer<String> {
+        static final AtomicInteger FAILURES = new AtomicInteger();
+
+        @Override
+        public String deserialize(String topic, byte[] data) {
+            if (FAILURES.getAndDecrement() > 0) {
+                throw new SerializationException("synthetic transient poll failure");
+            }
+            return data == null ? null : new String(data, StandardCharsets.UTF_8);
+        }
+    }
+
+    @Test
+    void transientPollFailureReconnectsWithoutSkippingOrJournaling() throws Exception {
+        String input = "input-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        var client = Map.<String, Object>of("bootstrap.servers", brokers);
+        try (var admin = AdminClient.create(client); var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(input, 1, (short) 1))).all().get(20, TimeUnit.SECONDS);
+            bindShippedKafkaDefaults(context);
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            var calls = new CopyOnWriteArrayList<String>();
+            var outcomes = new CopyOnWriteArrayList<String>();
+            var completed = new CountDownLatch(1);
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(row -> {
+                outcomes.add(row.status().name());
+                if (row.status().name().equals("COMPLETED")) completed.countDown();
+            }, "order-pipeline", "postgres-inline", 100_000, 30, true, "dlq", "auto"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=group-" + UUID.randomUUID()
+                            + "&autoOffsetReset=earliest&pollTimeoutMs=100&valueDeserializer="
+                            + TransientPollFailure.class.getName())
+                            .routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .process(e -> calls.add(e.getMessage().getBody(String.class)));
+                    from("direct:parking").routeId("parking").errorHandler(noErrorHandler()).log("parked");
+                }
+            });
+            var producerProperties = new HashMap<String, Object>(client);
+            producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            try (var producer = new KafkaProducer<String, String>(producerProperties)) {
+                producer.send(new ProducerRecord<>(input, "key", "only")).get(10, TimeUnit.SECONDS);
+            }
+            TransientPollFailure.FAILURES.set(1);
+            context.start();
+
+            assertTrue(completed.await(30, TimeUnit.SECONDS),
+                    "The consumer did not recover from a poll failure: " + calls + " / " + outcomes);
+            assertEquals(List.of("only"), calls, "A poll failure must not skip the record");
+            assertEquals(List.of("COMPLETED"), outcomes, "A poll failure is not a message and must not be journaled");
+        }
+    }
+
+    @Test
+    void aRecordWhoseOutcomeCannotBeRecordedIsReadAgainAfterADoublingWait() throws Exception {
+        String input = "input-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        var client = Map.<String, Object>of("bootstrap.servers", brokers);
+        var reads = new AtomicInteger();
+        long closed;
+        try (var admin = AdminClient.create(client); var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(input, 1, (short) 1))).all().get(20, TimeUnit.SECONDS);
+            bindShippedKafkaDefaults(context);
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(row -> {
+                throw new IllegalStateException("synthetic journal outage");
+            }, "order-pipeline", "postgres-inline", 100_000, 30, true, "dlq", "auto"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=group-" + UUID.randomUUID()
+                            + "&autoOffsetReset=earliest&pollTimeoutMs=100")
+                            .routeId("input").process(e -> reads.incrementAndGet());
+                }
+            });
+            var producerProperties = new HashMap<String, Object>(client);
+            producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            try (var producer = new KafkaProducer<String, String>(producerProperties)) {
+                producer.send(new ProducerRecord<>(input, "key", "order")).get(10, TimeUnit.SECONDS);
+            }
+            context.start();
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(20);
+            while (reads.get() == 0 && System.nanoTime() < deadline) Thread.sleep(20);
+            long first = System.nanoTime();
+            Thread.sleep(8_000);
+            // Read at once, again at once, then after 1 s, 2 s and 4 s: before, about two reads a second.
+            assertTrue(reads.get() >= 3 && reads.get() <= 6, "Reads in the first eight seconds: " + reads.get());
+            // The fifth read is followed by an 8 s wait; stop while it runs.
+            while (reads.get() < 5 && System.nanoTime() - first < TimeUnit.SECONDS.toNanos(20)) Thread.sleep(20);
+            assertEquals(5, reads.get());
+            Thread.sleep(500);
+            closed = System.nanoTime();
+        }
+        assertTrue(System.nanoTime() - closed < TimeUnit.SECONDS.toNanos(5), "Stopping does not wait out the back-off");
     }
 
     /** Binds the Kafka component defaults from the adapter's application.properties, as the runtime does. */

@@ -89,6 +89,29 @@ that the DLQ endpoint can never accept, for example one above the DLQ topic's
 size limit, keeps its partition waiting until an operator fixes the DLQ or
 moves the consumer group past it.
 
+### Reading a record again
+
+A Kafka record whose outcome could not be made durable, because the outcome
+write, a step outcome check or write, or the DLQ publish failed, is not
+committed and is read again. The first time, it is read again at once. If the
+same record comes back with its outcome still not durable, the adapter waits
+before handing it back: 1 second, doubling on each further read, at most 30
+seconds. The wait is also kept to half the consumer's effective
+`max.poll.interval.ms` (an `additionalProperties` value overrides the named
+option) less the time since the records of the poll that returned it began to
+be processed, including the records before it, so that the consumer polls again
+within its interval. This relies on `break-on-first-error=true`, the adapter's
+default, under which a record that is read again ends its poll; without it
+there is no wait. A committed outcome on the partition, or a later record,
+starts again at once. The consumer waits for it, also when the route completes
+on another thread, so the consumer's other partitions wait too, as they do
+after any record that is read again. The wait ends early when the application
+stops. Before, the record was read again at once
+for as long as the failure lasted, several times a second, and each read ran
+the route again, including sends that the step store did not skip and another
+DLQ record for a message that was parked. A record whose topic, partition and
+offset the adapter did not see at the start is read again at once, as before.
+
 `basis.message-store.dlq-uri` must name one fixed endpoint that reports a
 failed publish as an error: a `kafka:` endpoint whose producer waits for the
 broker and is not transactional, or the application's own `direct:` route. A
@@ -101,6 +124,18 @@ to no endpoint at all, for Kafka with `acks=0` or a transactional producer
 (`transacted`, `transactionalId` or `transactional.id`), whose transaction
 commits only after the input offset, for `direct:` with
 `failIfNoConsumers=false`, and for any other endpoint.
+
+Only a managed Kafka input is parked: an exchange that carries the consumed
+record's commit handle, which the route policy keeps from the Kafka manual
+commit header. That includes the copies Camel makes of the input, for a split,
+multicast, recipient list, enrich or wire tap. The adapter's dead letter channel
+applies to every route, but an exchange without the handle, such as a request
+that a route sends to a `direct:` route with a `ProducerTemplate`, or an input
+from a timer or poller, fails back to its caller with its own exception:
+no DLQ record is written for it, and no ERROR says it is parked. The caller owns
+its recovery, for example by letting the failure fail the Kafka input, which is
+then retried and parked. A `direct:` route that runs on the input's own
+exchange, as a plain `to("direct:…")` does, is part of the input and parks it.
 
 An application's own `onException` changes this. If it leaves a failure
 unhandled (`handled(false)`), the adapter does not park it: the message is

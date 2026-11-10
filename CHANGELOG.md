@@ -17,6 +17,51 @@
   input. See
   [Settings Removed Since 0.3.x](docs/configuration.md#settings-removed-since-03x).
 
+- A Kafka record whose outcome could not be made durable is read again with a
+  growing wait. Before, while the outcome write, a step outcome or the DLQ
+  publish kept failing, for example during a Message Store outage, the record
+  was read again at once, several times a second, and every read ran the route
+  again: a send the step store did not skip (with the default `noop` store, or
+  for a record without `x-bip-message-id`) reached its receiver again, and a
+  parked message got another DLQ record. Now the first read again is at once,
+  then each further read of the same record waits 1 s, doubling, at most 30 s
+  and at most half the consumer's `max.poll.interval.ms` less the time its poll
+  has already taken; a committed outcome resets it. Without
+  `break-on-first-error=true` there is no wait. The consumer's other partitions wait
+  with it. The outcome is still not committed and the partition still waits, as
+  before. No setting.
+- A Kafka boundary's consumer resets to `earliest`, and a Kafka boundary route
+  whose consumer uses any other `auto.offset.reset` refuses to start, naming
+  the route and its endpoint. Before, the adapter left Camel's default `latest`
+  in place: after a record whose outcome was not durable, Camel's reconnect
+  resumes from the committed offset, and on a partition where the consumer
+  group had none yet it resumed at the end, so the record was never read again
+  and a later record's commit moved past it. The adapter now ships
+  `camel.component.kafka.auto-offset-reset=earliest`.
+  Upgrade: remove an `autoOffsetReset=latest` or `none` override from a Kafka
+  boundary's endpoint, its `additionalProperties.auto.offset.reset` and
+  `camel.component.kafka.auto-offset-reset`. A consumer group with committed
+  offsets continues from them. A new consumer group, such as a new
+  integration's or a changed `groupId`, now starts at the beginning of each
+  partition's retained records instead of at the end; to start one at the end,
+  set its offsets with the Kafka tools before its first start. The same holds
+  for a group whose committed offsets expired on the broker (stopped for longer
+  than the broker's offset retention), and for a Kafka boundary without a
+  `groupId`, for which Camel generates a new group on every start: it now
+  reprocesses every retained record on each start. Give every Kafka boundary a
+  stable `groupId`. Kafka routes that are not boundaries are not checked.
+- Only a managed Kafka input is parked in the DLQ, as in adapter 0.3.6. Before,
+  `main` parked any exchange that reached the adapter's dead letter channel: a
+  request that a Kafka route sent on an exchange of its own, for example with a
+  `ProducerTemplate` to a `direct:` route, became a DLQ record of its own with
+  a parking ERROR, and its failure was handled there, so the caller never saw
+  it and the input completed and was committed. A failed input from a source
+  that is not Kafka was parked into the Kafka DLQ too. Such an exchange now
+  fails back to its caller with its own exception, without a parked record and
+  without the parking ERROR, which 0.3.6 still logs for it.
+  Upgrade: a route that sends requests on exchanges of its own must handle
+  their failures, or let them fail the input; a timer or poller route sees its
+  failure instead of a DLQ record.
 - A replay request whose `redoSteps` names a step is refused with
   `basis.message-store.step-outcome-store=noop`, the default, with `409
   Conflict` and an error that says to resend without `redoSteps`, before the
