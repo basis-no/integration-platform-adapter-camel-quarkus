@@ -15,6 +15,33 @@
   `break-on-first-error=true` there is no wait. The consumer's other partitions wait
   with it. The outcome is still not committed and the partition still waits, as
   before. No setting.
+- Only a managed Kafka input is parked in the DLQ, as in adapter 0.3.6. Before,
+  `main` parked any exchange that reached the adapter's dead letter channel: a
+  request that a Kafka route sent on an exchange of its own, for example with a
+  `ProducerTemplate` to a `direct:` route, became a DLQ record of its own with
+  a parking ERROR, and its failure was handled there, so the caller never saw
+  it and the input completed and was committed. A failed input from a source
+  that is not Kafka was parked into the Kafka DLQ too. Such an exchange now
+  fails back to its caller with its own exception, without a parked record and
+  without the parking ERROR, which 0.3.6 still logs for it.
+  Upgrade: a route that sends requests on exchanges of its own must handle
+  their failures, or let them fail the input; a timer or poller route sees its
+  failure instead of a DLQ record.
+- A replay request whose `redoSteps` names a step is refused with
+  `basis.message-store.step-outcome-store=noop`, the default, with `409
+  Conflict` and an error that says to resend without `redoSteps`, before the
+  replay audit row is written or anything is published. Without recorded step
+  outcomes every step runs on every replay, so the request promised a choice
+  that did not exist. A replay without `redoSteps`, and redo with the `postgres`
+  step store, are unchanged. The .NET adapter applies the same rule.
+  The rule asks the step outcome store in use: `StepOutcomeStore` gets a
+  default method `recordsDeliveredSteps()`, `true` unless overridden and
+  `false` for the `noop` store.
+  Upgrade: a caller that sent `redoSteps` to an application on the `noop` step
+  store must resend without it; every step runs again either way. An
+  application's own `StepOutcomeStore` that records nothing should override
+  `recordsDeliveredSteps()`. The public `PostgresKafkaMessageReplayService`
+  constructor built from explicit dependencies keeps accepting redo.
 - The adapter refuses to start against a Message Store that lacks a table or
   column it writes, with the Postgres sink or the Postgres step store. Before,
   it started against a store provisioned for an earlier adapter version, for
@@ -380,6 +407,9 @@ optional Key-Value Store uses the `bip_key_value` table, provisioned by the
 database operator, only when an application uses it. Tested with Quarkus 3.32.2 (Camel 4.18.0) and
 Quarkus 3.33.4 (Camel 4.18.4). This is the last 0.3 release; later changes come
 with 0.4.
+
+> Note, added after the release: the 0.3 line continues as a maintained series,
+> and later 0.3.x patch releases may follow, also after 0.4.0.
 
 ### Fixed
 
