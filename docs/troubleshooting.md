@@ -83,6 +83,16 @@ once for each processor that the adapter does not track and that is not
 asynchronous, such as `validate`. The
 warning is harmless: Camel bridges the processor itself. Fixed for 0.4.0.
 
+## A Receiver Answering 429 or 503 Gets Fewer or Later Requests
+
+The adapter turns off the HTTP client's own retry and times each redelivery
+after a 429 or 503 by the receiver's `Retry-After`, within the Kafka poll
+budget. A receiver therefore gets one request per Camel attempt, and
+`auto_redelivery_count` matches its requests after the first. A `Retry-After`
+too long for the budget is not waited for: the configured delays apply, and
+the message is parked when the retries are exhausted. See
+[Automatic Retry](retry-dlq-replay.md#automatic-retry).
+
 ## Message Id Is Also Journaled by Another Integration
 
 A warning `Message id <id> is also journaled by integration <other>;
