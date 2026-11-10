@@ -7,6 +7,12 @@ public class NoopStepOutcomeStore implements StepOutcomeStore {
     /** Creates the stateless no-op store. */
     public NoopStepOutcomeStore() {
     }
+
+    @Override
+    public boolean recordsDeliveredSteps() {
+        return false;
+    }
+
     @Override
     public boolean wasDelivered(String idempotencyKey) {
         return false;
