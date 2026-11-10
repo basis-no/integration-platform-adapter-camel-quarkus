@@ -143,8 +143,10 @@ holds when the route catches the failure, and when it happens in a split part,
 loop iteration or branch, which run on copies of the input's exchange. Camel's
 retries still run first, so a receiver can get the same send again; receivers
 deduplicate on the stable `Idempotency-Key`. During a Message Store outage the
-partition therefore waits at that input, as it does when parking fails. Alert
-on inputs that stay `FAILED`.
+partition therefore waits at that input, as it does when parking fails, and
+reads it again with a growing wait; see
+[Reading a record again](retry-dlq-replay.md#reading-a-record-again). Alert on
+inputs that stay `FAILED`.
 
 A separate request, such as one sent with a `ProducerTemplate`, fails on its
 own when one of its step outcomes is not recorded, also when its own route
