@@ -61,9 +61,44 @@ group by o.step_id, 2
 order by o.step_id, last_occurred_at desc;
 ```
 
+The query masks credentials again because rows recorded before adapter 0.4.0
+kept more of the endpoint; see [Stored Endpoints](#stored-endpoints).
+
 Renaming a generated id changes that step's key: replaying, redoing or resending
 a message recorded before the change sends it once more. Rename only once no
 such message will be processed again.
+
+## Stored Endpoints
+
+A step's endpoint is stored in `bip_step_outcome.endpoint_uri` and the
+attempt's `steps_json`, and named in the adapter's warnings, with its
+credentials masked as `xxxxxx`. The rule is the one the .NET adapter applies to
+the steps it records, so both adapters store the same value for the same URI:
+
+- what Camel's `URISupport.sanitizeUri` masks: the value of every query
+  parameter whose name contains one of Camel's sensitive option names (such as
+  `password`, `token`, `secret`, `apikey`, `user` or `clientId`), and the
+  password in a `user:password@` part, including inside a parameter value;
+- the whole user info of the endpoint's authority (`https://xxxxxx@host/…`),
+  not only its password;
+- the value of every query parameter with a credential-like name, by the rule
+  the adapter uses for the headers it masks in a DLQ record: `Authorization`,
+  cookies, authentication challenges, names containing secret, token, password,
+  passwd, credential, session, signature, apikey, api-key, api_key,
+  subscription-key, private-key or auth (such as `Signature` or
+  `X-Amz-Credential`), or ending in `-key` or `_key` (such as
+  `subscription-key`), but not `x-bip-*` or `Idempotency-Key`; also the names
+  `key`, `code`, `sig` and `pwd`, and names containing `passphrase`,
+  `passcode`, `privatekey`, `accesskey`, `accountkey` or `connectionstring`.
+  Parameter names are compared after percent-decoding (an escape that is not
+  valid UTF-8 is compared as written), ignoring case.
+
+A run of masked characters becomes one `xxxxxx`. Keywords an application adds
+with `URISupport.addSanitizeKeywords` are masked too (the .NET adapter has no
+such setting). An endpoint the adapter's patterns cannot mask within about a
+second is stored as `xxxxxx`; when an application has added keywords, Camel's
+own sanitizer also runs on it, and that pass has no such bound. The route still sends to the real endpoint; only the stored
+and logged copy is masked.
 
 ## Explicit Classification
 
