@@ -161,9 +161,10 @@ jobs:
             and ([.protection_rules[] | select(.type == "required_reviewers")
                   | select(.prevent_self_review == true and (.reviewers | length) >= 2)] | length) == 1' > /dev/null \
             || { echo "Environment snapshot is not protected as required." >&2; exit 1; }
-          gh api "$repo/environments/snapshot/deployment-branch-policies" | jq -e --arg branches "$REVIEWED_BRANCHES" '
+          gh api "$repo/environments/snapshot/deployment-branch-policies?per_page=100" | jq -e --arg branches "$REVIEWED_BRANCHES" '
             ($branches | split(" ")) as $allowed
-            | .total_count >= 1 and all(.branch_policies[]; .type == "branch" and (.name as $n | $allowed | index($n)))' > /dev/null \
+            | .total_count >= 1 and .total_count == (.branch_policies | length)
+            and all(.branch_policies[]; .type == "branch" and (.name as $n | $allowed | index($n)))' > /dev/null \
             || { echo "Environment snapshot must allow only the reviewed branches." >&2; exit 1; }
           reviewed() {
             for branch in $REVIEWED_BRANCHES; do
@@ -173,6 +174,9 @@ jobs:
             return 1
           }
           reviewed "$SOURCE" || { echo "Snapshot commit is not on a reviewed branch." >&2; exit 1; }
+          # The build checked this at dispatch; approval may come later, so check again.
+          tags="$(gh api "$repo/git/matching-refs/tags/v${VERSION%-SNAPSHOT}" | jq --arg ref "refs/tags/v${VERSION%-SNAPSHOT}" '[.[] | select(.ref == $ref)] | length')"
+          test "$tags" = 0 || { echo "v${VERSION%-SNAPSHOT} is tagged now; a released version gets no snapshot." >&2; exit 1; }
           reviewed "$TOOLING" || { echo "TRUSTED_TOOLING_SHA is not on a reviewed branch." >&2; exit 1; }
           # An upload is never repeated by a re-run, also when an earlier attempt died
           # before it kept its state; dispatch a new run instead.
@@ -200,7 +204,8 @@ jobs:
           test "$(git -C tooling rev-parse HEAD)" = "$TOOLING"
           (cd candidate && sha256sum -c --strict --quiet ../checksums/candidate.sha256)
           test "$(find candidate -type f | wc -l)" -eq "$(wc -l < checksums/candidate.sha256)"
-          python3 -I tooling/.github/scripts/snapshot-upload.py --check-only --candidate candidate --version "$VERSION" --source-commit "$SOURCE" --candidate-run "$GITHUB_RUN_ID" --state unused.json
+          # The coordinate comes from the trusted POM, never from the candidate.
+          python3 -I tooling/.github/scripts/snapshot-upload.py --check-only --pom tooling/pom.xml --candidate candidate --version "$VERSION" --source-commit "$SOURCE" --candidate-run "$GITHUB_RUN_ID" --state unused.json
           while read -r _ name; do
             gh attestation verify "candidate/$name" --repo "$GITHUB_REPOSITORY" \
               --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-snapshot.yml" \
@@ -214,7 +219,7 @@ jobs:
         run: |
           set -euo pipefail
           mkdir state
-          python3 -I tooling/.github/scripts/snapshot-upload.py --candidate candidate --version "$VERSION" --source-commit "$SOURCE" --candidate-run "$GITHUB_RUN_ID" --state state/snapshot.json
+          python3 -I tooling/.github/scripts/snapshot-upload.py --pom tooling/pom.xml --candidate candidate --version "$VERSION" --source-commit "$SOURCE" --candidate-run "$GITHUB_RUN_ID" --state state/snapshot.json
           test "$(jq -r .phase state/snapshot.json)" = verified
           jq '{coordinate, snapshot_version, source_commit, files}' state/snapshot.json >> "$GITHUB_STEP_SUMMARY"
       - name: Retain snapshot state, also after a failure

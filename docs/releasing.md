@@ -77,7 +77,9 @@ recorded checksums and the provenance, uploads them once and reads them back;
 two people are involved. What it does not: a snapshot is not a release. It is not
 signed, Central may expire it, and `X.Y.Z-SNAPSHOT` resolves to the latest
 upload, so only the timestamped version identifies what was approved. A re-run
-of the upload refuses; dispatch a new run. See
+of the upload refuses; dispatch a new run. The commit was the branch head at
+dispatch; a merge before the approval does not change what is uploaded. A
+version tagged by then gets no snapshot. See
 [snapshot lane](release-packaging.md#snapshot-lane) for the trust boundaries and
 repository settings.
 
