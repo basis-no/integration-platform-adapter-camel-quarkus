@@ -15,7 +15,9 @@ import java.sql.Types;
 import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -153,6 +155,11 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             returning (select integration from other)
             """;
 
+    private static final String UPDATE_ATTEMPT_EXPIRY_SQL = """
+            update bip_message_attempt set payload_expires_at = ?
+            where message_id = ? and attempt = ? and payload_expires_at is distinct from ?
+            """;
+
     // The earliest outcome recorded for this message by this integration: its first receipt.
     private static final String FIRST_RECEIPT_SQL = """
             select min(occurred_at) from bip_message_attempt where message_id = ? and integration = ?
@@ -276,14 +283,38 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     public void record(MessageAttemptResult result) {
         try {
             timeouts.inTransaction(dataSource, connection -> {
-                Instant payloadExpiresAt = upsertMessageLog(connection, result, cappedInlineExpiry(connection, result));
-                upsertMessageAttempt(connection, result, payloadExpiresAt);
+                // History first, then the summary, as adapter 0.3.6 does: both lines take the row
+                // locks in one order, so they cannot deadlock during a rolling upgrade. The summary
+                // keeps an object payload's first expiry; the history row takes it within this
+                // transaction, so no reader sees the provisional value. The database keeps
+                // microseconds, so the requested expiry is bound at that precision.
+                Instant requestedExpiry = microseconds(cappedInlineExpiry(connection, result));
+                upsertMessageAttempt(connection, result, requestedExpiry);
+                Instant keptExpiry = upsertMessageLog(connection, result, requestedExpiry);
+                if ("s3_object".equals(result.payloadStorage()) && !Objects.equals(keptExpiry, requestedExpiry)) {
+                    updateAttemptExpiry(connection, result, keptExpiry);
+                }
                 return null;
             });
         } catch (Exception e) {
             throw new MessageStoreSinkException("Failed to record message attempt " + result.messageId()
                     + "/" + result.attempt(), e);
         }
+    }
+
+    private void updateAttemptExpiry(Connection connection, MessageAttemptResult result, Instant payloadExpiresAt)
+            throws SQLException {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPDATE_ATTEMPT_EXPIRY_SQL)) {
+            setTimestampOrNull(statement, 1, payloadExpiresAt);
+            statement.setString(2, result.messageId());
+            statement.setInt(3, result.attempt());
+            setTimestampOrNull(statement, 4, payloadExpiresAt);
+            statement.executeUpdate();
+        }
+    }
+
+    private static Instant microseconds(Instant expiry) {
+        return expiry == null ? null : expiry.truncatedTo(ChronoUnit.MICROS);
     }
 
     private void upsertMessageAttempt(

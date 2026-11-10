@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- The `postgres` sink writes the attempt row before the summary row again, as
+  adapter 0.3.6 does. Before, `main` wrote the summary first, so a 0.3.6 pod and
+  a pod of this version that wrote the same message and attempt at once, as can
+  happen during a rolling upgrade, could deadlock: PostgreSQL aborted one write
+  and its record was read again. An S3 object payload still keeps its first
+  expiry: the attempt row takes it from the summary in the same transaction, so
+  history and summary show the same expiry. A rolling-upgrade test runs the
+  released 0.3.6 adapter next to this one against one Message Store. No schema
+  change.
 - The HTTP client inside Camel's `http` component no longer repeats a request
   by itself: the adapter sets `automaticRetriesDisabled` on every instance of
   it, under any name (`http`, `https` or the application's own), unless the

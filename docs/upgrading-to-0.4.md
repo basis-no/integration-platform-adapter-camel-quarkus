@@ -294,6 +294,14 @@ The changelog's Unreleased section has the details; in short:
   time its poll has already taken; a committed outcome resets the wait. The
   consumer's other partitions wait with it. The outcome is still not committed.
   Without `break-on-first-error=true` there is no wait.
+- **History first, as in 0.3.6.** The `postgres` sink writes the attempt row
+  and then the summary row, so 0.3.6 and 0.4 pods can write the same message
+  during a rolling upgrade without deadlocking each other. Released .NET adapter
+  versions still write the summary first: a Camel 0.4 writer and a released .NET
+  writer on the same message id and attempt can deadlock (PostgreSQL aborts one
+  write and its record is read again) until the .NET adapter is upgraded to a
+  version that writes history first. See
+  [Message lifecycle](message-lifecycle.md#read-model).
 - **The shared message-id warning**, as in 0.3.6: the adapter warns, once per
   pair of integrations and then at most every ten minutes with a count, when it
   journals a message id that another integration already journaled. Give each
