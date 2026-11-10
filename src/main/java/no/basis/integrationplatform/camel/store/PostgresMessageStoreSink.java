@@ -195,7 +195,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             return requested;
         }
         Instant firstReceipt = result.occurredAt();
-        try (PreparedStatement statement = connection.prepareStatement(FIRST_RECEIPT_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, FIRST_RECEIPT_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.integration());
             try (ResultSet earliest = statement.executeQuery()) {
@@ -228,7 +228,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             Connection connection,
             MessageAttemptResult result,
             Instant payloadExpiresAt) throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_ATTEMPT_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPSERT_MESSAGE_ATTEMPT_SQL)) {
             statement.setString(1, result.messageId());
             statement.setInt(2, result.attempt());
             statement.setInt(3, result.schemaVersion());
@@ -260,7 +260,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     private Instant upsertMessageLog(Connection connection, MessageAttemptResult result, Instant requestedExpiry)
             throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_LOG_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPSERT_MESSAGE_LOG_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.correlationId());
             statement.setString(3, result.contentType());
@@ -296,7 +296,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
         if (!"s3_object".equals(result.payloadStorage())) {
             return requestedExpiry;
         }
-        try (PreparedStatement statement = connection.prepareStatement(MESSAGE_LOG_EXPIRY_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, MESSAGE_LOG_EXPIRY_SQL)) {
             statement.setString(1, result.messageId());
             try (ResultSet current = statement.executeQuery()) {
                 current.next();

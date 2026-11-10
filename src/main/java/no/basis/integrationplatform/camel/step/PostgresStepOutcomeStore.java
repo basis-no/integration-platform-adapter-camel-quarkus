@@ -133,8 +133,8 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     @Override
     public boolean wasDelivered(String idempotencyKey) {
         try {
-            return timeouts.inTransaction(dataSource, connection -> {
-                try (PreparedStatement statement = connection.prepareStatement(WAS_DELIVERED_SQL)) {
+            return timeouts.inTransactionOrJoin(dataSource, connection -> {
+                try (PreparedStatement statement = timeouts.prepare(connection, WAS_DELIVERED_SQL)) {
                     statement.setString(1, idempotencyKey);
                     try (ResultSet resultSet = statement.executeQuery()) {
                         return resultSet.next();
@@ -149,8 +149,8 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     @Override
     public Optional<StepOutputCheckpoint> readCheckpoint(String idempotencyKey) {
         try {
-            return timeouts.inTransaction(dataSource, connection -> {
-                try (PreparedStatement statement = connection.prepareStatement(READ_CHECKPOINT_SQL)) {
+            return timeouts.inTransactionOrJoin(dataSource, connection -> {
+                try (PreparedStatement statement = timeouts.prepare(connection, READ_CHECKPOINT_SQL)) {
                     statement.setString(1, idempotencyKey);
                     try (ResultSet resultSet = statement.executeQuery()) {
                         if (!resultSet.next()) {
@@ -194,8 +194,8 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
 
     private void record(StepResult step, StepStatus status, String sql, StepOutputCheckpoint checkpoint) {
         try {
-            timeouts.inTransaction(dataSource, connection -> {
-                try (PreparedStatement statement = connection.prepareStatement(sql)) {
+            timeouts.inTransactionOrJoin(dataSource, connection -> {
+                try (PreparedStatement statement = timeouts.prepare(connection, sql)) {
                     statement.setString(1, step.idempotencyKey());
                     statement.setString(2, messageId(step.idempotencyKey()));
                     statement.setString(3, step.step());

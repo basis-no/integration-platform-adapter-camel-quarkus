@@ -11,8 +11,8 @@ into integration repositories.
 | `basis.message-store.sink` | `BASIS_MESSAGE_STORE_SINK` | `log`, `postgres`, `kafka`; default `log` | Deployment profile. Production uses `postgres`; `kafka` requires a separate lifecycle consumer. |
 | `basis.message-store.status-topic` | `BASIS_MESSAGE_STORE_STATUS_TOPIC` | topic; default `bip.message.status` | Deployment-owned. Used only by the Kafka sink. |
 | `basis.message-store.step-outcome-store` | `BASIS_MESSAGE_STORE_STEP_OUTCOME_STORE` | `noop`, `postgres`; default `noop` | Deployment profile. Production replay protection requires `postgres`. |
-| `basis.message-store.statement-timeout` | `BASIS_MESSAGE_STORE_STATEMENT_TIMEOUT` | positive duration such as `10s`; default `10s` | Deployment-owned. Longest a statement of one outcome or step-outcome call may run (Postgres `statement_timeout`, set for that call's transaction only). The call's JDBC network timeout is this value plus 5 seconds. Keep it well under the Kafka `max.poll.interval.ms`. See [Message Store call timeouts](#message-store-call-timeouts). |
-| `basis.message-store.lock-timeout` | `BASIS_MESSAGE_STORE_LOCK_TIMEOUT` | positive duration, at most the statement timeout; default `5s` | Deployment-owned. Longest such a statement may wait for a lock (Postgres `lock_timeout`, for that call's transaction only). |
+| `basis.message-store.statement-timeout` | `BASIS_MESSAGE_STORE_STATEMENT_TIMEOUT` | duration of at least `1ms`, such as `10s`; default `10s` | Deployment-owned. Longest each statement of an outcome or step-outcome call may run (Postgres `statement_timeout`, set for that call's transaction only; inside an application transaction, the statement's JDBC query timeout). The call's JDBC network timeout is this value plus 5 seconds. Keep it well under the Kafka `max.poll.interval.ms`. See [Message Store call timeouts](#message-store-call-timeouts). |
+| `basis.message-store.lock-timeout` | `BASIS_MESSAGE_STORE_LOCK_TIMEOUT` | duration of at least `1ms` and at most the statement timeout; default `5s` | Deployment-owned. Longest each such statement may wait for a lock (Postgres `lock_timeout`, for that call's transaction only; not set inside an application transaction). |
 | `basis.message-store.test-profile` | `BASIS_MESSAGE_STORE_TEST_PROFILE` | `disabled`, `no-persistence`, `no-commit`, `no-persistence-no-commit`; default `disabled` | Test-only; non-default values are unsafe in production. |
 | `basis.message-store.allow-test-profiles` | `BASIS_MESSAGE_STORE_ALLOW_TEST_PROFILES` | boolean; default `false` | Explicit test guard. Production deployments should keep `false`. |
 | `basis.message-store.dlq-uri` | `BASIS_MESSAGE_STORE_DLQ_URI` | A fixed, non-transactional `kafka:` URI (not `acks=0`) or the application's own `direct:` route; default `kafka:bip.message.dlq` | Deployment-owned terminal parking endpoint. The adapter records `DLQ` and commits only after this endpoint accepted the record. |
@@ -102,22 +102,47 @@ the boundary even if integration code attempts another query.
 
 The Postgres sink and the Postgres step outcome store run on the Kafka
 consumer thread. Each of their calls (recording an attempt's outcome, checking
-or recording a step outcome, reading an output checkpoint) runs in its own
-transaction with:
+or recording a step outcome, reading an output checkpoint) is bounded per
+statement:
 
-- `statement_timeout` = `basis.message-store.statement-timeout` (default 10 s)
-  and `lock_timeout` = `basis.message-store.lock-timeout` (default 5 s), set
-  with `set_config(..., true)` for that transaction only, so a pooled connection
-  keeps no session setting;
-- the JDBC network timeout (the PostgreSQL driver's socket timeout) set to the
-  statement timeout plus 5 seconds for the call and restored afterwards, so a
-  database that stops answering without closing the connection ends the call too.
+- On a connection in autocommit mode, the usual case, the call runs in its own
+  transaction with `statement_timeout` = `basis.message-store.statement-timeout`
+  (default 10 s) and `lock_timeout` = `basis.message-store.lock-timeout`
+  (default 5 s), set with `set_config(..., true)` for that transaction only, so
+  a pooled connection keeps no session setting.
+- Each statement also has a JDBC query timeout of the statement timeout,
+  rounded up to whole seconds.
+- The JDBC network timeout (the PostgreSQL driver's socket timeout) is set to
+  the statement timeout plus 5 seconds for the call and restored afterwards, so
+  a database that stops answering without closing the connection ends the call
+  too.
+
+The timeouts bound each statement, not the call as a whole. At the defaults a
+step-outcome call runs `set_config` and one statement, and ends within about
+10 seconds, or 15 seconds when the database stops answering. The sink's record
+runs `set_config` and up to four statements, so in the worst case, each
+statement just under its timeout, it takes about 40 seconds, still well under
+the Kafka `max.poll.interval.ms`. A database that stops answering ends the
+call at the first statement that waits for it: the network timeout breaks the
+connection.
 
 A call that reaches a timeout fails like any other Message Store failure: the
 attempt is not durable, so its Kafka offset is not committed and the record is
 read again (see [Message Lifecycle](message-lifecycle.md)). Startup refuses a
-timeout that is zero or negative, or a lock timeout longer than the statement
-timeout.
+timeout under 1 ms, a lock timeout longer than the statement timeout, or a
+statement timeout whose network timeout does not fit the JDBC API (about 24
+days).
+
+**Inside an application transaction.** When the connection is already in a
+transaction on entry (autocommit off, as on a connection enlisted in a JTA
+transaction of a `transacted()` route), the transaction belongs to the
+application. The step outcome store then runs its statements in that
+transaction and neither begins, commits nor rolls it back, as before these
+timeouts; the sink commits or rolls back the connection's transaction, as it
+did before. In both cases no `statement_timeout` or `lock_timeout` is set,
+because a transaction-local setting would last for the rest of the
+application's transaction: each statement is bounded by its JDBC query timeout
+and the network timeout, and a lock wait by the query timeout.
 
 Getting a connection is bounded by the deployment's datasource settings, which
 the adapter does not set:

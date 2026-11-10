@@ -17,9 +17,10 @@
   a Message Store outage. Its offset is not committed and the consumer
   reads it again until the DLQ accepts it; the ERROR log names the message.
 - An error that says a statement was cancelled because of a statement or lock
-  timeout, or a socket read timeout, means a Message Store call took longer
-  than `basis.message-store.statement-timeout` or waited longer than
-  `basis.message-store.lock-timeout`: check the database's health, its locks
+  timeout or "due to user request" (the JDBC query timeout, used inside an
+  application transaction), or a socket read timeout, means a Message Store
+  statement took longer than `basis.message-store.statement-timeout` or waited
+  longer than `basis.message-store.lock-timeout`: check the database's health, its locks
   (`pg_locks`, `pg_stat_activity`) and its network before raising either value.
 - Confirm `allow-manual-commit=true`, `auto-commit-enable=false` and
   `break-on-first-error=true`.
@@ -41,8 +42,8 @@ Common fail-fast causes include:
 - normalization without the durable Postgres step store;
 - unsafe polling with missing or multiple declared replicas;
 - store schema version mismatch in `bip_contract`;
-- a Message Store statement or lock timeout that is zero or negative, or a lock
-  timeout longer than the statement timeout.
+- a Message Store statement or lock timeout under 1 ms, or a lock timeout
+  longer than the statement timeout.
 
 Treat these as configuration errors. Do not bypass them in business routes.
 

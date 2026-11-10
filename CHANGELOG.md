@@ -2,17 +2,22 @@
 
 ## Unreleased
 
-- Every call of the Postgres sink and the Postgres step outcome store is
-  bounded: it runs in its own transaction with a statement timeout
+- Every statement of a Postgres sink or Postgres step outcome store call is
+  bounded: the call runs in its own transaction with a statement timeout
   (`basis.message-store.statement-timeout`, default 10 s) and a lock timeout
   (`basis.message-store.lock-timeout`, default 5 s), set for that transaction
-  only, and with the JDBC network timeout set to the statement timeout plus
-  5 seconds. Before, a call waited without limit on a held lock or a database
-  that stopped answering, and held the Kafka consumer thread past
-  `max.poll.interval.ms`. A timeout is a Message Store failure: the record is
-  not committed and is read again. Startup refuses a timeout that is not
-  positive, or a lock timeout longer than the statement timeout.
-  Upgrade: an outcome or step-outcome call that legitimately needs longer
+  only, each statement has a JDBC query timeout of the statement timeout, and
+  the JDBC network timeout is the statement timeout plus 5 seconds. At the
+  defaults a step-outcome call ends within about 10 s and the sink's record
+  (up to four statements) within about 40 s. Before, a call waited without
+  limit on a held lock or a database that stopped answering, and held the
+  Kafka consumer thread past `max.poll.interval.ms`. A timeout is a Message
+  Store failure: the record is not committed and is read again. Startup
+  refuses a timeout under 1 ms, or a lock timeout longer than the statement
+  timeout. On a connection already in an application transaction (such as a
+  JTA transaction), the step outcome store joins it as before and only the
+  query and network timeouts apply.
+  Upgrade: an outcome or step-outcome statement that legitimately needs longer
   fails now; raise the property. Set `loginTimeout` in the JDBC URL as well
   (see [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts)).
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
