@@ -4,15 +4,32 @@
 
 The global route configuration applies unless a route selects a variant:
 
-| Configuration | Redeliveries | Initial delay | Terminal behavior |
-| --- | ---: | ---: | --- |
-| default | 3 | 1 second | configured failure mode |
-| `ip-slow-backend` | 6 | 5 seconds | configured failure mode |
-| `ip-no-retry` | 0 | none | configured failure mode |
-| `bip-ingress-normalization` | 3 | 1 second | propagate to source |
+| Configuration | Redeliveries | Delays | Total wait | Terminal behavior |
+| --- | ---: | --- | ---: | --- |
+| default | 3 | 1, 2, 4 seconds | 7 seconds | configured failure mode |
+| `ip-slow-backend` | 6 | 5, 10, 20, 20, 20, 20 seconds | 95 seconds | configured failure mode |
+| `ip-no-retry` | 0 | none | none | configured failure mode |
+| `bip-ingress-normalization` | 3 | 1, 2, 4 seconds | 7 seconds | propagate to source |
 
-Retries use exponential backoff. Automatic redelivery does not increment the
-message attempt; it adds diagnostics to that attempt.
+Retries use exponential backoff; `ip-slow-backend` caps each delay at 20
+seconds. Automatic redelivery does not increment the message attempt; it adds
+diagnostics to that attempt.
+
+On a Kafka input the waits run on the consumer thread, between attempts that
+take their own time. `max.poll.interval.ms` (300 seconds by default) bounds the
+time between two polls, and the consumer processes every record of a poll
+before it polls again (up to 500 records, Camel's default `maxPollRecords`), so
+the budget covers all records of one poll, not one record. If they take longer,
+Kafka removes the consumer from its group and the uncommitted records are
+delivered again. With `ip-slow-backend`, one record that exhausts its retries
+waits 95 seconds, so three such records in one poll already take most of the
+interval. For a route on `ip-slow-backend`, set `maxPollRecords=1` on the
+Kafka input, or raise `maxPollIntervalMs` on it to cover the records of a poll.
+With one record per poll, about 200 seconds remain for its seven attempts:
+bound each receiver call well inside that with `responseTimeout` and
+`connectTimeout` (see the table below for the forms Camel applies). The HTTP
+client's own retry, which could double the requests in each attempt, is off by
+default, as described next.
 
 Every repeated request is a Camel redelivery, so the recorded count is the
 number of requests a receiver got after the first. The HTTP client inside
@@ -31,10 +48,10 @@ default, `ip-slow-backend` and `ip-no-retry` configurations:
 - Without `Retry-After`, or with a value it cannot read, the configured delay
   applies.
 - The wait must fit a budget. For a Kafka input, that is the input's
-  `maxPollIntervalMs` (Kafka's 300 seconds when unset) less the time the
+  `maxPollIntervalMs` (Kafka's 300 seconds when unset) less the time this
   exchange has run so far, less 20 % for the rest of the attempt. For another
   input, it is the configuration's maximum delay (Camel's 60 seconds unless the
-  configuration sets one).
+  configuration sets one; 20 seconds for `ip-slow-backend`).
 - A wait that does not fit is not used: the configured delay applies, and the
   attempt goes on through the normal retries and, when they are exhausted, to
   the configured failure mode, instead of holding the consumer past its poll
@@ -43,9 +60,13 @@ default, `ip-slow-backend` and `ip-no-retry` configurations:
   get their configured delays, not a back-off grown from that wait.
 
 Each redelivery is sent with the step's stable `Idempotency-Key`. The budget
-is the exchange's own: records polled together share one poll interval, so a
-route whose receiver answers with long `Retry-After` values should also set
-`maxPollRecords` low or raise `maxPollIntervalMs`. The `record-failed` failure
+is per exchange only: it counts this record's own time, not the time earlier
+records of the same poll took, nor the records still waiting after it, while
+the poll interval covers all records of one poll (see above). So a long
+`Retry-After` that fits one record's budget can still make the poll as a whole
+outlast the interval. For a receiver that answers with long `Retry-After`
+values, set `maxPollRecords=1` on the Kafka input, so the budget is the poll's,
+or raise `maxPollIntervalMs` to cover the records of a poll. The `record-failed` failure
 mode and `bip-ingress-normalization` keep their configured delays.
 
 To turn the client's own retry back on, set

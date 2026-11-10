@@ -138,8 +138,15 @@ class HttpRetryAfterTest {
         assertEquals(1_000L, defaultProfile.configuredDelay(1));
         assertEquals(2_000L, defaultProfile.configuredDelay(2));
         assertEquals(4_000L, defaultProfile.configuredDelay(3));
-        var slow = new HttpRetryAfter(HttpRetryAfter.policy(6, 5000, null), clock);
-        assertEquals(60_000L, slow.configuredDelay(6), "Camel's default 60 s cap");
+        var uncapped = new HttpRetryAfter(HttpRetryAfter.policy(6, 5000, null), clock);
+        assertEquals(60_000L, uncapped.configuredDelay(6), "Camel's default 60 s cap");
+        var slow = new HttpRetryAfter(HttpRetryAfter.policy(PlatformRouteConfiguration.SLOW_BACKEND_REDELIVERIES,
+                PlatformRouteConfiguration.SLOW_BACKEND_FIRST_DELAY_MS,
+                PlatformRouteConfiguration.SLOW_BACKEND_MAX_DELAY_MS), clock);
+        assertEquals(20_000L, slow.configuredDelay(3), "ip-slow-backend's own cap");
+        assertEquals(20_000L, slow.configuredDelay(6));
+        assertEquals(20_000L, slow.budgetMillis(new DefaultExchange(new DefaultCamelContext())),
+                "Without a Kafka input, ip-slow-backend's budget is its 20 s cap");
     }
 
     private static Exchange failed(DefaultCamelContext context, int status, Map<String, String> headers, int next) {
