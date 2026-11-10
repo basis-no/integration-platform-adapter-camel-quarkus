@@ -9,7 +9,6 @@ import org.apache.camel.CamelContext;
 import org.apache.camel.ProducerTemplate;
 import org.apache.camel.component.kafka.KafkaEndpoint;
 import org.apache.camel.component.kafka.PollOnError;
-import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -47,7 +46,6 @@ class AdapterStartupTest {
     }
 
     @Test
-    @Disabled("#75: main parks a failed request that is not a managed Kafka input; re-enable with #76")
     void internalRequestErrorReachesCallerWithoutKafkaOrDatabase() {
         var reply = producer.request("direct:receiver", e -> e.getMessage().setBody("<Transformed/>"));
         assertNotNull(reply.getException());
