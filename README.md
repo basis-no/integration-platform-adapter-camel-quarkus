@@ -97,6 +97,9 @@ Start with the [documentation index](docs/index.md).
   input instead of the message the route left, and logs that a handled message
   is being parked. 0.3.6 fixed it, and so does 0.4.0; see
   [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- On `main`, a Kafka record whose outcome could not be made durable is read
+  again with a growing wait instead of several times a second; see
+  [Reading a record again](docs/retry-dlq-replay.md#reading-a-record-again).
 - 0.3.x and 0.4.0-rc1 leave a Kafka boundary's consumer on Camel's default
   `auto.offset.reset=latest`. A record whose outcome was not durable, on a
   partition where the consumer group has no committed offset yet, is skipped
