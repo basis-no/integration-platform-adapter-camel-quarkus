@@ -4,8 +4,10 @@
 
 - A Kafka boundary route that holds records in memory after its input
   completes refuses to start, naming the route and node: Camel's `resequence`
-  (batch or stream), or an `aggregate` on its default in-memory repository, in
-  the route or in a `direct:` route it sends to with a fixed URI. The adapter
+  (batch or stream), or an `aggregate` on Camel's in-memory repository (the
+  default) or on a repository reference that cannot be resolved, in the route,
+  its circuit-breaker fallbacks, or a `direct:` route it sends to with a fixed
+  URI (`to`, or `toD`/`enrich` without `${...}`, placeholders resolved). The adapter
   commits a completed input, so a restart before the held record was released
   lost it: it was neither delivered nor read again (shown by
   `InMemoryHoldRestartTest`). Upgrade: give such an `aggregate` a persistent

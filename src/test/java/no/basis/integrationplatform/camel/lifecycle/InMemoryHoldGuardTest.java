@@ -150,6 +150,94 @@ class InMemoryHoldGuardTest {
     }
 
     @Test
+    void followsPropertyPlaceholdersInDirectUris() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            var properties = new java.util.Properties();
+            properties.setProperty("target", "batch");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            RouteDefinition input = kafka("orders");
+            input.to("direct:{{target}}");
+            RouteDefinition batch = new RouteDefinition().from("direct:batch").routeId("batch");
+            batch.aggregate(Builder.constant("all"), STRATEGY).completionSize(10).to("log:batch");
+            RouteDefinition invoices = kafka("invoices");
+            invoices.to("direct:invoice-batch");
+            RouteDefinition invoiceBatch = new RouteDefinition().from("direct:{{target}}-invoices").routeId("invoice-batch");
+            invoiceBatch.resequence(Builder.header("seq")).to("log:batch");
+            context.addRouteDefinitions(List.of(input, batch, invoices, invoiceBatch));
+
+            assertThrows(IllegalArgumentException.class, () -> factory().createRoutePolicy(context, "orders", input));
+            // The input URI resolves to direct:batch-invoices, not the invoices route's target.
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory().createRoutePolicy(context, "invoices", invoices));
+            invoices.getOutputs().clear();
+            invoices.to("direct:batch-invoices");
+            assertThrows(IllegalArgumentException.class, () -> factory().createRoutePolicy(context, "invoices", invoices));
+        }
+    }
+
+    @Test
+    void followsEnrichAndToDWithAFixedUri() throws Exception {
+        for (var send : List.<java.util.function.Consumer<RouteDefinition>>of(
+                route -> route.enrich("direct:batch"), route -> route.toD("direct:batch"))) {
+            try (var context = new DefaultCamelContext()) {
+                RouteDefinition input = kafka("orders");
+                send.accept(input);
+                RouteDefinition batch = new RouteDefinition().from("direct:batch").routeId("batch");
+                batch.aggregate(Builder.constant("all"), STRATEGY).completionSize(10).to("log:batch");
+                context.addRouteDefinitions(List.of(input, batch));
+
+                assertThrows(IllegalArgumentException.class, () -> factory().createRoutePolicy(context, "orders", input));
+            }
+        }
+        try (var context = new DefaultCamelContext()) {
+            RouteDefinition input = kafka("orders");
+            input.toD("direct:${header.target}");
+            RouteDefinition batch = new RouteDefinition().from("direct:batch").routeId("batch");
+            batch.aggregate(Builder.constant("all"), STRATEGY).completionSize(10).to("log:batch");
+            context.addRouteDefinitions(List.of(input, batch));
+
+            // A dynamic URI is not followed (documented).
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory().createRoutePolicy(context, "orders", input));
+        }
+    }
+
+    @Test
+    void refusesAHoldInACircuitBreakerFallback() throws Exception {
+        RouteDefinition route = kafka("orders");
+        route.circuitBreaker().to("log:call").onFallback()
+                .aggregate(Builder.constant("all"), STRATEGY).completionSize(10).to("log:batch");
+
+        refuse("orders", route);
+    }
+
+    @Test
+    void resolvesRepositoryReferencesAsCamelDoes() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            context.getRegistry().bind("durable", new PersistentRepository());
+            RouteDefinition byClass = aggregating("by-class", "#class:" + PersistentRepository.class.getName());
+            RouteDefinition byType = aggregating("by-type", "#type:" + AggregationRepository.class.getName());
+            RouteDefinition memoryByClass = aggregating("memory-by-class", "#class:" + MemoryAggregationRepository.class.getName());
+            RouteDefinition missing = aggregating("missing", "#bean:absent");
+            context.addRouteDefinitions(List.of(byClass, byType, memoryByClass, missing));
+
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory().createRoutePolicy(context, "by-class", byClass));
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory().createRoutePolicy(context, "by-type", byType));
+            assertThrows(IllegalArgumentException.class,
+                    () -> factory().createRoutePolicy(context, "memory-by-class", memoryByClass));
+            IllegalArgumentException unresolved = assertThrows(IllegalArgumentException.class,
+                    () -> factory().createRoutePolicy(context, "missing", missing));
+            assertEquals(true, unresolved.getMessage().contains(
+                    "repository '#bean:absent' could not be resolved to show that it is not in memory"));
+        }
+    }
+
+    private static RouteDefinition aggregating(String routeId, String repository) {
+        RouteDefinition route = kafka(routeId);
+        route.aggregate(Builder.constant("all"), STRATEGY).aggregationRepository(repository).completionSize(10)
+                .to("log:batch");
+        return route;
+    }
+
+    @Test
     void stopsAtACycleOfDirectRoutes() throws Exception {
         try (var context = new DefaultCamelContext()) {
             RouteDefinition input = kafka("orders");
@@ -179,7 +267,7 @@ class InMemoryHoldGuardTest {
     }
 
     /** Stands for a persistent repository, such as a database-backed one. */
-    private static final class PersistentRepository implements AggregationRepository {
+    public static final class PersistentRepository implements AggregationRepository {
         @Override public Exchange add(org.apache.camel.CamelContext camelContext, String key, Exchange exchange) { return null; }
         @Override public Exchange get(org.apache.camel.CamelContext camelContext, String key) { return null; }
         @Override public void remove(org.apache.camel.CamelContext camelContext, String key, Exchange exchange) { }

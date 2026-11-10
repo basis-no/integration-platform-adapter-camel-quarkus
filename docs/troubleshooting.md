@@ -40,8 +40,9 @@ Common fail-fast causes include:
   one provisioned for an earlier adapter version. The error names the missing
   columns and the statements that add them;
 - a Kafka boundary route that holds records in memory after its input
-  completes: a `resequence`, or an `aggregate` without a persistent
-  `aggregationRepository`, in the route or in a `direct:` route it sends to.
+  completes: a `resequence`, or an `aggregate` on Camel's in-memory repository
+  (or a repository reference that cannot be resolved), in the route or in a
+  `direct:` route it sends to.
   A restart would lose the held records, whose offsets are already committed.
   See [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
 

@@ -34,12 +34,20 @@ delivered nor read again, because its offset is committed
 (`InMemoryHoldRestartTest` shows it for all three).
 
 A Kafka boundary route that contains such a processor therefore refuses to
-start, naming the route and node. The check covers the route and the `direct:`
-routes it sends to with a fixed URI (`to("direct:...")`), transitively; it does
-not follow dynamic sends, and it does not apply when an application attaches
-`MessageStoreRoutePolicy` to a route itself. To aggregate on a Kafka boundary,
-give the `aggregate` a persistent `aggregationRepository`, which keeps the held
-records across a restart. Camel's `resequence` has no such repository; a durable
+start, naming the route and node. The check covers the route, its
+circuit-breaker fallbacks, and the `direct:` routes it sends to with a fixed URI
+(a `to`, or a `toD` or `enrich` without `${...}`; property placeholders such as
+`direct:{{target}}` are resolved), transitively. It does not follow dynamic
+sends, and it does not apply when an application attaches
+`MessageStoreRoutePolicy` to a route itself.
+
+To aggregate on a Kafka boundary, give the `aggregate` a persistent
+`aggregationRepository`, which keeps the held records across a restart. Only
+Camel's `MemoryAggregationRepository` (also the default when none is set) is
+recognised as in-memory; whether any other repository is durable is the
+application's responsibility. A repository reference (`#bean:`, `#class:`,
+`#type:` or a plain name) that cannot be resolved when the route is created is
+refused, since it cannot be shown not to be in memory. Camel's `resequence` has no such repository; a durable
 resequencer is planned for 0.4.0
 ([#36](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/36))
 and is not available yet.

@@ -109,6 +109,10 @@ Start with the [documentation index](docs/index.md).
   message, so a resend skips it. Resend with the step in `redoSteps`; see
   [Sends in a sub-route](docs/steps-and-idempotency.md#sends-in-a-sub-route).
   Fixed for 0.4.0.
+- Camel's `resequence`, and an `aggregate` on its in-memory repository, lose
+  held records on a restart under the adapter's commit rule, on every version.
+  From 0.4.0 a Kafka boundary route with one refuses to start; see
+  [Holding Records in Memory](docs/message-lifecycle.md#holding-records-in-memory).
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3
   payload storage, output-side-effect checkpoints, non-Kafka ingress
   normalization, replica-safety validation, Kafka activity counters with
