@@ -72,7 +72,7 @@ different problems and production direct-Postgres mode uses both.
   checkpoint.
 - `bip_message_replay_audit`: operator replay request and publication audit.
 - `bip_contract`: store schema version (`contract_major`) checked at adapter
-  startup.
+  startup, together with the tables and columns the adapter writes.
 
 In production the database operator provisions the schema outside
 integration pods. SQL resources in the adapter JAR exist for local tests, not
