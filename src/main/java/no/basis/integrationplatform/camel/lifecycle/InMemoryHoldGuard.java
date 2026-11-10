@@ -15,7 +15,7 @@ import org.apache.camel.model.ToDefinition;
 import org.apache.camel.model.ToDynamicDefinition;
 import org.apache.camel.processor.aggregate.MemoryAggregationRepository;
 import org.apache.camel.spi.AggregationRepository;
-import org.apache.camel.support.PropertyBindingSupport;
+import org.apache.camel.support.EndpointHelper;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
@@ -37,6 +37,8 @@ import java.util.Set;
  * placeholders resolved), transitively, including circuit-breaker fallbacks.
  */
 final class InMemoryHoldGuard {
+    private static final String IN_MEMORY = "in-memory repository";
+
     private InMemoryHoldGuard() {
     }
 
@@ -121,28 +123,50 @@ final class InMemoryHoldGuard {
     private static String inMemory(CamelContext camelContext, AggregateDefinition aggregate) {
         AggregationRepository repository = aggregate.getAggregationRepositoryBean();
         String reference = aggregate.getAggregationRepository();
-        if (repository == null && (reference == null || reference.isBlank())) {
-            return "in-memory repository";
+        if (repository != null) {
+            return repository instanceof MemoryAggregationRepository ? IN_MEMORY : null;
         }
-        if (repository == null) {
-            Object found = resolve(camelContext, reference.trim());
-            if (!(found instanceof AggregationRepository resolved)) {
-                return "repository '" + reference + "' could not be resolved to show that it is not in memory";
-            }
-            repository = resolved;
+        if (reference == null || reference.isBlank()) {
+            return IN_MEMORY;
         }
-        return repository instanceof MemoryAggregationRepository ? "in-memory repository" : null;
+        Class<?> type = repositoryType(camelContext, reference.trim());
+        if (type == null) {
+            return "repository '" + reference + "' could not be resolved to show that it is not in memory";
+        }
+        return MemoryAggregationRepository.class.isAssignableFrom(type) ? IN_MEMORY : null;
     }
 
-    private static Object resolve(CamelContext camelContext, String reference) {
+    /**
+     * The class of the repository a reference names, resolved as Camel's aggregate reifier does
+     * (placeholders first, then {@code #class:} by its class without creating it, {@code #type:}
+     * by the single bean of that type, any other {@code #} reference through
+     * {@link EndpointHelper#resolveReferenceParameter}, a plain name from the registry), or
+     * {@code null} when it cannot be resolved.
+     */
+    private static Class<?> repositoryType(CamelContext camelContext, String reference) {
         if (camelContext == null) {
             return null;
         }
         try {
-            // #bean:, #class: and #type: as Camel resolves them; a plain name from the registry.
-            return reference.startsWith("#") ? PropertyBindingSupport.resolveBean(camelContext, reference)
-                    : camelContext.getRegistry().lookupByName(reference);
-        } catch (Exception e) {
+            String resolved = camelContext.resolvePropertyPlaceholders(reference);
+            if (resolved.startsWith("#class:")) {
+                Class<?> type = camelContext.getClassResolver().resolveClass(resolved.substring("#class:".length()).trim());
+                return type != null && AggregationRepository.class.isAssignableFrom(type) ? type : null;
+            }
+            if (resolved.startsWith("#type:")) {
+                Class<?> type = camelContext.getClassResolver().resolveClass(resolved.substring("#type:".length()).trim());
+                if (type == null) {
+                    return null;
+                }
+                Set<?> beans = camelContext.getRegistry().findByType(type);
+                Object bean = beans.size() == 1 ? beans.iterator().next() : null;
+                return bean instanceof AggregationRepository ? bean.getClass() : null;
+            }
+            Object bean = resolved.startsWith("#")
+                    ? EndpointHelper.resolveReferenceParameter(camelContext, resolved, AggregationRepository.class, false)
+                    : camelContext.getRegistry().lookupByName(resolved);
+            return bean instanceof AggregationRepository ? bean.getClass() : null;
+        } catch (RuntimeException e) {
             return null;
         }
     }
@@ -152,8 +176,16 @@ final class InMemoryHoldGuard {
     }
 
     private static String directName(CamelContext camelContext, String uri) {
-        if (uri == null || uri.contains("${")) {
+        if (uri == null) {
             return null;
+        }
+        int query = uri.indexOf('?');
+        if ((query < 0 ? uri : uri.substring(0, query)).contains("${")) {
+            // A dynamic target; dynamic options after the target do not change it.
+            return null;
+        }
+        if (query >= 0) {
+            uri = uri.substring(0, query);
         }
         if (camelContext != null && uri.contains("{{")) {
             try {
@@ -169,8 +201,6 @@ final class InMemoryHoldGuard {
         if (name.startsWith("//")) {
             name = name.substring(2);
         }
-        int query = name.indexOf('?');
-        name = query < 0 ? name : name.substring(0, query);
         return name.isEmpty() || name.contains("{{") ? null : name;
     }
 }

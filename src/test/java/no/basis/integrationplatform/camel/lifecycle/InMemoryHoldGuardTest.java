@@ -72,7 +72,10 @@ class InMemoryHoldGuardTest {
                     .to("log:batch");
             context.addRouteDefinition(route);
 
-            assertThrows(IllegalArgumentException.class, () -> factory().createRoutePolicy(context, "orders", route));
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> factory().createRoutePolicy(context, "orders", route));
+            assertEquals(true, refused.getMessage().contains("in route 'orders' (in-memory repository)"),
+                    refused.getMessage());
         }
     }
 
@@ -230,6 +233,51 @@ class InMemoryHoldGuardTest {
         }
     }
 
+    @Test
+    void acceptsAPersistentRepositoryByHashNameAndPlaceholder() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            context.getRegistry().bind("durable", new PersistentRepository());
+            context.getRegistry().bind("memory", new MemoryAggregationRepository());
+            var properties = new java.util.Properties();
+            properties.setProperty("repo", "durable");
+            properties.setProperty("memory-repo", "memory");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            RouteDefinition hash = aggregating("hash", "#durable");
+            RouteDefinition placeholder = aggregating("placeholder", "#{{repo}}");
+            RouteDefinition memory = aggregating("memory", "#{{memory-repo}}");
+            context.addRouteDefinitions(List.of(hash, placeholder, memory));
+
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory().createRoutePolicy(context, "hash", hash));
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory().createRoutePolicy(context, "placeholder", placeholder));
+            IllegalArgumentException refused = assertThrows(IllegalArgumentException.class,
+                    () -> factory().createRoutePolicy(context, "memory", memory));
+            assertEquals(true, refused.getMessage().contains("(in-memory repository)"), refused.getMessage());
+        }
+    }
+
+    @Test
+    void doesNotCreateARepositoryNamedByClass() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            RouteDefinition route = aggregating("by-class", "#class:" + UncreatableRepository.class.getName());
+            context.addRouteDefinition(route);
+
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory().createRoutePolicy(context, "by-class", route));
+        }
+    }
+
+    @Test
+    void followsAToDWhoseTargetIsFixedAndOnlyItsOptionsAreDynamic() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            RouteDefinition input = kafka("orders");
+            input.toD("direct:batch?timeout=${header.timeout}");
+            RouteDefinition batch = new RouteDefinition().from("direct:batch").routeId("batch");
+            batch.aggregate(Builder.constant("all"), STRATEGY).completionSize(10).to("log:batch");
+            context.addRouteDefinitions(List.of(input, batch));
+
+            assertThrows(IllegalArgumentException.class, () -> factory().createRoutePolicy(context, "orders", input));
+        }
+    }
+
     private static RouteDefinition aggregating(String routeId, String repository) {
         RouteDefinition route = kafka(routeId);
         route.aggregate(Builder.constant("all"), STRATEGY).aggregationRepository(repository).completionSize(10)
@@ -264,6 +312,22 @@ class InMemoryHoldGuardTest {
     private static MessageStoreRoutePolicyFactory factory() {
         return new MessageStoreRoutePolicyFactory(row -> { }, "order-pipeline", "postgres-inline", 100_000, 30, true,
                 "dlq", "auto");
+    }
+
+    /** A persistent repository that cannot be created; the guard must only inspect its class. */
+    public static final class UncreatableRepository extends PersistentRepositoryBase {
+        public UncreatableRepository() {
+            throw new IllegalStateException("the guard must not create the repository");
+        }
+    }
+
+    /** Base for test repositories. */
+    public abstract static class PersistentRepositoryBase implements AggregationRepository {
+        @Override public Exchange add(org.apache.camel.CamelContext camelContext, String key, Exchange exchange) { return null; }
+        @Override public Exchange get(org.apache.camel.CamelContext camelContext, String key) { return null; }
+        @Override public void remove(org.apache.camel.CamelContext camelContext, String key, Exchange exchange) { }
+        @Override public void confirm(org.apache.camel.CamelContext camelContext, String exchangeId) { }
+        @Override public Set<String> getKeys() { return Set.of(); }
     }
 
     /** Stands for a persistent repository, such as a database-backed one. */
