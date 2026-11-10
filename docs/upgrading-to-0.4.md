@@ -221,14 +221,17 @@ The changelog's Unreleased section has the details; in short:
   receiver that read `kafka.*` request headers must get the values from
   headers the route sets itself.
 - **No credential-like names in the output checkpoint's header list.**
-  Startup refuses a credential-like name in
+  Output checkpoints are new in 0.4.0. When you configure one (or already did
+  on a 0.4 development build), startup refuses a credential-like name in
   `basis.message-store.step.output-checkpoint.header-names`, by the rule that
   masks header values in parked DLQ records (`Authorization`, cookies, names
   containing `token`, `secret`, `session`, `auth` and the like, names ending in
-  `-key` or `_key`). Remove such names. The rule goes by the name, so harmless
-  headers such as `X-Partition-Key` or `X-Session-Count` are refused too: copy
-  the value to an exchange property and list it in `property-names` instead.
-  See [Output-producing side effects](steps-and-idempotency.md#output-producing-side-effects).
+  `-key` or `_key`; not `x-bip-*` or `Idempotency-Key`). Do not list such names,
+  and obtain a fresh credential on each attempt. The rule goes by the name, so
+  harmless headers such as `X-Partition-Key` or `X-Session-Count` are refused
+  too: copy the value to an exchange property and list it in `property-names`
+  instead. See
+  [Output-Producing Side Effects](steps-and-idempotency.md#output-producing-side-effects).
 - **Stored endpoints are masked as in the .NET adapter.** A step's stored
   endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and the endpoints
   in the adapter's warnings now also mask the whole user info and the values
