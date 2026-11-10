@@ -102,8 +102,8 @@ global setting is needed.
 | JMS queue normalized to Kafka | handed back to the JMS consumer | with `CLIENT_ACKNOWLEDGE`, not acknowledged, so the broker delivers it again | at the Kafka boundary, once published | from the Kafka input topic, not the queue |
 
 On an HTTP audit-only boundary with the Postgres step outcome store, a request
-that re-sends an `x-bip-message-id` skips the sends already delivered under that
-id; whether HTTP boundaries should use the ledger is open
+that re-sends an `x-bip-message-id` skips the durable side-effect sends already
+recorded as delivered under that id; whether HTTP boundaries should use the ledger is open
 ([#126](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/126)).
 
 A normalized input is recorded at the Kafka boundary that consumes the

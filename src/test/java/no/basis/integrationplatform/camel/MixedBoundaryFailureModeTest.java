@@ -108,15 +108,12 @@ class MixedBoundaryFailureModeTest {
     void aRealHttpRequestGetsTheErrorAndIsRecordedFailedUnderTheDefaultDlqMode() throws Exception {
         var rows = new CopyOnWriteArrayList<MessageAttemptResult>();
         var parked = new CopyOnWriteArrayList<String>();
-        int port;
-        try (var socket = new java.net.ServerSocket(0)) {
-            port = socket.getLocalPort();
-        }
         try (var context = new DefaultCamelContext()) {
-            var server = new org.apache.camel.component.platform.http.vertx.VertxPlatformHttpServerConfiguration();
-            server.setBindHost("127.0.0.1");
-            server.setBindPort(port);
-            context.addService(new org.apache.camel.component.platform.http.vertx.VertxPlatformHttpServer(server));
+            var configuration = new org.apache.camel.component.platform.http.vertx.VertxPlatformHttpServerConfiguration();
+            configuration.setBindHost("127.0.0.1");
+            configuration.setBindPort(0);
+            var server = new org.apache.camel.component.platform.http.vertx.VertxPlatformHttpServer(configuration);
+            context.addService(server);
             var properties = new Properties();
             properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
             context.getPropertiesComponent().setOverrideProperties(properties);
@@ -136,15 +133,18 @@ class MixedBoundaryFailureModeTest {
                 }
             });
             context.start();
+            int port = server.getServer().actualPort();
 
-            var response = java.net.http.HttpClient.newHttpClient().send(
-                    java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/orders"))
-                            .header(PlatformHeaders.MESSAGE_ID, "order-2")
-                            .POST(java.net.http.HttpRequest.BodyPublishers.ofString("<Order/>"))
-                            .build(),
-                    java.net.http.HttpResponse.BodyHandlers.ofString());
+            try (var client = java.net.http.HttpClient.newHttpClient()) {
+                var response = client.send(
+                        java.net.http.HttpRequest.newBuilder(java.net.URI.create("http://127.0.0.1:" + port + "/orders"))
+                                .header(PlatformHeaders.MESSAGE_ID, "order-2")
+                                .POST(java.net.http.HttpRequest.BodyPublishers.ofString("<Order/>"))
+                                .build(),
+                        java.net.http.HttpResponse.BodyHandlers.ofString());
 
-            assertEquals(500, response.statusCode(), "The caller gets the failure as an HTTP error");
+                assertEquals(500, response.statusCode(), "The caller gets the failure as an HTTP error");
+            }
         }
 
         assertTrue(parked.isEmpty(), "An HTTP input is never parked");
