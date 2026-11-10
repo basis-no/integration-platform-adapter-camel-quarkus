@@ -48,7 +48,11 @@ Common fail-fast causes include:
   (or a repository reference that cannot be resolved), in the route or in a
   `direct:` route it sends to.
   A restart would lose the held records, whose offsets are already committed.
-  See [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
+  See [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory);
+- a setting of adapter 0.3.x that this version does not read
+  (`basis.delivery-audit.routes`, `basis.input-audit.routes`); the error names
+  each one and what to use instead. See
+  [Settings Removed Since 0.3.x](configuration.md#settings-removed-since-03x).
 
 Treat these as configuration errors. Do not bypass them in business routes.
 
