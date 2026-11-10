@@ -87,6 +87,7 @@ budget. A receiver therefore gets one request per Camel attempt, and
 too long for the budget is not waited for: the configured delays apply, and
 the message is parked when the retries are exhausted. See
 [Automatic Retry](retry-dlq-replay.md#automatic-retry).
+
 ## Message Id Is Also Journaled by Another Integration
 
 A warning `Message id <id> is also journaled by integration <other>;
