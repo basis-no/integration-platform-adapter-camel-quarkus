@@ -34,7 +34,6 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
     private final String integrationName;
     private final PayloadCapturePolicy payloadPolicy;
     private final MessageBoundarySelector boundarySelector;
-    private final boolean replayEnabled;
     private final MessageFailureMode failureMode;
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
@@ -87,7 +86,6 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         this.payloadPolicy = PayloadCapturePolicy.fromConfig(
                 payloadMode, inlineThreshold, payloadObjectMaxBytes, payloadRetentionDays, replayEnabled);
         this.boundarySelector = MessageBoundarySelector.fromConfig(boundaryRoutes);
-        this.replayEnabled = replayEnabled;
         this.failureMode = MessageFailureMode.fromConfig(failureMode);
         this.kafkaCommitEnabled = testProfile.kafkaCommitEnabled();
         this.objectStore = objectStore;
@@ -269,10 +267,18 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
     }
 
     private void validateBoundary(String routeId, MessageBoundaryKind boundaryKind) {
+        // The failure mode follows the input type. A Kafka boundary parks a message that
+        // exhausted its retries in the DLQ and commits only after that; an HTTP boundary records
+        // FAILED and hands the failure back to its caller, and is never replayable. The global
+        // setting is checked only where it contradicts a boundary: record-failed would leave a
+        // Kafka boundary without its recovery path.
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             if (failureMode != MessageFailureMode.DLQ) {
                 throw new IllegalArgumentException(
-                        "Kafka boundary route '" + routeId + "' requires basis.message-store.failure-mode=dlq");
+                        "Kafka boundary route '" + routeId + "' parks a failed message in the DLQ, but "
+                                + "basis.message-store.failure-mode=record-failed turns parking off for the "
+                                + "whole application. Remove the setting (the default is dlq): an HTTP "
+                                + "audit-only boundary records FAILED and answers its caller with any setting");
             }
             return;
         }
@@ -281,17 +287,6 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             throw new IllegalArgumentException(
                     "Non-Kafka boundary route '" + routeId
                             + "' uses a source that has no supported message-store profile");
-        }
-
-        if (replayEnabled) {
-            throw new IllegalArgumentException(
-                    "Non-Kafka boundary route '" + routeId
-                            + "' requires basis.message-store.replay.enabled=false until a replay target is configured");
-        }
-        if (failureMode != MessageFailureMode.RECORD_FAILED) {
-            throw new IllegalArgumentException(
-                    "Non-Kafka boundary route '" + routeId
-                            + "' requires basis.message-store.failure-mode=record-failed");
         }
     }
 }

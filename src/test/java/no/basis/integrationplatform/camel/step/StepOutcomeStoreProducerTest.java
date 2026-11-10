@@ -14,6 +14,8 @@ class StepOutcomeStoreProducerTest {
     void noPersistenceProfileDoesNotResolveConfiguredPostgresDataSource() {
         StepOutcomeStore store = new StepOutcomeStoreProducer().stepOutcomeStore(
                 "postgres",
+                java.time.Duration.ofSeconds(10),
+                java.time.Duration.ofSeconds(5),
                 unavailableDataSource(),
                 new MessageStoreTestProfileConfig("no-persistence", true));
 

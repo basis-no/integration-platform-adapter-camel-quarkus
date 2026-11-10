@@ -70,6 +70,12 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
   without a `groupId` gets a new group from Camel on every start, so it now
   reprocesses every retained record on each start: give it a stable `groupId`.
 
+- **Check the Message Store login and JDBC URL.** Set `loginTimeout` in the
+  JDBC URL (for example `?loginTimeout=10`), keep
+  `quarkus.datasource.jdbc.acquisition-timeout` at a few seconds, and keep the
+  login's `client_min_messages` at `warning` or lower (the default is
+  `notice`). See [Message Store calls are bounded](#message-store-calls-are-bounded).
+
 ## Behaviour That Changed on Purpose
 
 ### Stricter `dlq-uri`
@@ -90,6 +96,45 @@ when it cannot park. See
 A Kafka DLQ now gets one record per message also when the parked body is a
 collection; 0.3.6 sent one record per element, and none for an empty
 collection.
+
+### Message Store calls are bounded
+
+0.3.x put no timeout on a Message Store call, so an outcome or step-outcome
+write that waited on a held lock or on a database that stopped answering held
+the Kafka consumer thread without limit. Every statement of a Postgres sink or
+Postgres step outcome store call is now bounded, by two new deployment-owned
+properties:
+
+| Property | Default | Bounds |
+| --- | --- | --- |
+| `basis.message-store.statement-timeout` (`BASIS_MESSAGE_STORE_STATEMENT_TIMEOUT`) | `10s` | each statement (`statement_timeout`, and its JDBC query timeout); the call's network timeout is this plus 5 seconds |
+| `basis.message-store.lock-timeout` (`BASIS_MESSAGE_STORE_LOCK_TIMEOUT`) | `5s` | each statement's wait for a lock (`lock_timeout`); at most the statement timeout |
+
+They are set for the call's own transaction only. At the defaults a
+step-outcome call ends within about 10 seconds and the sink's record within
+about 40 seconds. Startup refuses a value under 1 ms or a lock timeout longer
+than the statement timeout. Raise a value only for a store that legitimately
+needs longer, and keep it well under `max.poll.interval.ms`.
+
+Opening a connection is bounded by the deployment's datasource settings, which
+the adapter does not set: keep `quarkus.datasource.jdbc.acquisition-timeout`
+(Quarkus default 5 s) and the driver's `connectTimeout` (10 s), and set
+`loginTimeout` in the JDBC URL, whose driver default is no limit.
+
+With a synchronous standby, `statement_timeout` does not end a commit's wait
+for the standby; the network timeout does. A commit whose wait was cancelled
+returns with only a warning ("committed locally, but might not have been
+replicated"), and the adapter now treats any warning-level message a commit
+reports as a failure. That needs the warning to reach the adapter: the call's
+own transaction sets `client_min_messages` to `warning`, but for the sink's
+commit of an application's transaction it depends on the session, so keep the
+Message Store login's `client_min_messages` at `warning` or lower.
+
+A timed-out call or an unconfirmed commit is a Message Store failure: the
+outcome is not durable, the Kafka offset is not committed, and the record is
+read again; its outcome is written again, which is safe because the writes are
+idempotent. See
+[Message Store call timeouts](configuration.md#message-store-call-timeouts).
 
 ### A stopped exchange that fails is read again
 
@@ -112,19 +157,19 @@ which this version refuses (see above). 0.4 selects its message boundaries with
 - Explicit route ids, or `all`, select those routes, or every route except the
   adapter's own parking route. A selected route must be a Kafka input, or a
   `platform-http:` route for the [HTTP audit-only
-  preview](ingress-and-scaling.md#http-audit-only-preview) with its required
-  settings; any other selected route, such as a nested `direct:` route or a
-  timer, refuses to start, and so does an ingress normalization route. A Kafka
-  boundary needs `basis.message-store.failure-mode=dlq` and the HTTP preview
-  needs `record-failed`, so one application cannot have both. `all` therefore
-  starts only when every route is a Kafka input, or every route is an HTTP
-  preview route.
+  preview](ingress-and-scaling.md#http-audit-only-preview); any other selected
+  route, such as a nested `direct:` route or a timer, refuses to start, and so
+  does an ingress normalization route. Kafka boundaries and the HTTP preview can
+  run in one application: add the HTTP route id next to `auto`, for example
+  `auto,receive-order`, so that a Kafka route added later is still selected.
+  `all` starts only when every route is a Kafka input or an HTTP preview
+  route.
 
 A selected route that is not a Kafka input is never replayed into the input
 topic
 ([#101](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/101)):
 startup refuses every selected route that is neither a Kafka input nor the HTTP
-preview, and the HTTP preview requires replay to be disabled. A replay
+preview, and an HTTP preview route is never replayable. A replay
 publishes only when the message's last attempt was recorded by a Kafka route of
 this application that consumes the replay topic; a message recorded by a Kafka
 route on another topic is refused before any replay audit row is written.
@@ -208,6 +253,22 @@ Also not on this branch yet:
 ## Other Upgrade Actions from 0.3.6
 
 The changelog's Unreleased section has the details; in short:
+
+- **The failure handling follows the input type.** A Kafka boundary parks a
+  failed message in the DLQ and commits after it; an HTTP audit-only boundary
+  records `FAILED`, answers its caller with the error and is never replayable,
+  whatever `basis.message-store.failure-mode` and
+  `basis.message-store.replay.enabled` say; a normalized file, poll or queue
+  input hands the failure back to its source. An HTTP preview no longer needs
+  `failure-mode=record-failed` or `replay.enabled=false`. `record-failed` is
+  still accepted, and still refused in an application with a Kafka boundary.
+  See [Failure and Replay per Input Type](retry-dlq-replay.md#failure-and-replay-per-input-type).
+- **A JMS queue input needs `CLIENT_ACKNOWLEDGE`.** Set
+  `acknowledgementModeName=CLIENT_ACKNOWLEDGE` on a `jms:queue:` normalization
+  input; with camel-jms's default `AUTO_ACKNOWLEDGE`, a message whose route
+  failed is not delivered again
+  ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
+  See [JMS Queues](ingress-and-scaling.md#jms-queues).
 
 - **Shorter `ip-slow-backend` waits.** The `ip-slow-backend` route
   configuration caps each redelivery delay at 20 seconds: 5, 10, 20, 20, 20

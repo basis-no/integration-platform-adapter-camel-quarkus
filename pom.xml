@@ -48,6 +48,8 @@
     <surefire-plugin.version>3.5.4</surefire-plugin.version>
     <jandex-plugin.version>3.5.0</jandex-plugin.version>
     <javadoc-plugin.version>3.12.0</javadoc-plugin.version>
+    <test.spring.version>6.2.19</test.spring.version>
+    <test.artemis.version>2.38.0</test.artemis.version>
   </properties>
 
   <dependencyManagement>
@@ -185,6 +187,31 @@
     </dependency>
     <dependency>
       <groupId>org.apache.camel</groupId><artifactId>camel-yaml-dsl</artifactId><scope>test</scope>
+    </dependency>
+    <!-- A JMS queue input in the per-input-type failure test; the broker runs in a container. -->
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-jms</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-platform-http-vertx</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-file</artifactId><scope>test</scope>
+    </dependency>
+    <!-- The Camel Quarkus BOM drops these from camel-jms; outside Quarkus its listener needs them.
+         test.spring.version must equal the spring-jms version the BOM manages. -->
+    <dependency>
+      <groupId>org.springframework</groupId><artifactId>spring-beans</artifactId>
+      <version>${test.spring.version}</version><scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId><artifactId>spring-context</artifactId>
+      <version>${test.spring.version}</version><scope>test</scope>
+    </dependency>
+    <!-- test.artemis.version must equal the broker image tag in InputTypeFailureTest. -->
+    <dependency>
+      <groupId>org.apache.activemq</groupId><artifactId>artemis-jakarta-client</artifactId>
+      <version>${test.artemis.version}</version><scope>test</scope>
     </dependency>
   </dependencies>
 
