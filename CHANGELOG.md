@@ -13,7 +13,12 @@
   before. A `rest:` send through another producer component fails when its
   producer is created (or at its first request), instead of sending the
   headers. A REST DSL service, a `rest:` endpoint that is a route's input, is
-  left as it is. See
+  left as it is; a route whose static send targets the same `rest:` URI as a
+  route's input, which would share that unfiltered endpoint, does not start,
+  and neither does a route that consumes from a `rest:` endpoint set up for
+  sends before it was added. Not covered: a `ProducerTemplate` send, an
+  `enrich` or a `toD` chosen at send time that resolves to a route's `rest:`
+  input. See
   [Kafka Consumers](docs/ingress-and-scaling.md#kafka-consumers).
   Upgrade: a receiver behind a `rest:` send that got a caller's credential
   forwarded from the record no longer gets it and may answer 401; set the
