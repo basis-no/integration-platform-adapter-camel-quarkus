@@ -352,6 +352,9 @@ class Fixtures(unittest.TestCase):
         self.assertEqual(upload.count('snapshot-upload.py'), upload.count('snapshot-upload.py --check-only --pom tooling/pom.xml')
                          + upload.count('snapshot-upload.py --pom tooling/pom.xml'))
         self.assertIn('git/matching-refs/tags/v${VERSION%-SNAPSHOT}', upload)
+        self.assertIn('contents/pom.xml?ref=$SOURCE', upload)
+        self.assertEqual(upload.count('--source-pom "$RUNNER_TEMP/source-pom.xml"'), 2)
+        self.assertEqual(text.count('(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-SNAPSHOT'), 3)
         self.assertIn('deployment-branch-policies?per_page=100', upload)
 
     def test_snapshot_selection_accepts_only_unsigned_snapshot_actions(self):
@@ -624,6 +627,9 @@ class SnapshotUpload(unittest.TestCase):
         self.trusted_pom = self.root / 'trusted-pom.xml'
         self.trusted_pom.write_text(f'<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>{GROUP}</groupId>'
                                     f'<artifactId>{ARTIFACT}</artifactId><version>9.9.9-SNAPSHOT</version></project>')
+        # The source commit's POM, as the workflow reads it from the repository.
+        self.source_pom = self.root / 'source-pom.xml'
+        self.source_pom.write_bytes(self.payloads['.pom'])
         self.now = __import__('datetime').datetime(2026, 11, 10, 12, 34, 56,
                                                     tzinfo=__import__('datetime').timezone.utc)
 
@@ -644,11 +650,33 @@ class SnapshotUpload(unittest.TestCase):
 
     def upload(self, call, sleep=lambda seconds: None):
         return snapshot.upload(self.candidate, self.SNAPSHOT, self.COMMIT, '42', self.state, self.trusted_pom,
-                               call=call, now=self.now, sleep=sleep)
+                               self.source_pom, call=call, now=self.now, sleep=sleep)
 
     def check_candidate(self, version=None, commit=None):
         return snapshot.candidate_payloads(self.candidate, version or self.SNAPSHOT, commit or self.COMMIT, '42',
-                                           self.trusted_pom)
+                                           self.trusted_pom, self.source_pom)
+
+    def test_version_is_bound_to_the_source_commits_pom(self):
+        self.check_candidate()
+        # A candidate whose receipt, provenance and POM all claim another version is refused.
+        self.source_pom.write_text(self.source_pom.read_text().replace(self.SNAPSHOT, '1.2.4-SNAPSHOT'))
+        with self.assertRaises(ValueError):
+            self.check_candidate()
+        self.source_pom.write_text(self.source_pom.read_text().replace('1.2.4-SNAPSHOT', self.SNAPSHOT)
+                                   .replace(ARTIFACT + '<', 'other<'))
+        with self.assertRaises(ValueError):
+            self.check_candidate()
+        with self.assertRaises(ValueError):
+            snapshot.candidate_payloads(self.candidate, self.SNAPSHOT, self.COMMIT, '42', self.trusted_pom, None)
+
+    def test_version_components_have_no_leading_zeros(self):
+        for version in ('01.2.3-SNAPSHOT', '1.02.3-SNAPSHOT', '1.2.03-SNAPSHOT', '1.2.3.4-SNAPSHOT'):
+            with self.assertRaises(ValueError, msg=version):
+                snapshot.candidate_payloads(self.candidate, version, self.COMMIT, '42', self.trusted_pom,
+                                            self.source_pom)
+            with self.assertRaises(ValueError, msg=version):
+                candidate.snapshot_selection('unsigned', version, self.COMMIT)
+        candidate.snapshot_selection('unsigned', '0.10.0-SNAPSHOT', self.COMMIT)
 
     def test_uploads_timestamped_payloads_checksums_and_metadata_then_reads_back(self):
         stored, calls, call = self.repository()

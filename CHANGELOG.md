@@ -158,8 +158,16 @@ with 0.4.
 - Releases are signed offline by the release manager. The production signing
   key and the Maven Central token never exist in GitHub or CI; CI only builds
   and keeps the unsigned candidate, and reads back the public artifacts after
-  publication. Snapshot publication stays suspended; acceptance uses locally
-  built artifacts. Existing published artifacts are unchanged.
+  publication. Existing published artifacts are unchanged.
+- Publish a reviewed `X.Y.Z-SNAPSHOT` to Central's snapshot repository for
+  testing in another environment, through `publish-snapshot.yml`: a manual run
+  on the head of `main` or `release/0.3` builds and tests it without
+  credentials, records build provenance, and uploads the same unsigned bytes
+  only after an approval in the protected environment `snapshot`, from the
+  release tools at the trusted commit, then reads them back. A re-run never
+  uploads again. It needs repository settings first; see
+  `docs/release-packaging.md#snapshot-lane`. Otherwise acceptance uses locally
+  built artifacts.
 
 ## 0.3.5 — 2026-10-12
 
