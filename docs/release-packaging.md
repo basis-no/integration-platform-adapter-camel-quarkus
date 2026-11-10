@@ -413,14 +413,23 @@ protected-tag release:
    closed unless the environment has required reviewers with self-review
    prevented, no administrator bypass and a deployment rule for the branches
    `main` and `release/0.3` only; the commit and `TRUSTED_TOOLING_SHA` are on a
-   reviewed branch; this is the run's first attempt and the run has no snapshot
-   state. It checks out only `.github/scripts` at `TRUSTED_TOOLING_SHA`, verifies
-   the candidate against the checksums, the unsigned receipt and the build
-   provenance, and runs `snapshot-upload.py`. That script records its state
-   before the first request, uploads the four payloads once under one
-   timestamped snapshot version with their MD5 and SHA-1 checksums and the
-   version and artifact `maven-metadata.xml`, as a Maven deploy would, reads
-   every payload back and compares its SHA-256. The state is retained as
+   reviewed branch; `vX.Y.Z` is still not tagged, since the approval can come
+   later than the build; this is the run's first attempt and the run has no
+   snapshot state. That `source_commit` was the branch head is checked at
+   dispatch only; a later merge does not stop the approved upload. It checks out
+   only `.github/scripts` (plus root files such as the trusted `pom.xml`) at
+   `TRUSTED_TOOLING_SHA`, verifies the candidate against the checksums, the
+   unsigned receipt and the build provenance, and runs `snapshot-upload.py`.
+   That script takes the group and artifact from the trusted `pom.xml`, never
+   from the candidate, which project code wrote, and refuses a candidate that
+   names another coordinate; the version comes from the candidate and must be
+   `X.Y.Z-SNAPSHOT`, so at most another snapshot of this artifact can be
+   written. It records its state before the first request, uploads the four
+   payloads once under one timestamped snapshot version with their MD5 and SHA-1
+   checksums and the version and artifact `maven-metadata.xml`, as a Maven
+   deploy would, reads every payload and both metadata files back and compares
+   their SHA-256. Requests go only to Central's snapshot repository and never
+   follow a redirect. The state is retained as
    `central-snapshot-X.Y.Z-SNAPSHOT`, also after a failure.
 
 The lane never signs (Central does not require signatures on snapshots) and
@@ -434,6 +443,11 @@ the lane needs, in addition to those of the release path:
   the branches `main` and `release/0.3`;
 - its secrets `SNAPSHOT_CENTRAL_TOKEN_USERNAME` and
   `SNAPSHOT_CENTRAL_TOKEN_PASSWORD`, and its variable `TRUSTED_TOOLING_SHA`.
+
+The upload follows Central's documented Maven snapshot layout but was written
+without a live run. Check the first real run with a real Maven resolve of the
+timestamped version and of `X.Y.Z-SNAPSHOT` from a clean local repository before
+relying on the lane.
 
 A Central portal token can write releases as well as snapshots for the whole
 namespace, so the snapshot token gets the same custody as the release token: it

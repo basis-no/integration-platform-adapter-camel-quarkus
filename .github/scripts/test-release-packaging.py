@@ -354,6 +354,11 @@ class Fixtures(unittest.TestCase):
             self.assertNotIn(forbidden, upload)
         for script in re.findall(r'python3 (?:-I )?(\S+)', upload):
             self.assertEqual(script, 'tooling/.github/scripts/snapshot-upload.py')
+        # The coordinate comes from the trusted POM, and the tag is checked again at approval.
+        self.assertEqual(upload.count('snapshot-upload.py'), upload.count('snapshot-upload.py --check-only --pom tooling/pom.xml')
+                         + upload.count('snapshot-upload.py --pom tooling/pom.xml'))
+        self.assertIn('git/matching-refs/tags/v${VERSION%-SNAPSHOT}', upload)
+        self.assertIn('deployment-branch-policies?per_page=100', upload)
 
     def test_snapshot_selection_accepts_only_unsigned_snapshot_actions(self):
         commit = 'a' * 40
@@ -621,6 +626,10 @@ class SnapshotUpload(unittest.TestCase):
             'source_commit': self.COMMIT, 'version': self.SNAPSHOT, 'candidate_run': '42',
             'qualification': 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE', 'payload_sha256': hashes}))
         self.state = self.root / 'snapshot.json'
+        # The trusted checkout's POM, at another version than the candidate.
+        self.trusted_pom = self.root / 'trusted-pom.xml'
+        self.trusted_pom.write_text(f'<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>{GROUP}</groupId>'
+                                    f'<artifactId>{ARTIFACT}</artifactId><version>9.9.9-SNAPSHOT</version></project>')
         self.now = __import__('datetime').datetime(2026, 11, 10, 12, 34, 56,
                                                     tzinfo=__import__('datetime').timezone.utc)
 
@@ -639,9 +648,13 @@ class SnapshotUpload(unittest.TestCase):
             return (200, stored[url]) if url in stored else (404, b'')
         return stored, calls, call
 
-    def upload(self, call):
-        return snapshot.upload(self.candidate, self.SNAPSHOT, self.COMMIT, '42', self.state, call=call,
-                               now=self.now, sleep=lambda seconds: None)
+    def upload(self, call, sleep=lambda seconds: None):
+        return snapshot.upload(self.candidate, self.SNAPSHOT, self.COMMIT, '42', self.state, self.trusted_pom,
+                               call=call, now=self.now, sleep=sleep)
+
+    def check_candidate(self, version=None, commit=None):
+        return snapshot.candidate_payloads(self.candidate, version or self.SNAPSHOT, commit or self.COMMIT, '42',
+                                           self.trusted_pom)
 
     def test_uploads_timestamped_payloads_checksums_and_metadata_then_reads_back(self):
         stored, calls, call = self.repository()
@@ -687,14 +700,14 @@ class SnapshotUpload(unittest.TestCase):
             self.upload(call)
         self.assertFalse(self.state.exists())
         with self.assertRaises(ValueError):
-            snapshot.candidate_payloads(self.candidate, '1.2.3', self.COMMIT, '42')
+            self.check_candidate(version='1.2.3')
         with self.assertRaises(ValueError):
-            snapshot.candidate_payloads(self.candidate, self.SNAPSHOT, 'd' * 40, '42')
+            self.check_candidate(commit='d' * 40)
 
     def test_refuses_extra_files_and_unreadable_metadata(self):
         (self.candidate / 'unsigned' / 'extra.jar').write_bytes(b'x')
         with self.assertRaises(ValueError):
-            snapshot.candidate_payloads(self.candidate, self.SNAPSHOT, self.COMMIT, '42')
+            self.check_candidate()
         (self.candidate / 'unsigned' / 'extra.jar').unlink()
         base = snapshot.REPOSITORY + GROUP.replace('.', '/') + '/' + ARTIFACT + '/'
         _, calls, call = self.repository({base + self.SNAPSHOT + '/maven-metadata.xml': b'<metadata/>'})
@@ -725,6 +738,89 @@ class SnapshotUpload(unittest.TestCase):
     def test_requests_only_to_the_snapshot_repository(self):
         with self.assertRaises(ValueError):
             snapshot.request('GET', 'https://example.org/' + ARTIFACT)
+
+    def test_self_consistent_candidate_under_a_foreign_coordinate_is_refused(self):
+        foreign_group, foreign_artifact = 'org.other', 'library'
+        unsigned = self.candidate / 'unsigned'
+        hashes = {}
+        for suffix, data in self.payloads_by_suffix(foreign_group, foreign_artifact).items():
+            for old in unsigned.iterdir():
+                if old.name.endswith(self.SNAPSHOT + suffix):
+                    old.unlink()
+            name = f'{foreign_artifact}-{self.SNAPSHOT}{suffix}'
+            (unsigned / name).write_bytes(data)
+            hashes[name] = hashlib.sha256(data).hexdigest()
+        (self.candidate / 'provenance.json').write_text(json.dumps({
+            'source_commit': self.COMMIT, 'version': self.SNAPSHOT, 'group': foreign_group,
+            'artifact': foreign_artifact}))
+        receipt = json.loads((self.candidate / 'unsigned.json').read_text())
+        receipt['payload_sha256'] = hashes
+        (self.candidate / 'unsigned.json').write_text(json.dumps(receipt))
+        _, calls, call = self.repository()
+        with self.assertRaises(ValueError):
+            self.upload(call)
+        self.assertEqual(calls, [])
+        self.assertFalse(self.state.exists())
+
+    def payloads_by_suffix(self, group, artifact):
+        pom = (f'<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>{group}</groupId>'
+               f'<artifactId>{artifact}</artifactId><version>{self.SNAPSHOT}</version></project>').encode()
+        return {suffix: (pom if suffix == '.pom' else b'jar' + suffix.encode()) for suffix in snapshot.PAYLOADS}
+
+    def test_metadata_is_read_back_too(self):
+        stored, _, inner = self.repository()
+
+        def call(method, url, body=None):
+            if method == 'GET' and url.endswith(self.SNAPSHOT + '/maven-metadata.xml') and url in stored:
+                return 200, b'<metadata/>'
+            return inner(method, url, body)
+        with self.assertRaises(RuntimeError):
+            self.upload(call)
+
+    def test_listed_versions_that_are_not_plain_text_are_dropped(self):
+        existing = (f'<metadata><groupId>{GROUP}</groupId><artifactId>{ARTIFACT}</artifactId><versioning><versions>'
+                    '<version>1.2.2</version><version>x&lt;/version&gt;&lt;version&gt;evil</version>'
+                    '</versions></versioning></metadata>').encode()
+        listed = snapshot.artifact_metadata(existing, GROUP, ARTIFACT, self.SNAPSHOT, '1').decode()
+        self.assertIn('<version>1.2.2</version><version>1.2.3-SNAPSHOT</version></versions>', listed)
+        self.assertNotIn('evil', listed)
+        __import__('xml.etree.ElementTree').etree.ElementTree.fromstring(listed)
+
+    def test_no_wait_after_the_last_readback_attempt(self):
+        stored, _, inner = self.repository()
+        waits = []
+
+        def call(method, url, body=None):
+            if method == 'GET' and url.endswith('-javadoc.jar'):
+                return 404, b''
+            return inner(method, url, body)
+        with self.assertRaises(RuntimeError):
+            self.upload(call, sleep=waits.append)
+        self.assertEqual(waits, [10] * 5)
+
+    def test_redirects_are_refused_and_never_followed(self):
+        import http.server
+        import threading
+        hits = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(302)
+                self.send_header('Location', '/elsewhere')
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+        server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        status, body = snapshot.send(__import__('urllib.request').request.Request(
+            f'http://127.0.0.1:{server.server_port}/start', headers={'Authorization': 'Basic x'}))
+        self.assertEqual((status, body), (302, b''))
+        self.assertEqual(hits, ['/start'])
 
 
 class OfflineSigner(unittest.TestCase):

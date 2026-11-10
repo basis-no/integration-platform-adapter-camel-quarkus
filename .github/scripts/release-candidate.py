@@ -44,7 +44,7 @@ def snapshot_selection(action, version, commit, signer='', tagged=False):
     """The snapshot lane only checks its source and collects unsigned payloads."""
     if action not in ('source', 'provenance', 'unsigned'):
         raise ValueError('The snapshot lane only checks the source and collects unsigned payloads')
-    if not re.fullmatch(r'\d+\.\d+\.\d+-SNAPSHOT', version):
+    if not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT', version):
         raise ValueError('Snapshot lane requires an X.Y.Z-SNAPSHOT version')
     if not re.fullmatch(r'[a-f0-9]{40}', commit):
         raise ValueError('Exact source commit required; branch names are not accepted')

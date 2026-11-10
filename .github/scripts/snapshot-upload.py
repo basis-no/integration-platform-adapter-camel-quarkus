@@ -11,16 +11,30 @@ import argparse
 import base64
 import datetime
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import sys
 import time
 import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 
+# Keep the trusted checkout clean: no bytecode caches beside the tools.
+sys.dont_write_bytecode = True
+TOOLS = Path(__file__).resolve().parent
+CHECKOUT = TOOLS.parents[1]
+_spec = importlib.util.spec_from_file_location('sign_candidate', TOOLS / 'sign-candidate.py')
+signer = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(signer)
+
 REPOSITORY = 'https://central.sonatype.com/repository/maven-snapshots/'
+MAX_RESPONSE = 64 * 1024 * 1024
+SNAPSHOT = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT')
+# A version listed in existing artifact metadata is kept only when it is plain text.
+LISTED_VERSION = re.compile(r'[0-9A-Za-z][0-9A-Za-z._-]{0,99}')
 NS = {'p': 'http://maven.apache.org/POM/4.0.0'}
 # Suffix of each payload after artifact-version, and its (classifier, extension).
 PAYLOADS = {'.pom': ('', 'pom'), '.jar': ('', 'jar'),
@@ -38,6 +52,25 @@ def save(path, state):
     os.replace(temporary, path)
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Refuse redirects: never forward authentication to another origin."""
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def send(req):
+    """Send one request without following redirects; returns (status, bounded bytes)."""
+    try:
+        with urllib.request.build_opener(NoRedirect).open(req, timeout=60) as response:
+            body = response.read(MAX_RESPONSE + 1)
+            if len(body) > MAX_RESPONSE:
+                raise RuntimeError('Response from the snapshot repository is too large')
+            return response.status, body
+    except urllib.error.HTTPError as error:
+        error.close()
+        return error.code, b''
+
+
 def request(method, url, body=None):
     """One authenticated request to the snapshot repository; returns (status, bytes)."""
     if not url.startswith(REPOSITORY):
@@ -47,22 +80,18 @@ def request(method, url, body=None):
     headers = {'Authorization': 'Basic ' + token}
     if body is not None:
         headers['Content-Type'] = 'application/octet-stream'
-    req = urllib.request.Request(url, data=body, method=method, headers=headers)
-
-    # Refuse redirects: never forward authentication to another origin.
-    class NoRedirect(urllib.request.HTTPRedirectHandler):
-        def redirect_request(self, *args, **kwargs):
-            return None
-    try:
-        with urllib.request.build_opener(NoRedirect).open(req, timeout=60) as response:
-            return response.status, response.read()
-    except urllib.error.HTTPError as error:
-        return error.code, b''
+    return send(urllib.request.Request(url, data=body, method=method, headers=headers))
 
 
-def candidate_payloads(candidate, version, commit, run):
-    """Check the unsigned candidate and return (group, artifact, {suffix: bytes})."""
-    if not re.fullmatch(r'\d+\.\d+\.\d+-SNAPSHOT', version):
+def candidate_payloads(candidate, version, commit, run, pom=CHECKOUT / 'pom.xml'):
+    """Check the unsigned candidate and return (group, artifact, {suffix: bytes}).
+
+    The coordinate comes from the trusted checkout's POM, never from the candidate,
+    which the build job wrote with project code; the candidate must match it. The
+    version comes from the candidate: the trusted tooling commit may be another
+    commit than the source, so only a snapshot of this artifact can be written.
+    """
+    if not SNAPSHOT.fullmatch(version):
         raise ValueError('Snapshot upload requires an X.Y.Z-SNAPSHOT version')
     if not re.fullmatch(r'[a-f0-9]{40}', commit) or not re.fullmatch(r'[1-9][0-9]*', run):
         raise ValueError('Exact source commit and candidate run required')
@@ -73,10 +102,9 @@ def candidate_payloads(candidate, version, commit, run):
             or receipt.get('candidate_run') != run
             or receipt.get('qualification') != 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE'):
         raise ValueError('Unsigned snapshot candidate identity mismatch')
-    group, artifact = record.get('group', ''), record.get('artifact', '')
-    if (not re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', group)
-            or not re.fullmatch(r'[A-Za-z0-9_-]+', artifact)):
-        raise ValueError('Invalid snapshot coordinate')
+    group, artifact = signer.trusted_coordinate(pom)
+    if record.get('group') != group or record.get('artifact') != artifact:
+        raise ValueError('Snapshot candidate names another coordinate than the trusted POM')
     directory = candidate / 'unsigned'
     names = {artifact + '-' + version + suffix: suffix for suffix in PAYLOADS}
     present = {path.name for path in directory.iterdir()}
@@ -129,7 +157,8 @@ def artifact_metadata(existing, group, artifact, version, updated):
         root = ET.fromstring(existing)
         if root.findtext('groupId') != group or root.findtext('artifactId') != artifact:
             raise ValueError('Existing artifact metadata belongs to another coordinate')
-        versions = [element.text for element in root.findall('versioning/versions/version') if element.text]
+        versions = [element.text for element in root.findall('versioning/versions/version')
+                    if element.text and LISTED_VERSION.fullmatch(element.text)]
     if version not in versions:
         versions.append(version)
     listed = ''.join(f'<version>{item}</version>' for item in versions)
@@ -139,8 +168,9 @@ def artifact_metadata(existing, group, artifact, version, updated):
             f'<lastUpdated>{updated}</lastUpdated></versioning></metadata>\n').encode()
 
 
-def upload(candidate, version, commit, run, state_path, call=request, now=None, sleep=time.sleep):
-    group, artifact, payloads = candidate_payloads(candidate, version, commit, run)
+def upload(candidate, version, commit, run, state_path, pom=CHECKOUT / 'pom.xml', call=request, now=None,
+           sleep=time.sleep):
+    group, artifact, payloads = candidate_payloads(candidate, version, commit, run, pom)
     if state_path.exists():
         raise ValueError('This run already has snapshot state; never upload again')
     moment = now or datetime.datetime.now(datetime.timezone.utc)
@@ -175,20 +205,25 @@ def upload(candidate, version, commit, run, state_path, call=request, now=None, 
         put(version_url + name, data)
         state['files'][name] = hashlib.sha256(data).hexdigest()
         save(state_path, state)
-    put(version_url + 'maven-metadata.xml', version_metadata(group, artifact, version, timestamp, build, updated))
-    put(artifact_url + 'maven-metadata.xml',
-        artifact_metadata(get(artifact_url + 'maven-metadata.xml'), group, artifact, version, updated))
+    metadata = {
+        version_url + 'maven-metadata.xml': version_metadata(group, artifact, version, timestamp, build, updated),
+        artifact_url + 'maven-metadata.xml': artifact_metadata(
+            get(artifact_url + 'maven-metadata.xml'), group, artifact, version, updated)}
+    for url, data in metadata.items():
+        put(url, data)
     state['phase'] = 'uploaded'
     save(state_path, state)
-    # Read the exact bytes back; the repository may need a moment to serve them.
-    for name, digest in state['files'].items():
+    # Read the exact bytes back, the metadata too; the repository may need a moment.
+    expected = {version_url + name: digest for name, digest in state['files'].items()}
+    expected.update({url: hashlib.sha256(data).hexdigest() for url, data in metadata.items()})
+    for url, digest in expected.items():
         for attempt in range(6):
-            body = get(version_url + name)
-            if body is not None:
+            body = get(url)
+            if body is not None or attempt == 5:
                 break
             sleep(10)
         if body is None or hashlib.sha256(body).hexdigest() != digest:
-            raise RuntimeError('Snapshot readback does not match the uploaded bytes: ' + name)
+            raise RuntimeError('Snapshot readback does not match the uploaded bytes: ' + url)
     state['phase'] = 'verified'
     save(state_path, state)
     return state
@@ -201,12 +236,14 @@ def main():
     parser.add_argument('--source-commit', required=True)
     parser.add_argument('--candidate-run', required=True)
     parser.add_argument('--state', type=Path, required=True)
+    parser.add_argument('--pom', type=Path, default=CHECKOUT / 'pom.xml',
+                        help='Trusted reviewed POM providing group/artifact (default: this checkout)')
     parser.add_argument('--check-only', action='store_true', help='Check the candidate; make no request')
     args = parser.parse_args()
     if args.check_only:
-        candidate_payloads(args.candidate, args.version, args.source_commit, args.candidate_run)
+        candidate_payloads(args.candidate, args.version, args.source_commit, args.candidate_run, args.pom)
         return
-    state = upload(args.candidate, args.version, args.source_commit, args.candidate_run, args.state)
+    state = upload(args.candidate, args.version, args.source_commit, args.candidate_run, args.state, args.pom)
     print(json.dumps({key: state[key] for key in ('coordinate', 'snapshot_version', 'phase')}))
 
 
