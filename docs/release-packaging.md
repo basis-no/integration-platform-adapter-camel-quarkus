@@ -422,9 +422,9 @@ protected-tag release:
    unsigned receipt and the build provenance, and runs `snapshot-upload.py`.
    That script takes the group and artifact from the trusted `pom.xml`, never
    from the candidate, which project code wrote, and refuses a candidate that
-   names another coordinate; the version comes from the candidate and must be
-   `X.Y.Z-SNAPSHOT`, so at most another snapshot of this artifact can be
-   written. It records its state before the first request, uploads the four
+   names another coordinate; the version must be `X.Y.Z-SNAPSHOT` and equal the
+   version in the source commit's own `pom.xml`, which the job reads through the
+   repository API, not from the candidate. It records its state before the first request, uploads the four
    payloads once under one timestamped snapshot version with their MD5 and SHA-1
    checksums and the version and artifact `maven-metadata.xml`, as a Maven
    deploy would, reads every payload and both metadata files back and compares
@@ -448,6 +448,16 @@ The upload follows Central's documented Maven snapshot layout but was written
 without a live run. Check the first real run with a real Maven resolve of the
 timestamped version and of `X.Y.Z-SNAPSHOT` from a clean local repository before
 relying on the lane.
+
+If the readback fails on a payload, the repository does not serve the uploaded
+bytes: do not use that snapshot, and dispatch a new run once the cause is known.
+If it fails only on a `maven-metadata.xml`, the payloads were read back intact;
+Central may rewrite metadata it stores. Inspect it rather than treat it as lost
+bytes: download both metadata files, check that the version metadata lists the
+run's timestamped version for the POM, the jar and both classifiers, with the
+run's build number, and that the artifact metadata lists `X.Y.Z-SNAPSHOT`; then
+resolve the timestamped version with Maven as above. If that resolves the
+recorded hashes, the snapshot is usable; record the difference with the run.
 
 A Central portal token can write releases as well as snapshots for the whole
 namespace, so the snapshot token gets the same custody as the release token: it

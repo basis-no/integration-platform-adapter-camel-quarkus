@@ -32,7 +32,7 @@ _spec.loader.exec_module(signer)
 
 REPOSITORY = 'https://central.sonatype.com/repository/maven-snapshots/'
 MAX_RESPONSE = 64 * 1024 * 1024
-SNAPSHOT = re.compile(r'[0-9]+\.[0-9]+\.[0-9]+-SNAPSHOT')
+SNAPSHOT = re.compile(r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-SNAPSHOT')
 # A version listed in existing artifact metadata is kept only when it is plain text.
 LISTED_VERSION = re.compile(r'[0-9A-Za-z][0-9A-Za-z._-]{0,99}')
 NS = {'p': 'http://maven.apache.org/POM/4.0.0'}
@@ -83,16 +83,22 @@ def request(method, url, body=None):
     return send(urllib.request.Request(url, data=body, method=method, headers=headers))
 
 
-def candidate_payloads(candidate, version, commit, run, pom=CHECKOUT / 'pom.xml'):
+def candidate_payloads(candidate, version, commit, run, pom=CHECKOUT / 'pom.xml', source_pom=None):
     """Check the unsigned candidate and return (group, artifact, {suffix: bytes}).
 
     The coordinate comes from the trusted checkout's POM, never from the candidate,
     which the build job wrote with project code; the candidate must match it. The
-    version comes from the candidate: the trusted tooling commit may be another
-    commit than the source, so only a snapshot of this artifact can be written.
+    version must equal the source commit's own POM, which the workflow reads from
+    the repository, not from the candidate; the trusted tooling commit may be
+    another commit than the source, so its POM's version is not compared.
     """
     if not SNAPSHOT.fullmatch(version):
         raise ValueError('Snapshot upload requires an X.Y.Z-SNAPSHOT version')
+    if source_pom is None:
+        raise ValueError("The source commit's POM is required to bind the version")
+    source = ET.parse(source_pom).getroot()
+    if source.findtext('p:version', namespaces=NS) != version:
+        raise ValueError("Snapshot version differs from the source commit's POM")
     if not re.fullmatch(r'[a-f0-9]{40}', commit) or not re.fullmatch(r'[1-9][0-9]*', run):
         raise ValueError('Exact source commit and candidate run required')
     record = json.loads((candidate / 'provenance.json').read_text())
@@ -103,6 +109,9 @@ def candidate_payloads(candidate, version, commit, run, pom=CHECKOUT / 'pom.xml'
             or receipt.get('qualification') != 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE'):
         raise ValueError('Unsigned snapshot candidate identity mismatch')
     group, artifact = signer.trusted_coordinate(pom)
+    if (source.findtext('p:groupId', namespaces=NS) != group
+            or source.findtext('p:artifactId', namespaces=NS) != artifact):
+        raise ValueError("The source commit's POM names another coordinate than the trusted POM")
     if record.get('group') != group or record.get('artifact') != artifact:
         raise ValueError('Snapshot candidate names another coordinate than the trusted POM')
     directory = candidate / 'unsigned'
@@ -168,9 +177,9 @@ def artifact_metadata(existing, group, artifact, version, updated):
             f'<lastUpdated>{updated}</lastUpdated></versioning></metadata>\n').encode()
 
 
-def upload(candidate, version, commit, run, state_path, pom=CHECKOUT / 'pom.xml', call=request, now=None,
-           sleep=time.sleep):
-    group, artifact, payloads = candidate_payloads(candidate, version, commit, run, pom)
+def upload(candidate, version, commit, run, state_path, pom=CHECKOUT / 'pom.xml', source_pom=None, call=request,
+           now=None, sleep=time.sleep):
+    group, artifact, payloads = candidate_payloads(candidate, version, commit, run, pom, source_pom)
     if state_path.exists():
         raise ValueError('This run already has snapshot state; never upload again')
     moment = now or datetime.datetime.now(datetime.timezone.utc)
@@ -223,6 +232,9 @@ def upload(candidate, version, commit, run, state_path, pom=CHECKOUT / 'pom.xml'
                 break
             sleep(10)
         if body is None or hashlib.sha256(body).hexdigest() != digest:
+            if url.endswith('/maven-metadata.xml'):
+                raise RuntimeError('Metadata readback differs from what was uploaded (the repository may rewrite '
+                                   'maven-metadata.xml); inspect it before relying on this snapshot: ' + url)
             raise RuntimeError('Snapshot readback does not match the uploaded bytes: ' + url)
     state['phase'] = 'verified'
     save(state_path, state)
@@ -238,12 +250,16 @@ def main():
     parser.add_argument('--state', type=Path, required=True)
     parser.add_argument('--pom', type=Path, default=CHECKOUT / 'pom.xml',
                         help='Trusted reviewed POM providing group/artifact (default: this checkout)')
+    parser.add_argument('--source-pom', type=Path, required=True,
+                        help="The source commit's pom.xml, read from the repository, binding the version")
     parser.add_argument('--check-only', action='store_true', help='Check the candidate; make no request')
     args = parser.parse_args()
     if args.check_only:
-        candidate_payloads(args.candidate, args.version, args.source_commit, args.candidate_run, args.pom)
+        candidate_payloads(args.candidate, args.version, args.source_commit, args.candidate_run, args.pom,
+                           args.source_pom)
         return
-    state = upload(args.candidate, args.version, args.source_commit, args.candidate_run, args.state, args.pom)
+    state = upload(args.candidate, args.version, args.source_commit, args.candidate_run, args.state, args.pom,
+                   args.source_pom)
     print(json.dumps({key: state[key] for key in ('coordinate', 'snapshot_version', 'phase')}))
 
 
