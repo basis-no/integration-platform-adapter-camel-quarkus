@@ -43,7 +43,7 @@ metadata make publication coverage unsupported for that process. A successful
 send without fresh assigned-offset metadata also invalidates coverage.
 
 Known limitation in 0.3.x: a `toD` whose component is chosen only when it
-sends, through a scheme that is known but not Kafka, such as
+sends, through a literal scheme other than `kafka` (one without `${`), such as
 `toD("language:header:receiverUrl")`, does not invalidate publication coverage.
 If it ends up publishing to Kafka, that record is not counted while coverage is
 still reported as supported. Do not select `record_published` for an
