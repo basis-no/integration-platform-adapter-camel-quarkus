@@ -25,6 +25,37 @@ the adapter's default, the consumer reads the record again before the
 partition's later records. Kafka can also redeliver a record after a rebalance,
 which is why side effects still require stable idempotency.
 
+### Holding Records in Memory
+
+The commit follows the input exchange: once it completes, the adapter records
+its outcome and commits its offset. A Camel processor that keeps the record
+after that, and releases it later, holds it only in memory: Camel's
+`resequence` (batch and stream) and an `aggregate` on its default in-memory
+repository. A restart before the record is released loses it; it is neither
+delivered nor read again, because its offset is committed
+(`InMemoryHoldRestartTest` shows it for all three).
+
+A Kafka boundary route that contains such a processor therefore refuses to
+start, naming the route and node. The check covers the route, its
+circuit-breaker fallbacks, and the `direct:` routes it sends to with a fixed URI
+(a `to`, or a `toD` or `enrich` without `${...}`; property placeholders such as
+`direct:{{target}}` are resolved), transitively. It does not follow dynamic
+sends, and it does not apply when an application attaches
+`MessageStoreRoutePolicy` to a route itself.
+
+To aggregate on a Kafka boundary, give the `aggregate` a persistent
+`aggregationRepository`, which keeps the held records across a restart. Only
+Camel's `MemoryAggregationRepository` (also the default when none is set) is
+recognised as in-memory; whether any other repository is durable is the
+application's responsibility. A repository reference is resolved as Camel
+resolves it (property placeholders first, then `#name`, `#bean:`, `#type:` or a
+plain registry name; `#class:` by its class, without creating it). One that
+cannot be resolved when the route is created is refused, since it cannot be
+shown not to be in memory. Camel's `resequence` has no such repository; a durable
+resequencer is planned for 0.4.0
+([#36](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/36))
+and is not available yet.
+
 ## Status and Attempt Semantics
 
 The Camel adapter records one terminal outcome per message attempt:

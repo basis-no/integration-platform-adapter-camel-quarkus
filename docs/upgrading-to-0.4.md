@@ -16,6 +16,14 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
   `bip_message_replay_audit` as well when replay is enabled, and
   `bip_step_outcome` with the Postgres step store. The schema ships in
   `src/main/resources/db/message-store/`; the database operator applies it.
+- **No in-memory holds on a Kafka boundary.** A Kafka boundary route, or a
+  `direct:` route it sends to, that holds records in memory after its input
+  completes refuses to start, naming the route and node: Camel's `resequence`,
+  or an `aggregate` on Camel's in-memory repository. A restart would lose the
+  held records, whose offsets are already committed. Give such an `aggregate`
+  a persistent `aggregationRepository`. A `resequence` on a Kafka boundary has
+  no replacement yet; a durable resequencer is planned (#36). See
+  [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
 - **Kafka header names on the newer Quarkus line.** This branch builds against
   Quarkus 3.33.4 (Camel 4.18.4), whose camel-kafka exchange headers are named
   `CamelKafka*` instead of `kafka.*`. An integration that moves to this line

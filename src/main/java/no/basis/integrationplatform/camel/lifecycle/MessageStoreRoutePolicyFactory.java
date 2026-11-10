@@ -168,6 +168,9 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         if (boundaryKind == MessageBoundaryKind.KAFKA && camelContext != null) {
             validateKafkaOffsetReset(routeId, camelContext, route);
         }
+        if (boundaryKind == MessageBoundaryKind.KAFKA) {
+            InMemoryHoldGuard.check(camelContext, routeId, route);
+        }
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
                 sink, integrationName, payloadPolicy, boundaryKind, kafkaCommitEnabled, objectStore);
         if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {

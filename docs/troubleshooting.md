@@ -68,6 +68,12 @@ Common fail-fast causes include:
 - a Message Store without a table or column this adapter writes, for example
   one provisioned for an earlier adapter version. The error names the missing
   columns and the statements that add them;
+- a Kafka boundary route that holds records in memory after its input
+  completes: a `resequence`, or an `aggregate` on Camel's in-memory repository
+  (or a repository reference that cannot be resolved), in the route or in a
+  `direct:` route it sends to.
+  A restart would lose the held records, whose offsets are already committed.
+  See [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory);
 - a Message Store statement or lock timeout under 1 ms, or a lock timeout
   longer than the statement timeout;
 - a setting of adapter 0.3.x that this version does not read

@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- A Kafka boundary route that holds records in memory after its input
+  completes refuses to start, naming the route and node: Camel's `resequence`
+  (batch or stream), or an `aggregate` on Camel's in-memory repository (the
+  default) or on a repository reference that cannot be resolved, in the route,
+  its circuit-breaker fallbacks, or a `direct:` route it sends to with a fixed
+  URI (`to`, or `toD`/`enrich` without `${...}`, placeholders resolved). The adapter
+  commits a completed input, so a restart before the held record was released
+  lost it: it was neither delivered nor read again (shown by
+  `InMemoryHoldRestartTest`). Upgrade: give such an `aggregate` a persistent
+  `aggregationRepository`. A `resequence` on a Kafka boundary has no
+  replacement yet; a durable resequencer is planned (#36). See
+  [Holding Records in Memory](docs/message-lifecycle.md#holding-records-in-memory).
 - The `postgres` sink writes the attempt row before the summary row again, as
   adapter 0.3.6 does. Before, `main` wrote the summary first, so a 0.3.6 pod and
   a pod of this version that wrote the same message and attempt at once, as can
