@@ -23,7 +23,10 @@ import java.time.Instant;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
@@ -37,6 +40,29 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private TrafficSignals trafficSignals;
     private final String integrationName;
     private final PayloadCapturePolicy payloadPolicy;
+    // Per topic partition: the offset of the record held back last, and how often in a row.
+    private final Map<String, long[]> heldBack = new ConcurrentHashMap<>();
+    private Sleeper sleeper = MessageStoreRoutePolicy::sleepUnlessStopping;
+
+    static final long FIRST_BACK_OFF_MS = 1_000;
+    static final long MAX_BACK_OFF_MS = 30_000;
+    private static final long DEFAULT_MAX_POLL_INTERVAL_MS = 300_000;
+    private static final int MAX_HELD_BACK_PARTITIONS = 1_024;
+    private static final String RECORD_POSITION = "basis.messageStore.recordPosition";
+    private static final String POLL_STARTED = "basis.messageStore.pollStarted";
+    private static final String POLL_THREAD = "basis.messageStore.pollThread";
+    private static final String LAST_POLL_RECORD = "basis.messageStore.lastPollRecord";
+    // Per consumer thread: when its current poll's records began, and whether the next record
+    // starts a new poll. A failed record ends its poll: with breakOnFirstError the consumer
+    // stops the batch and reconnects.
+    private final Map<Long, Long> pollStarted = new ConcurrentHashMap<>();
+    private final Set<Long> newPollNext = ConcurrentHashMap.newKeySet();
+
+    /** Waits before a record is handed back to its consumer to be read again. */
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(Route route, long millis);
+    }
 
     public MessageStoreRoutePolicy(MessageStoreSink sink, String integrationName) {
         this(sink, integrationName, PayloadCapturePolicy.defaultPolicy());
@@ -52,6 +78,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         this.trafficSignals = trafficSignals;
     }
 
+    void setSleeper(Sleeper sleeper) {
+        this.sleeper = sleeper;
+    }
+
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
         normalizeKafkaEnvelopeHeaders(exchange);
@@ -64,6 +94,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null) {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
             StepOutcomeFailure.begin(exchange);
+            captureRecordPosition(exchange);
+            capturePollStart(exchange);
         }
         capturePayloadMetadata(exchange);
         if (trafficSignals != null) trafficSignals.recordAdmitted(exchange);
@@ -76,16 +108,18 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         try {
             sink.record(result);
         } catch (Exception e) {
-            fail(exchange, "Failed to record message outcome; Kafka offset was not committed", e);
+            readAgain(route, exchange, "Failed to record message outcome; Kafka offset was not committed", e);
             return;
         }
         Throwable unrecorded = StepOutcomeFailure.of(exchange);
         if (unrecorded != null) {
-            fail(exchange, "A step outcome was not checked or recorded; Kafka offset was not committed", unrecorded);
+            readAgain(route, exchange, "A step outcome was not checked or recorded; Kafka offset was not committed",
+                    unrecorded);
             return;
         }
         if (result.status() == MessageStatus.FAILED) {
-            fail(exchange, "Processing failed without confirmed DLQ parking; Kafka offset was not committed", null);
+            readAgain(route, exchange, "Processing failed without confirmed DLQ parking; Kafka offset was not committed",
+                    null);
             return;
         }
         try {
@@ -93,6 +127,19 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         } catch (Exception e) {
             fail(exchange, "Message outcome was recorded but Kafka offset commit failed", e);
         }
+        String position = exchange.getProperty(RECORD_POSITION, String.class);
+        if (position != null) {
+            heldBack.remove(partition(position));
+        }
+        if (Boolean.TRUE.equals(exchange.getProperty(LAST_POLL_RECORD, Boolean.class))) {
+            endOfPoll(exchange);
+        }
+    }
+
+    /** The outcome was not made durable: the record is not committed and is read again. */
+    private void readAgain(Route route, Exchange exchange, String message, Throwable cause) {
+        backOffBeforeReadingAgain(route, exchange);
+        fail(exchange, message, cause);
     }
 
     private void fail(Exchange exchange, String message, Throwable cause) {
@@ -165,6 +212,134 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
         manualCommit.commit();
         LOG.debug("Committed Kafka offset for message {}", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+    }
+
+    /**
+     * A Kafka record whose outcome was not made durable is read again, and its partition
+     * waits. The first time it is read again at once, so a passing glitch costs nothing; after
+     * that each read waits 1 s, doubling, at most 30 s, so that a Message Store outage or a DLQ
+     * that refuses the record does not run the route, and its sends, several times a second.
+     * The wait is also kept to half the consumer's {@code max.poll.interval.ms} less the time
+     * since the poll that returned this record began to be processed, so the records before it
+     * in that poll count. Without {@code breakOnFirstError}, where a failed record does not end
+     * its poll, there is no wait. The consumer waits for it, also when the policy runs on a
+     * completion thread, and the wait ends early when the context stops. A committed outcome on
+     * the partition resets it. A record without its position is read again at once, as before.
+     */
+    private void backOffBeforeReadingAgain(Route route, Exchange exchange) {
+        String position = exchange.getProperty(RECORD_POSITION, String.class);
+        // The failed record ends its poll, so the next record on this thread starts a new one.
+        endOfPoll(exchange);
+        if (position == null || !breaksOnFirstError(route)) {
+            return;
+        }
+        long offset = Long.parseLong(position.substring(position.lastIndexOf('@') + 1));
+        if (heldBack.size() >= MAX_HELD_BACK_PARTITIONS && !heldBack.containsKey(partition(position))) {
+            // Partitions that moved away or whose topic went keep no state for ever.
+            heldBack.keySet().stream().findFirst().ifPresent(heldBack::remove);
+        }
+        long[] state = heldBack.compute(partition(position),
+                (key, previous) -> previous != null && previous[0] == offset
+                        ? new long[]{offset, previous[1] + 1} : new long[]{offset, 1});
+        if (state[1] < 2) {
+            return;
+        }
+        // The poll interval runs from the poll, so the records before this one in the poll count.
+        Long started = exchange.getProperty(POLL_STARTED, Long.class);
+        long elapsed = Math.max(0, System.currentTimeMillis()
+                - (started != null ? started : exchange.getClock().getCreated()));
+        long wait = Math.min(Math.min(MAX_BACK_OFF_MS, FIRST_BACK_OFF_MS << Math.min(state[1] - 2, 16)),
+                maxPollIntervalMs(route) / 2 - elapsed);
+        if (wait <= 0) {
+            return;
+        }
+        LOG.info("Message {} at {} could not be made durable {} times in a row; reading it again in {} ms",
+                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), position, state[1], wait);
+        sleeper.sleep(route, wait);
+    }
+
+    private void capturePollStart(Exchange exchange) {
+        long thread = Thread.currentThread().getId();
+        long now = System.currentTimeMillis();
+        if (newPollNext.remove(thread) || !pollStarted.containsKey(thread)) {
+            pollStarted.put(thread, now);
+        }
+        exchange.setProperty(POLL_STARTED, pollStarted.getOrDefault(thread, now));
+        exchange.setProperty(POLL_THREAD, thread);
+        Object last = exchange.getMessage().getHeader("CamelKafkaLastPollRecord");
+        if (last == null) {
+            last = exchange.getMessage().getHeader("kafka.LAST_POLL_RECORD");
+        }
+        exchange.setProperty(LAST_POLL_RECORD, Boolean.TRUE.equals(last) || "true".equals(String.valueOf(last)));
+    }
+
+    private void endOfPoll(Exchange exchange) {
+        Long thread = exchange.getProperty(POLL_THREAD, Long.class);
+        if (thread != null) {
+            newPollNext.add(thread);
+        }
+    }
+
+    private static boolean breaksOnFirstError(Route route) {
+        try {
+            if (route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka) {
+                return kafka.getConfiguration().isBreakOnFirstError();
+            }
+        } catch (RuntimeException unavailable) {
+            // Not a Kafka route the policy can inspect: the adapter's default applies.
+        }
+        return true;
+    }
+
+    private static String partition(String position) {
+        return position.substring(0, position.lastIndexOf('@'));
+    }
+
+    /** The consumer's effective poll interval: an additional property overrides the named option. */
+    static long maxPollIntervalMs(Route route) {
+        try {
+            if (route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka) {
+                var configuration = kafka.getConfiguration();
+                Object override = configuration.getAdditionalProperties() == null ? null
+                        : configuration.getAdditionalProperties().get("max.poll.interval.ms");
+                if (override != null) {
+                    long value = Long.parseLong(override.toString().trim());
+                    if (value > 0) {
+                        return value;
+                    }
+                }
+                Integer configured = configuration.getMaxPollIntervalMs();
+                if (configured != null && configured > 0) {
+                    return configured;
+                }
+            }
+        } catch (RuntimeException unavailable) {
+            // Not a Kafka route the policy can inspect: Kafka's default applies.
+        }
+        return DEFAULT_MAX_POLL_INTERVAL_MS;
+    }
+
+    static void sleepUnlessStopping(Route route, long millis) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+        try {
+            for (long left = millis; left > 0; left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())) {
+                if (route.getCamelContext() != null && route.getCamelContext().isStopping()) {
+                    return;
+                }
+                Thread.sleep(Math.min(100, left));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void captureRecordPosition(Exchange exchange) {
+        Object topic = KafkaRecordHeaders.topic(exchange.getMessage());
+        Object partition = KafkaRecordHeaders.partition(exchange.getMessage());
+        Object offset = KafkaRecordHeaders.offset(exchange.getMessage());
+        if (topic instanceof String name && partition instanceof Number p && offset instanceof Number o) {
+            exchange.setProperty(RECORD_POSITION, name + "/" + p.intValue() + "@" + o.longValue());
+        }
     }
 
     private void captureKafkaManualCommit(Exchange exchange) {
