@@ -310,10 +310,13 @@ no call on a later replay, which restores the checkpoint.
   `header-names` (the rule that masks header values in parked DLQ records:
   `Authorization`, `Cookie`, `Set-Cookie`, names containing `token`,
   `secret`, `password`, `session`, `auth` and the like, and names ending in
-  `-key`), naming each one. A credential restored on replay would be stale and
-  kept for the whole retention; obtain a fresh one on each attempt instead.
-  Exchange property names are not checked: name only properties that hold no
-  credentials.
+  `-key` or `_key`), naming each one. A credential restored on replay would be
+  stale and kept for the whole retention; obtain a fresh one on each attempt
+  instead. The rule goes by the name only, so a harmless header whose name
+  matches it, such as `X-Partition-Key`, `X-Idempotency-Key`, `X-Author` or
+  `X-Session-Count`, is refused too: copy its value to an exchange property and
+  list that in `property-names`. Exchange property names are not checked: name
+  only properties that hold no credentials.
 
 ### Side Effects With and Without Output
 

@@ -38,6 +38,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -62,6 +63,7 @@ class OutputCheckpointCrashTest {
     private final AtomicBoolean crashBeforeCheckpoint = new AtomicBoolean();
     private final CountDownLatch dying = new CountDownLatch(1);
     private HttpServer receiver;
+    private Thread dyingConsumer;
     private DefaultCamelContext context;
 
     /** Behaves like the Postgres store, and can die before the delivered row is written. */
@@ -104,6 +106,7 @@ class OutputCheckpointCrashTest {
 
     @AfterEach
     void stop() throws Exception {
+        if (dyingConsumer != null) dyingConsumer.interrupt();
         if (context != null) context.close();
         receiver.stop(0);
     }
@@ -112,19 +115,26 @@ class OutputCheckpointCrashTest {
     void aCrashBeforeTheCheckpointRunsTheStepAgainWithTheSameKey() throws Exception {
         crashBeforeCheckpoint.set(true);
         start();
-        Thread dyingConsumer = new Thread(this::consume);
+        dyingConsumer = new Thread(this::consume);
         dyingConsumer.start();
         assertTrue(dying.await(30, TimeUnit.SECONDS), "The receiver answered and the checkpoint write began");
+
+        // The state the process dies in, observed while the write is still blocked.
+        assertTrue(dyingConsumer.isAlive());
+        assertEquals(List.of(KEY), idempotencyKeys, "The receiver answered once");
+        assertEquals(0, commits.get(), "Nothing is committed while the checkpoint is not written");
+        assertTrue(delivered.isEmpty(), "No delivered row and no checkpoint");
+        assertTrue(outputs.isEmpty(), "The route did not get past the step");
+
         context.getShutdownStrategy().setTimeout(1);
         context.getShutdownStrategy().setShutdownNowOnTimeout(true);
         context.close();
         dyingConsumer.interrupt();
         dyingConsumer.join(10_000);
-
-        assertEquals(List.of(KEY), idempotencyKeys, "The receiver answered once");
-        assertEquals(0, commits.get(), "Nothing is committed when the checkpoint was not written");
-        assertTrue(delivered.isEmpty(), "No delivered row and no checkpoint");
-        assertTrue(outputs.isEmpty(), "The route did not get past the step");
+        assertFalse(dyingConsumer.isAlive(), "The dying consumer has stopped");
+        assertEquals(List.of(KEY), idempotencyKeys, "Dying made no further call");
+        assertEquals(0, commits.get(), "Nor a commit");
+        assertTrue(delivered.isEmpty(), "Nor a delivered row");
 
         // The pod restarts: a new context over the same stores reads the record again.
         crashBeforeCheckpoint.set(false);

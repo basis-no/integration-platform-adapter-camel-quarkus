@@ -221,15 +221,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
     }
 
-    /**
-     * Whether a header name is credential-like, by the rule that masks header values in
-     * parked DLQ records. The adapter's own {@code x-bip-*} headers and
-     * {@code Idempotency-Key} are not.
-     *
-     * @param name header name, in any case
-     * @return {@code true} for a credential-like name
-     */
-    public static boolean isCredentialHeader(String name) {
+    static boolean isCredentialHeader(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
         if (lower.startsWith("x-bip-") || lower.equals("idempotency-key")) {
             return false;

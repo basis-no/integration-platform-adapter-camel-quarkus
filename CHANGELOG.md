@@ -6,7 +6,7 @@
   `basis.message-store.step.output-checkpoint.header-names`, naming each one,
   by the rule that masks header values in parked DLQ records (`Authorization`,
   cookies, names containing `token`, `secret`, `session`, `auth` and the like,
-  names ending in `-key`). A checkpoint is stored in the Message Store for the
+  names ending in `-key` or `_key`). A checkpoint is stored in the Message Store for the
   payload retention and restored on replay, so a credential in it was kept and
   reused. The documentation of output-producing side effects now says what a
   crash between the call and the checkpoint write does (the step runs again
@@ -15,6 +15,9 @@
   that the adapter does not encrypt it.
   Upgrade: remove credential-like names from `header-names`; an application
   that listed one no longer starts. Obtain a fresh credential on each attempt.
+  The rule goes by the name, so harmless headers such as `X-Partition-Key`,
+  `X-Idempotency-Key`, `X-Author` or `X-Session-Count` are refused too: copy
+  the value to an exchange property and list it in `property-names` instead.
 
 - A Kafka boundary's consumer resets to `earliest`, and a Kafka boundary route
   whose consumer uses any other `auto.offset.reset` refuses to start, naming

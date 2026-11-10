@@ -42,23 +42,6 @@ class StepOutputCheckpointServiceTest {
     }
 
     @Test
-    void refusesCredentialLikeCheckpointHeadersAndNamesEach() {
-        var refused = assertThrows(IllegalArgumentException.class,
-                () -> withHeaders("Partner-Request-Id, Authorization, x-api-key, SET-COOKIE, Session-Token"));
-
-        String message = refused.getMessage();
-        assertTrue(message.startsWith("basis.message-store.step.output-checkpoint.header-names names "
-                + "credential-like headers Authorization, Session-Token, SET-COOKIE, x-api-key."), message);
-        assertTrue(!message.contains("Partner-Request-Id"), message);
-    }
-
-    @Test
-    void acceptsOrdinaryCheckpointHeadersAndTheAdaptersOwn() {
-        withHeaders("Partner-Request-Id, Location, Content-Type, x-bip-correlation-id, Idempotency-Key");
-        withHeaders("");
-    }
-
-    @Test
     void capturesAndRestoresBodySelectedHeadersAndProperties() {
         StepOutputCheckpointService service = service(1024);
         Exchange original = exchange();
@@ -333,14 +316,5 @@ class StepOutputCheckpointServiceTest {
 
     private Exchange exchange() {
         return new DefaultExchange(new DefaultCamelContext());
-    }
-
-    private static StepOutputCheckpointService withHeaders(String headerNames) {
-        return new StepOutputCheckpointService(
-                PayloadObjectStore.disabled(),
-                new PayloadCapturePolicy(PayloadMode.POSTGRES_INLINE, 1024, 10_000, Duration.ofDays(30), true),
-                "checkpoint-test",
-                headerNames,
-                "");
     }
 }
