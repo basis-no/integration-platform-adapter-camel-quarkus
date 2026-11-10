@@ -5,7 +5,9 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.SQLException;
 import java.sql.SQLFeatureNotSupportedException;
+import java.sql.SQLWarning;
 import java.time.Duration;
+import java.util.Locale;
 import java.util.concurrent.Executor;
 
 /**
@@ -22,6 +24,11 @@ import java.util.concurrent.Executor;
  * cases the JDBC network timeout, which ends a read from a database that stopped answering,
  * is set to the statement timeout plus {@value #NETWORK_MARGIN_SECONDS} seconds for the
  * call and restored afterwards.</p>
+ *
+ * <p>A commit counts only when PostgreSQL reports it without a warning. Under synchronous
+ * replication, {@code statement_timeout} does not end a commit's wait for the standby: the
+ * network timeout does, by breaking the connection, and a cancelled wait returns with a
+ * warning only. Both end the call with a failure.</p>
  */
 public final class MessageStoreTimeouts {
     /** Default statement timeout for each statement of a Message Store call. */
@@ -166,7 +173,10 @@ public final class MessageStoreTimeouts {
                 }
                 T result = work.run(connection);
                 if (completes) {
+                    // Only what the commit itself reports counts, not an earlier warning.
+                    connection.clearWarnings();
                     connection.commit();
+                    requireConfirmedCommit(connection.getWarnings());
                 }
                 return result;
             } catch (Throwable e) {
@@ -186,6 +196,40 @@ public final class MessageStoreTimeouts {
                 restore(failure, () -> setNetworkTimeout(connection, previousNetworkTimeout));
             }
         }
+    }
+
+    /**
+     * Fails a commit that PostgreSQL reported with a warning. The case this is for: under
+     * synchronous replication, a commit whose wait for the standby is cancelled (a client
+     * cancel, {@code pg_cancel_backend}) returns normally with only a WARNING ("canceling
+     * wait for synchronous replication due to user request", detail "The transaction has
+     * already committed locally, but might not have been replicated to the standby."), so
+     * the outcome may be lost in a failover. That warning has no SQLSTATE of its own (it is
+     * the generic {@code 01000}) and its text follows the server's {@code lc_messages}, so
+     * neither identifies it reliably. Any warning-level message (SQLSTATE outside class
+     * {@code 00}, which notices use) reported by the commit is therefore a failure; the
+     * outcome writes are idempotent, so a failure here costs only a read again. The text is
+     * matched only to say in the error what happened.
+     */
+    static void requireConfirmedCommit(SQLWarning warnings) throws SQLException {
+        for (SQLWarning warning = warnings; warning != null; warning = warning.getNextWarning()) {
+            String state = warning.getSQLState();
+            if (state != null && state.startsWith("00")) {
+                continue;
+            }
+            String reason = isSynchronousReplicationWarning(warning)
+                    ? "committed locally, but a synchronous standby did not confirm it"
+                    : "committed, but the commit reported a warning";
+            SQLException failure = new SQLException("The Message Store transaction was " + reason
+                    + "; treated as a store failure so that the outcome is written again: " + warning.getMessage(),
+                    state, warning);
+            throw failure;
+        }
+    }
+
+    static boolean isSynchronousReplicationWarning(SQLWarning warning) {
+        String text = (warning.getMessage() + " " + warning).toLowerCase(Locale.ROOT);
+        return text.contains("synchronous replication") || text.contains("might not have been replicated");
     }
 
     /** Only a broken connection cannot be restored, and the pool discards it; after a commit the call succeeded. */

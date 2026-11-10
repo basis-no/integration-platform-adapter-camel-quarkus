@@ -22,6 +22,11 @@
   statement took longer than `basis.message-store.statement-timeout` or waited
   longer than `basis.message-store.lock-timeout`: check the database's health, its locks
   (`pg_locks`, `pg_stat_activity`) and its network before raising either value.
+- An error that says a Message Store transaction "committed locally, but a
+  synchronous standby did not confirm it" means a synchronous commit's wait was
+  cancelled. The record is read again and its outcome written again; check the
+  synchronous standby and the database's replication status
+  (`pg_stat_replication`).
 - Confirm `allow-manual-commit=true`, `auto-commit-enable=false` and
   `break-on-first-error=true`.
 - Check whether the guarded `no-commit` test profile is active.

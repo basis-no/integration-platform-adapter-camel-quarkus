@@ -148,6 +148,33 @@ because a transaction-local setting would last for the rest of the
 application's transaction: each statement is bounded by its JDBC query timeout
 and the network timeout, and a lock wait by the query timeout.
 
+**Synchronous replication.** With a synchronous standby, a commit waits until
+the standby confirms it, and `statement_timeout` does not end that wait. Two
+things do, and both make the call a Message Store failure:
+
+- The network timeout: a commit that waits longer than the statement timeout
+  plus 5 seconds breaks the connection, and the call fails.
+- A cancel of the wait (a client cancel, `pg_cancel_backend`, or a terminated
+  connection). PostgreSQL then reports the commit as done with only a warning,
+  "canceling wait for synchronous replication due to user request", detail
+  "The transaction has already committed locally, but might not have been
+  replicated to the standby.", so the outcome could be lost in a failover. The
+  adapter clears the connection's warnings before the commit and treats any
+  warning-level message the commit reports (an SQLSTATE outside class `00`;
+  notices are not counted) as a failure. It does not rely on the text or on a
+  SQLSTATE of the synchronous replication warning: the user-cancel warning has
+  only the generic `01000`, and its text follows the server's `lc_messages`.
+  The text is matched only to name the cause in the error, "committed locally,
+  but a synchronous standby did not confirm it".
+
+Such a failure is not a rollback: the outcome may already be in the store. The
+record is read again and its outcome written again, which is safe, because the
+writes are idempotent: the sink upserts the message row by message id and the
+attempt row by message id and attempt, and the step outcome store upserts by
+idempotency key and never replaces `DELIVERED`. Inside an application
+transaction the application commits and these checks do not apply; the sink's
+commit of such a transaction is checked.
+
 Getting a connection is bounded by the deployment's datasource settings, which
 the adapter does not set:
 
