@@ -18,7 +18,9 @@ Kafka record
 ```
 
 A persistence failure or a failed DLQ publish prevents the managed Kafka commit
-and leaves the exchange failed. With `camel.component.kafka.break-on-first-error=true`,
+and leaves the exchange failed. A Message Store call that reaches its statement,
+lock or network timeout is such a failure (see
+[Message Store call timeouts](configuration.md#message-store-call-timeouts)). With `camel.component.kafka.break-on-first-error=true`,
 the adapter's default, the consumer reads the record again before the
 partition's later records. Kafka can also redeliver a record after a rebalance,
 which is why side effects still require stable idempotency.
@@ -60,8 +62,8 @@ The Camel adapter records one terminal outcome per message attempt:
 
 - `COMPLETED`: route processing and required outcome recording succeeded.
 - `DLQ`: retries were exhausted and the DLQ endpoint accepted the record.
-- `FAILED`: terminal failure was recorded without a Kafka DLQ, as used by the
-  explicit non-Kafka audit-only preview. At a Kafka boundary, `FAILED` means the
+- `FAILED`: terminal failure was recorded without a Kafka DLQ, as at an HTTP
+  audit-only boundary, which hands the failure back to its caller. At a Kafka boundary, `FAILED` means the
   failure was not parked, for example because the DLQ publish failed or a step
   outcome could not be recorded; the offset is not committed and the record is
   read again.
@@ -104,6 +106,13 @@ different problems and production direct-Postgres mode uses both.
 - `bip_message_replay_audit`: operator replay request and publication audit.
 - `bip_contract`: store schema version (`contract_major`) checked at adapter
   startup, together with the tables and columns the adapter writes.
+
+The `postgres` sink writes an outcome in one transaction, the attempt row first
+and then the summary row, as Camel adapter 0.3.6 does. Both Camel lines take
+the two rows' locks in the same order, so Camel pods of either version can write
+the same message during a rolling upgrade without deadlocking each other. The
+.NET adapter's development line writes in the same order; its earlier releases
+write the summary first.
 
 In production the database operator provisions the schema outside
 integration pods. SQL resources in the adapter JAR exist for local tests, not

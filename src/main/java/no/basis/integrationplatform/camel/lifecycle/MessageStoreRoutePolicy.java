@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.KafkaPollInterval;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
@@ -42,6 +43,7 @@ import java.util.concurrent.TimeUnit;
 /** Records terminal lifecycle outcomes and owns the Kafka acknowledgement boundary. */
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
+    private static final String HTTP_NOT_REPLAYABLE = "a synchronous HTTP boundary is not replayable";
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
     private static final String ENVELOPE_PREFIX = "x-bip-";
     private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
@@ -61,7 +63,6 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     static final long FIRST_BACK_OFF_MS = 1_000;
     static final long MAX_BACK_OFF_MS = 30_000;
-    private static final long DEFAULT_MAX_POLL_INTERVAL_MS = 300_000;
     private static final int MAX_HELD_BACK_PARTITIONS = 1_024;
     private static final String RECORD_POSITION = "basis.messageStore.recordPosition";
     private static final String POLL_STARTED = "basis.messageStore.pollStarted";
@@ -400,26 +401,9 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     /** The consumer's effective poll interval: an additional property overrides the named option. */
     static long maxPollIntervalMs(Route route) {
-        try {
-            if (route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka) {
-                var configuration = kafka.getConfiguration();
-                Object override = configuration.getAdditionalProperties() == null ? null
-                        : configuration.getAdditionalProperties().get("max.poll.interval.ms");
-                if (override != null) {
-                    long value = Long.parseLong(override.toString().trim());
-                    if (value > 0) {
-                        return value;
-                    }
-                }
-                Integer configured = configuration.getMaxPollIntervalMs();
-                if (configured != null && configured > 0) {
-                    return configured;
-                }
-            }
-        } catch (RuntimeException unavailable) {
-            // Not a Kafka route the policy can inspect: Kafka's default applies.
-        }
-        return DEFAULT_MAX_POLL_INTERVAL_MS;
+        return route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka
+                ? KafkaPollInterval.of(kafka.getConfiguration())
+                : KafkaPollInterval.DEFAULT_MS;
     }
 
     static void sleepUnlessStopping(Route route, long millis) {
@@ -456,6 +440,11 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         Object body = exchange.getMessage().getBody();
         if (isPayloadReference(exchange)) {
             resolvePayloadReference(exchange, body);
+            if (boundaryKind == MessageBoundaryKind.HTTP) {
+                // The route still reads the referenced object, but the row keeps no reference:
+                // nothing could replay it, and the object belongs to the caller.
+                metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+            }
             return;
         }
 
@@ -465,6 +454,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, sizeBytes);
         }
 
+        if (boundaryKind == MessageBoundaryKind.HTTP) {
+            // A replay cannot answer the original caller, so a synchronous HTTP boundary is
+            // never replayable, also when basis.message-store.replay.enabled is true.
+            metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+            keepForParking(exchange, body);
+            return;
+        }
         if (!payloadPolicy.replayEnabled()) {
             metadataOnly(exchange, "replay disabled by policy");
             keepForParking(exchange, body);

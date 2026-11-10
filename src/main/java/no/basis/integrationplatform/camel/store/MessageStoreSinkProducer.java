@@ -9,8 +9,10 @@ import no.basis.integrationplatform.camel.MessageStoreTestProfileConfig;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
 import no.basis.integrationplatform.camel.MessageStoreDataSource;
+import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 
 import javax.sql.DataSource;
+import java.time.Duration;
 import java.util.Optional;
 
 /** CDI producer selecting the configured terminal outcome sink. */
@@ -38,12 +40,15 @@ public class MessageStoreSinkProducer {
             @ConfigProperty(name = "basis.message-store.status-topic",
                     defaultValue = KafkaMessageStoreSink.DEFAULT_STATUS_TOPIC) String statusTopic,
             @ConfigProperty(name = "basis.message-store.payload.retention-days", defaultValue = "30") long retentionDays,
+            @ConfigProperty(name = "basis.message-store.statement-timeout", defaultValue = "10s") Duration statementTimeout,
+            @ConfigProperty(name = "basis.message-store.lock-timeout", defaultValue = "5s") Duration lockTimeout,
             Instance<DataSource> dataSource,
             MessageStoreTestProfileConfig testProfile) {
         String effectiveSink = testProfile.effectiveSink(sink);
         return switch (effectiveSink) {
             case POSTGRES_SINK -> new PostgresMessageStoreSink(requiredDataSource(dataSource),
-                    java.time.Duration.ofDays(retentionDays));
+                    new MessageStatusEventJson(), Duration.ofDays(retentionDays),
+                    MessageStoreTimeouts.of(statementTimeout, lockTimeout));
             case KAFKA_SINK -> new KafkaMessageStoreSink(
                     KafkaMessageStoreSink.kafkaProducer(requiredKafkaBootstrapServers(bootstrapServers.orElse(""))),
                     statusTopic,

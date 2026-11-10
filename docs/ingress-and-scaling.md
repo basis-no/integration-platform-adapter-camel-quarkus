@@ -5,10 +5,13 @@
 | Source shape | Recommended boundary | Replay | Replica rule |
 | --- | --- | --- | --- |
 | Kafka topic | Kafka consumer route | full | same consumer group |
-| File/FTP/SFTP | normalize to canonical Kafka topic | from Kafka boundary | one replica or `master:` |
-| Timer/database poll | normalize each real source item to Kafka | from Kafka boundary | one replica or `master:` |
-| JMS/SJMS queue | normalize to Kafka | from Kafka boundary | broker competing consumers |
-| Synchronous HTTP | explicit audit-only preview | disabled | application-specific |
+| File/FTP/SFTP | normalize to canonical Kafka topic | from Kafka boundary | one replica at a time through the adapter's lease, or `master:` |
+| Timer/database poll | normalize each real source item to Kafka | from Kafka boundary | one replica at a time through the adapter's lease, or `master:` |
+| JMS/SJMS queue | normalize to Kafka (`jms:` with `acknowledgementModeName=CLIENT_ACKNOWLEDGE`) | from Kafka boundary | broker competing consumers |
+| Synchronous HTTP | explicit audit-only preview, or hand off to Kafka | not replayable (preview); from Kafka boundary (hand-off) | application-specific |
+
+What happens to a failure and where a replay starts, per input type, is in
+[Failure and Replay per Input Type](retry-dlq-replay.md#failure-and-replay-per-input-type).
 
 ## Kafka Consumers
 
@@ -139,11 +142,25 @@ replay starts at Kafka and does not reread the original file, queue, or poll.
 
 ## Singleton Polling
 
+The adapter runs every polling route (timer, cron, Quartz, scheduler, and
+scheduled-poll consumers such as file, FTP/SFTP and SQL) on one replica at a
+time, coordinated through a lease in the integration's Key-Value Store, unless
+the route is listed in `basis.message-store.single-active.excluded-routes`.
+See [Single-Active Routes](single-active.md) for how the lease works, its
+timings and the failover times.
+
 The deployment sets `basis.message-store.deployment-replicas` from the
-Kubernetes Deployment's replica count. An uncoordinated polling route is accepted only with one
-declared replica. With multiple replicas, wrap the source in Camel `master:`
-and configure `camel-quarkus-kubernetes-cluster-service` plus its Kubernetes
-leader-election permissions:
+Kubernetes Deployment's replica count. An ingress normalization route whose
+polling source the adapter coordinates through its lease is accepted with any
+declared replica count. With several or no declared replicas its lease is then
+required: without `bip_key_value`, or without a Key-Value Store, the route does
+no work on any replica, and the adapter logs an ERROR naming it, instead of
+running it on every replica as an ordinary polling route would. An
+uncoordinated polling route, including one listed in
+`basis.message-store.single-active.excluded-routes`, is accepted only with one
+declared replica. A source can also be coordinated by Camel `master:` with
+`camel-quarkus-kubernetes-cluster-service` and its Kubernetes leader-election
+permissions:
 
 ```yaml
 from:
@@ -154,20 +171,53 @@ from:
 coordinates competing queue consumers. Missing replica metadata or an unsafe
 multi-replica poll fails startup rather than risking duplicate discovery.
 
+### JMS Queues
+
+- Set `acknowledgementModeName=CLIENT_ACKNOWLEDGE` on a `jms:queue:`
+  normalization input (or on the `jms` component). Then the message is
+  acknowledged when the route completes, after the Kafka publish, and a failure
+  makes the broker deliver it again. The acknowledgement is per JMS session, so
+  keep one consumer per session (camel-jms's default). With camel-jms's default
+  `AUTO_ACKNOWLEDGE`, a message whose route failed after its retries is not
+  delivered again and is lost; the adapter does not check this yet
+  ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
+- After a failure the broker delivers the message again at once. A message that
+  keeps failing is handled by the broker's own delivery limit and dead-letter
+  address (Apache ActiveMQ Artemis moves it after 10 deliveries by default), not
+  by the adapter's DLQ. Configure them on the broker.
+- `transacted=true` is not tested with this pattern and is not covered by these
+  rules; see #123.
+- JMS topics (non-competing subscribers) are not supported for normalization:
+  every replica would receive and publish every message.
+- Order is kept per queue up to the Kafka publish; after it, per Kafka key and
+  partition only.
+- Checked with `jms:` and Apache ActiveMQ Artemis in the adapter's tests.
+  `sjms:` and `sjms2:` and other brokers are not verified.
+
 ## HTTP Audit-Only Preview
 
 An explicitly selected `platform-http:` route may record terminal audit without
-claiming Kafka commit, DLQ, or replay semantics:
+claiming Kafka commit, DLQ, or replay semantics. Add its route id to
+`basis.message-store.boundary-routes`, next to `auto`, which keeps selecting
+every Kafka consumer (a list of ids alone would leave out a Kafka route added
+later):
 
 ```properties
-basis.message-store.boundary-routes=receive-order
-basis.message-store.failure-mode=record-failed
-basis.message-store.replay.enabled=false
+basis.message-store.boundary-routes=auto,receive-order
 basis.message-store.sink=postgres
 ```
 
 Success records `COMPLETED`; technical or HTTP 4xx/5xx failure records `FAILED`
-and propagates to the caller. Payload is metadata-only, so operator tools must
-not offer resend. This is an implemented Camel-only preview, not part of the
-Kafka lifecycle shared with the .NET adapter, and cannot be mixed with
-adapter-managed Kafka boundaries in the current global-policy implementation.
+after the route's retries and propagates to the caller. Nothing is parked in the
+DLQ. The payload is metadata-only and the message is never replayable
+(`replay_disabled_reason` says why), also with
+`basis.message-store.replay.enabled=true`, so operator tools must not offer
+resend: a replay could not answer the original caller. To make the downstream
+work replayable, accept the request and publish it to the Kafka input instead,
+and let the Kafka boundary process it.
+
+The preview no longer needs `basis.message-store.failure-mode=record-failed` or
+`basis.message-store.replay.enabled=false`, and it can run in the same
+application as Kafka boundaries. Existing configurations with both settings keep
+working as long as the application has no Kafka boundary. This is a Camel-only
+preview, not part of the Kafka lifecycle shared with the .NET adapter.
