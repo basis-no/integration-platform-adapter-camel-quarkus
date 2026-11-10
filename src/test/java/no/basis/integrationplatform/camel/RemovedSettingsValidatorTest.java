@@ -6,9 +6,12 @@ import io.smallrye.config.SmallRyeConfigBuilder;
 import org.eclipse.microprofile.config.Config;
 import org.junit.jupiter.api.Test;
 
+import java.util.List;
 import java.util.Map;
+import java.util.logging.Level;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -86,9 +89,61 @@ class RemovedSettingsValidatorTest {
     }
 
     @Test
-    void startsWithAnEmptyValueWhichDisabledTheFeatureIn03() {
-        assertDoesNotThrow(() -> RemovedSettingsValidator.check(properties(Map.of(
-                "basis.delivery-audit.routes", ""))));
+    void startsWithAnEmptyValueWhichDisabledTheFeatureIn03AndWarnsToRemoveIt() {
+        try (var logs = LogCapture.of(RemovedSettingsValidator.class)) {
+            assertDoesNotThrow(() -> RemovedSettingsValidator.check(properties(Map.of(
+                    "basis.delivery-audit.routes", ""))));
+
+            List<String> warnings = logs.at(Level.WARNING).stream().map(LogCapture::text).toList();
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertTrue(warnings.get(0).startsWith("basis.delivery-audit.routes is a setting of adapter 0.3.x"));
+        }
+    }
+
+    @Test
+    void refusesAProfileSpecificEnvironmentVariable() {
+        Config config = new SmallRyeConfigBuilder().withProfile("prod")
+                .withSources(new EnvConfigSource(Map.of("_PROD_BASIS_DELIVERY_AUDIT_ROUTES", "deliver-order"), 300))
+                .build();
+
+        String message = assertThrows(IllegalStateException.class,
+                () -> RemovedSettingsValidator.check(config)).getMessage();
+
+        assertTrue(message.contains("basis.delivery-audit.routes:"));
+    }
+
+    @Test
+    void refusesALowerCaseEnvironmentVariable() {
+        Config config = new SmallRyeConfigBuilder()
+                .withSources(new EnvConfigSource(Map.of("basis_input_audit_routes", "receive-file"), 300))
+                .build();
+
+        String message = assertThrows(IllegalStateException.class,
+                () -> RemovedSettingsValidator.check(config)).getMessage();
+
+        assertTrue(message.contains("basis.input-audit.routes:"));
+    }
+
+    @Test
+    void refusesASystemProperty() {
+        Config config = new SmallRyeConfigBuilder()
+                .withSources(new PropertiesConfigSource(Map.of(
+                        "basis.delivery-audit.routes", "deliver-order"), "SysPropConfigSource", 400))
+                .build();
+
+        assertThrows(IllegalStateException.class, () -> RemovedSettingsValidator.check(config));
+    }
+
+    @Test
+    void followsTheEffectiveValueWhenAnEmptySystemPropertyOverridesTheEnvironment() {
+        // 0.3.x saw the empty value, so the feature was off.
+        Config config = new SmallRyeConfigBuilder()
+                .withSources(new EnvConfigSource(Map.of("BASIS_DELIVERY_AUDIT_ROUTES", "deliver-order"), 300))
+                .withSources(new PropertiesConfigSource(Map.of(
+                        "basis.delivery-audit.routes", ""), "SysPropConfigSource", 400))
+                .build();
+
+        assertDoesNotThrow(() -> RemovedSettingsValidator.check(config));
     }
 
     private static Config properties(Map<String, String> values) {
