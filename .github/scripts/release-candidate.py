@@ -40,6 +40,18 @@ def selection(mode, version, commit, signer, candidate_run='', state_run='', bun
             raise ValueError('Existing state artifact run required; never start a fresh upload')
 
 
+def snapshot_selection(action, version, commit, signer='', tagged=False):
+    """The snapshot lane only checks its source and collects unsigned payloads."""
+    if action not in ('source', 'provenance', 'unsigned'):
+        raise ValueError('The snapshot lane only checks the source and collects unsigned payloads')
+    if not re.fullmatch(r'\d+\.\d+\.\d+-SNAPSHOT', version):
+        raise ValueError('Snapshot lane requires an X.Y.Z-SNAPSHOT version')
+    if not re.fullmatch(r'[a-f0-9]{40}', commit):
+        raise ValueError('Exact source commit required; branch names are not accepted')
+    if signer or tagged:
+        raise ValueError('A snapshot is never signed and never built from a release tag')
+
+
 def source(path, version, commit, tagged=False):
     """Untagged: manual inspection before the tag. Tagged: the protected tag's own
     release run, where the tag must already point at exactly this commit."""
@@ -152,7 +164,7 @@ def main():
     parser.add_argument('--mode', default='inspect')
     parser.add_argument('--version', required=True)
     parser.add_argument('--commit', required=True)
-    parser.add_argument('--signer', required=True)
+    parser.add_argument('--signer', default='')
     parser.add_argument('--candidate-run', default='')
     parser.add_argument('--state-run', default='')
     parser.add_argument('--bundle-hash', default='')
@@ -163,11 +175,19 @@ def main():
     parser.add_argument('--output', type=Path)
     parser.add_argument('--effective-pom', type=Path)
     parser.add_argument('--tagged', action='store_true', help='Source check inside the release tag run')
+    parser.add_argument('--snapshot', action='store_true',
+                        help='Snapshot lane: check and collect an unsigned X.Y.Z-SNAPSHOT, never a release')
     args = parser.parse_args()
-    selection(args.mode, args.version, args.commit, args.signer, args.candidate_run,
-              args.state_run, args.bundle_hash, args.attempt)
+    if args.snapshot:
+        snapshot_selection(args.action, args.version, args.commit, args.signer, args.tagged)
+    else:
+        selection(args.mode, args.version, args.commit, args.signer, args.candidate_run,
+                  args.state_run, args.bundle_hash, args.attempt)
     if args.action == 'source':
-        source(args.path, args.version, args.commit, args.tagged)
+        if args.snapshot:
+            source(args.path, args.version.removesuffix('-SNAPSHOT'), args.commit)
+        else:
+            source(args.path, args.version, args.commit, args.tagged)
     elif args.action == 'provenance':
         if not args.output or not args.effective_pom or not re.fullmatch(r'[a-f0-9]{40}', args.workflow_head):
             parser.error('Provenance requires output, effective POM and exact workflow head')

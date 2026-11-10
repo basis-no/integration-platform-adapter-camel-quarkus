@@ -389,11 +389,56 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
 
 ## Snapshot lane
 
-Snapshot publication stays suspended: `publish-snapshot.yml` refuses to run.
-A snapshot would need a signed upload for every change, which the offline,
-human-gated signer deliberately does not provide. Acceptance uses locally built
-artifacts instead; see [Releasing](releasing.md#acceptance-with-locally-built-artifacts).
-Previously published snapshots are unchanged and expire under Sonatype policy.
+`publish-snapshot.yml` publishes a reviewed `X.Y.Z-SNAPSHOT` to Central's
+snapshot repository, so that another environment can test it before the final;
+see [Releasing](releasing.md#testing-a-published-snapshot) for how to run it. It
+starts only by `workflow_dispatch`, from the head of `main` or `release/0.3`,
+with that head commit as `source_commit`, and it has the same separation as the
+protected-tag release:
+
+| Job | Environment | Credentials | Runs |
+| --- | --- | --- | --- |
+| `build` | none | read-only token | project code: the Maven build and tests |
+| `attest` | none | OIDC token for build provenance | no project code |
+| `upload` | `snapshot` | snapshot Central token | release tools at `TRUSTED_TOOLING_SHA`: `snapshot-upload.py` |
+
+1. **`build`** checks that `source_commit` is the dispatched branch head, that
+   the branch is `main` or `release/0.3`, that the clean POM is at
+   `X.Y.Z-SNAPSHOT` and that `vX.Y.Z` is not tagged. It builds and tests the
+   unsigned jar, sources, javadoc and POM without a version change and retains
+   them with their provenance as `unsigned-snapshot-candidate-X.Y.Z-SNAPSHOT`.
+2. **`attest`** downloads the candidate without checking out the repository,
+   records the SHA-256 of its seven files and creates GitHub build provenance.
+3. **`upload`** waits for a required reviewer of `snapshot`. It first fails
+   closed unless the environment has required reviewers with self-review
+   prevented, no administrator bypass and a deployment rule for the branches
+   `main` and `release/0.3` only; the commit and `TRUSTED_TOOLING_SHA` are on a
+   reviewed branch; this is the run's first attempt and the run has no snapshot
+   state. It checks out only `.github/scripts` at `TRUSTED_TOOLING_SHA`, verifies
+   the candidate against the checksums, the unsigned receipt and the build
+   provenance, and runs `snapshot-upload.py`. That script records its state
+   before the first request, uploads the four payloads once under one
+   timestamped snapshot version with their MD5 and SHA-1 checksums and the
+   version and artifact `maven-metadata.xml`, as a Maven deploy would, reads
+   every payload back and compares its SHA-256. The state is retained as
+   `central-snapshot-X.Y.Z-SNAPSHOT`, also after a failure.
+
+The lane never signs (Central does not require signatures on snapshots) and
+never calls the publisher API that releases use. A re-run of `upload` refuses;
+dispatch a new run, which uploads a new timestamped build. Repository settings
+the lane needs, in addition to those of the release path:
+
+- snapshot publishing enabled for the namespace in the Central portal;
+- the environment `snapshot` with the same two required reviewers and "prevent
+  self-review" as `release`, no administrator bypass, and a deployment rule for
+  the branches `main` and `release/0.3`;
+- its secrets `SNAPSHOT_CENTRAL_TOKEN_USERNAME` and
+  `SNAPSHOT_CENTRAL_TOKEN_PASSWORD`, and its variable `TRUSTED_TOOLING_SHA`.
+
+A Central portal token can write releases as well as snapshots for the whole
+namespace, so the snapshot token gets the same custody as the release token: it
+exists only as a secret of the environment `snapshot`, and the job refuses to
+run when the environment is less protected than above.
 
 ## Evidence reuse and timing
 
