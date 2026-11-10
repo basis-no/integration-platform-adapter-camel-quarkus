@@ -37,9 +37,9 @@ import java.util.concurrent.ConcurrentHashMap;
  * {@code http}, {@code https}, {@code netty-http} and {@code vertx-http} endpoint the context
  * registers, so the producer leaves them out of the request whichever EIP sends. The exchange
  * keeps the headers. An endpoint whose filter is unset, which then sends no headers, is left
- * alone. Not covered: an endpoint Camel does not register, such as one a {@code toD} with
- * {@code cacheSize=-1} creates for a single send, and a filter replaced after the endpoint was
- * registered, as the {@code rest:} producer does for the endpoint it sends through.
+ * alone. A {@code rest:} send is covered too, through the filter its producer puts on the
+ * endpoint it sends through (see {@link RestSendHeaders}). Not covered: an endpoint Camel does
+ * not register, such as one a {@code toD} with {@code cacheSize=-1} creates for a single send.
  */
 public final class ForwardedCredentialHeaders {
     private static final Logger LOG = LoggerFactory.getLogger(ForwardedCredentialHeaders.class);
@@ -48,7 +48,7 @@ public final class ForwardedCredentialHeaders {
     // Camel's Kafka headers under both names: an application's own filter may let Camel*
     // headers through.
     private static final List<String> KAFKA_PREFIXES = List.of("kafka.", "CamelKafka");
-    private static final String HEADER_FILTER_STRATEGY = "headerFilterStrategy";
+    private static final String HEADER_FILTER_STRATEGY = RestSendHeaders.HEADER_FILTER_STRATEGY;
     private static final Set<String> WARNED = ConcurrentHashMap.newKeySet();
     private static final Map<CamelContext, FilterHttpEndpoints> INSTALLED = new WeakHashMap<>();
 
@@ -161,7 +161,16 @@ public final class ForwardedCredentialHeaders {
             while (endpoint instanceof InterceptSendToEndpoint intercepted && intercepted.getOriginalEndpoint() != endpoint) {
                 endpoint = intercepted.getOriginalEndpoint();
             }
-            if (endpoint == null || !hasScheme(endpoint.getEndpointUri(), HTTP_COMPONENTS)) {
+            if (endpoint == null) {
+                return registered;
+            }
+            if (RestSendHeaders.isRestEndpoint(endpoint)) {
+                RestSendHeaders.seed(endpoint);
+                return registered;
+            }
+            // The endpoint a rest: producer factory creates carries that send's filter.
+            RestSendHeaders.bindIfRestFilter(endpoint);
+            if (!hasScheme(endpoint.getEndpointUri(), HTTP_COMPONENTS)) {
                 return registered;
             }
             PropertyConfigurer configurer = endpoint.getComponent() == null ? null
@@ -172,13 +181,13 @@ public final class ForwardedCredentialHeaders {
                 // The component's own option: camel-http's endpoint, vertx-http's configuration,
                 // netty-http's endpoint and binding.
                 Object filter = getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true);
-                if (filter == null || filter instanceof RecordHeaderFilter) {
+                if (filter == null || filter instanceof RecordFilter) {
                     return registered;
                 }
                 if (!(filter instanceof HeaderFilterStrategy strategy)
                         || !configurer.configure(endpoint.getCamelContext(), endpoint, HEADER_FILTER_STRATEGY,
                                 new RecordHeaderFilter(strategy), true)
-                        || !(getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true) instanceof RecordHeaderFilter)) {
+                        || !(getter.getOptionValue(endpoint, HEADER_FILTER_STRATEGY, true) instanceof RecordFilter)) {
                     throw unfiltered(endpoint);
                 }
                 return registered;
@@ -186,11 +195,11 @@ public final class ForwardedCredentialHeaders {
             // A configurer that does not know the option, for example of a subclassed component.
             if (endpoint instanceof HeaderFilterStrategyAware aware) {
                 HeaderFilterStrategy filter = aware.getHeaderFilterStrategy();
-                if (filter == null || filter instanceof RecordHeaderFilter) {
+                if (filter == null || filter instanceof RecordFilter) {
                     return registered;
                 }
                 aware.setHeaderFilterStrategy(new RecordHeaderFilter(filter));
-                if (aware.getHeaderFilterStrategy() instanceof RecordHeaderFilter) {
+                if (aware.getHeaderFilterStrategy() instanceof RecordFilter) {
                     return registered;
                 }
             }
@@ -204,19 +213,35 @@ public final class ForwardedCredentialHeaders {
         }
     }
 
+    /** A filter that leaves out the consumed record's headers. */
+    interface RecordFilter {
+    }
+
+    static HeaderFilterStrategy recordFilter(HeaderFilterStrategy own) {
+        return new RecordHeaderFilter(own);
+    }
+
+    /**
+     * Whether a header is Camel's Kafka consumer header or a consumed record's credential, which
+     * an HTTP request must leave out.
+     */
+    static boolean isRecordHeader(String name, Object value, Exchange exchange) {
+        if (name != null && KAFKA_PREFIXES.stream().anyMatch(prefix -> name.regionMatches(true, 0, prefix, 0, prefix.length()))) {
+            return true;
+        }
+        if (name != null && PlatformRouteConfiguration.isCredentialHeader(name) && (value instanceof byte[]
+                || exchange != null && exchange.getMessage().getHeader(name) instanceof byte[])) {
+            warn(name, "a send in route " + (exchange == null ? null : exchange.getFromRouteId()));
+            return true;
+        }
+        return false;
+    }
+
     /** The endpoint's own filter, which also leaves out the consumed record's headers. */
-    private record RecordHeaderFilter(HeaderFilterStrategy filter) implements HeaderFilterStrategy {
+    private record RecordHeaderFilter(HeaderFilterStrategy filter) implements HeaderFilterStrategy, RecordFilter {
         @Override
         public boolean applyFilterToCamelHeaders(String name, Object value, Exchange exchange) {
-            if (name != null && KAFKA_PREFIXES.stream().anyMatch(prefix -> name.regionMatches(true, 0, prefix, 0, prefix.length()))) {
-                return true;
-            }
-            if (name != null && PlatformRouteConfiguration.isCredentialHeader(name) && (value instanceof byte[]
-                    || exchange != null && exchange.getMessage().getHeader(name) instanceof byte[])) {
-                warn(name, "a send in route " + (exchange == null ? null : exchange.getFromRouteId()));
-                return true;
-            }
-            return filter.applyFilterToCamelHeaders(name, value, exchange);
+            return isRecordHeader(name, value, exchange) || filter.applyFilterToCamelHeaders(name, value, exchange);
         }
 
         @Override

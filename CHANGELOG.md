@@ -2,6 +2,23 @@
 
 ## Unreleased
 
+- A `rest:` send through `http`, `vertx-http` or `netty-http` leaves a consumed
+  Kafka record's credential headers and Camel's `kafka.*` / `CamelKafka*`
+  consumer headers out of its request, whichever EIP sends, as other HTTP sends
+  do. Its producer replaces the header filter of the HTTP endpoint it sends
+  through, so the adapter now sets that producer's `headerFilterStrategy`
+  parameter when the `rest:` endpoint is registered: the component's rest
+  filter, or the `rest` component's own filter if one is set, together with the
+  record's headers. The path and query bind from the exchange's headers as
+  before. A `rest:` send through another producer component fails when its
+  producer is created (or at its first request), instead of sending the
+  headers. See
+  [Kafka Consumers](docs/ingress-and-scaling.md#kafka-consumers).
+  Upgrade: a receiver behind a `rest:` send that got a caller's credential
+  forwarded from the record no longer gets it and may answer 401; set the
+  header in the route as text to forward it deliberately. A `rest:` send
+  through a producer component other than these three no longer starts.
+
 - A Kafka boundary's consumer resets to `earliest`, and a Kafka boundary route
   whose consumer uses any other `auto.offset.reset` refuses to start, naming
   the route and its endpoint. Before, the adapter left Camel's default `latest`
@@ -182,12 +199,10 @@
   value. An HTTP endpoint whose header filter the adapter cannot extend fails
   when it is created, so its route does not start. Not covered: an endpoint
   that Camel creates for a single send without registering it, such as one
-  from a `toD` with `cacheSize=-1`; an endpoint whose header filter is replaced
-  after the endpoint was registered; and a `rest:` send, whose producer
-  replaces the filter of the HTTP endpoint it sends through
-  ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53)).
-  Remove `kafka.HEADERS`, `CamelKafkaHeaders` and the record's credential
-  headers before such a send.
+  from a `toD` with `cacheSize=-1`; and an endpoint whose header filter is
+  replaced after the endpoint was registered. Remove `kafka.HEADERS`,
+  `CamelKafkaHeaders` and the record's credential headers before such a send.
+  A `rest:` send is covered too; see the entry below.
   Upgrade: a receiver that got a caller's credential forwarded from the
   record, for example through `vertx-http` or an `enrich`, no longer gets it
   and may answer 401. To forward a credential deliberately, set the header in
