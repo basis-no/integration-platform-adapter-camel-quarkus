@@ -35,9 +35,9 @@ authorize publication. See [Releasing](docs/releasing.md).
 
 ## 0.3 maintenance line
 
-The 0.3 line continues as a maintained series: the strict series, with one
-input topic per integration, which gets further 0.3.x patch releases, also
-after 0.4.0. 0.4 is the flexible series. `0.3.6` is the current maintenance release. It retains the 0.3.4 replay and
+The 0.3 line continues as a maintained series, with its current scope (one
+input topic per integration); further 0.3.x patch releases may follow, also
+after 0.4.0. `0.3.6` is the current maintenance release. It retains the 0.3.4 replay and
 failure-ownership safeguards and the 0.3.5 inspection options. See
 [0.3.4 qualification](docs/maintenance-qualification.md) and
 [0.3.5 inspection qualification](docs/delivery-audit.md#qualification-and-rollout)
@@ -274,9 +274,10 @@ Known Message Store outage limitation in 0.3.x
 [#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66)):
 while the Message Store cannot be written, a Kafka record's outcome cannot be
 recorded, so its offset is not committed and the consumer reads the record again
-at once, without waiting, for as long as the outage lasts, and runs the route,
-with its redeliveries, on every read. The partition waits; no record is
-committed early.
+at once, without waiting, for as long as the outage lasts. Every read runs the
+route with its redeliveries (by default 3, after 1, 2 and 4 seconds) and logs
+the failure at ERROR with its stack trace, so the log grows quickly. The
+partition waits; no record is committed early.
 
 - With `basis.message-store.step-outcome-store=postgres`, a tracked send
   checks the store before it runs, so while the store is down it fails before it
@@ -284,10 +285,17 @@ committed early.
   store went down, whose `DELIVERED` outcome could not be recorded, can run once
   more after the store is back. With the `noop` step store, every read runs the
   route's sends again.
-- A message that fails while the store is down is parked in the DLQ on each
-  read, before its outcome write fails again, so the DLQ can hold several copies
-  of it, with the same `x-bip-message-id`. After the store is back, its last read
-  may complete or park it once more.
+- With the `postgres` step store, a message that fails at a tracked send's
+  store check is not parked: the adapter logs at ERROR that it was not parked
+  because a step outcome was not checked or recorded, and the record is read
+  again.
+- With the `noop` step store, or when the route fails before its first tracked
+  send (in a processor, a validation or an internal endpoint), a failing message
+  is parked in the DLQ on each read, before its outcome write fails again, so
+  the DLQ can hold several copies of it. Copies of a record that carries
+  `x-bip-message-id` have that id; a record without it gets a new id on every
+  read, so its copies have different ids. After the store is back, its last
+  read may complete or park it once more.
 
 What to do:
 
@@ -301,9 +309,9 @@ What to do:
   a rebalance, the consumer would start after a record that was never
   committed. The adapter does not set or check this in 0.3.x.
 - After an outage, before resending anything from the DLQ, check it for copies
-  of the same message (the same `x-bip-message-id`), check the message's latest
-  status in the Message Store, and resend each message once, only if it did not
-  complete.
+  of the same message (the same `x-bip-message-id`; for records that arrived
+  without one, the same payload), check the message's latest status in the
+  Message Store, and resend each message once, only if it did not complete.
 
 A pause while the store is down is planned for 0.4, not released; it is not
 part of 0.3.x.

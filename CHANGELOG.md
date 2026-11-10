@@ -4,13 +4,14 @@
 
 Documentation only; no code, schema or configuration change.
 
-- The 0.3 line continues as a maintained series: the strict series, with one
-  input topic per integration, which gets further 0.3.x patch releases, also
+- The 0.3 line continues as a maintained series, with its current scope (one
+  input topic per integration); further 0.3.x patch releases may follow, also
   after 0.4.0. This replaces "the last 0.3 release" in the 0.3.6 notes.
 - Known limitation, documented: during a Message Store outage the consumer
   reads an uncommitted Kafka record again at once and runs the route on every
   read, and a message that fails meanwhile can be parked in the DLQ more than
-  once. The README gives what to do: scale the integration down during a long
+  once (with the `noop` step store, or when it fails before its first tracked
+  send). The README gives what to do: scale the integration down during a long
   outage, set `autoOffsetReset=earliest` on the Kafka input, and check the DLQ
   for copies of a message by `x-bip-message-id` before resending it. See
   [Retry and DLQ](README.md#retry-and-dlq).
@@ -25,7 +26,8 @@ Quarkus 3.33.4 (Camel 4.18.4). This is the last 0.3 release; later changes come
 with 0.4.
 
 > Note, added after the release: the 0.3 line continues as a maintained series,
-> and later 0.3.x patch releases may follow. See [Unreleased](#unreleased).
+> and later 0.3.x patch releases may follow. See
+> [0.3 maintenance line](README.md#03-maintenance-line).
 
 ### Fixed
 
