@@ -38,7 +38,12 @@ Common fail-fast causes include:
 - store schema version mismatch in `bip_contract`;
 - a Message Store without a table or column this adapter writes, for example
   one provisioned for an earlier adapter version. The error names the missing
-  columns and the statements that add them.
+  columns and the statements that add them;
+- a Kafka boundary route that holds records in memory after its input
+  completes: a `resequence`, or an `aggregate` without a persistent
+  `aggregationRepository`, in the route or in a `direct:` route it sends to.
+  A restart would lose the held records, whose offsets are already committed.
+  See [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
 
 Treat these as configuration errors. Do not bypass them in business routes.
 

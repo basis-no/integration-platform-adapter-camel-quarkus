@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- A Kafka boundary route that holds records in memory after its input
+  completes refuses to start, naming the route and node: Camel's `resequence`
+  (batch or stream), or an `aggregate` on its default in-memory repository, in
+  the route or in a `direct:` route it sends to with a fixed URI. The adapter
+  commits a completed input, so a restart before the held record was released
+  lost it: it was neither delivered nor read again (shown by
+  `InMemoryHoldRestartTest`). Upgrade: give such an `aggregate` a persistent
+  `aggregationRepository`. A `resequence` on a Kafka boundary has no
+  replacement yet; a durable resequencer is planned (#36). See
+  [Holding Records in Memory](docs/message-lifecycle.md#holding-records-in-memory).
+
 - A replay request whose `redoSteps` names a step is refused with
   `basis.message-store.step-outcome-store=noop`, the default, with `409
   Conflict` and an error that says to resend without `redoSteps`, before the
