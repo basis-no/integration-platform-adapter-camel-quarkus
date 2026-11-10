@@ -95,8 +95,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration(NO_RETRY)
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
-                        .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(0, 0, null)))
-                        .onRedelivery(this::timedRedelivery)
+                        .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(0));
 
         ingressNormalizationConfiguration();

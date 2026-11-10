@@ -2,21 +2,24 @@
 
 ## Unreleased
 
-- The HTTP client inside Camel's `http` and `https` components no longer
-  repeats a request by itself: the adapter sets `automaticRetriesDisabled` on
-  both unless the application sets
-  `camel.component.http.automatic-retries-disabled` (or the `https` one). Before,
+- The HTTP client inside Camel's `http` component no longer repeats a request
+  by itself: the adapter sets `automaticRetriesDisabled` on every instance of
+  it, under any name (`http`, `https` or the application's own), unless the
+  application sets `camel.component.<name>.automatic-retries-disabled`. Before,
   the client repeated a request answered with 503 or 429 once, POST included,
   inside one Camel attempt and outside the step ledger, and waited for any
   `Retry-After` with no upper limit on the Kafka consumer thread. Every repeat
   is now a recorded Camel redelivery, sent with the step's `Idempotency-Key`,
   so `auto_redelivery_count` matches the requests a receiver got. After a 429
-  or 503, the `dlq` mode's route configurations time the next redelivery by the
-  receiver's `Retry-After` (seconds or an HTTP date) when it fits the budget:
-  for a Kafka input, its poll interval less the time the exchange has run and a
-  20 % margin; otherwise the configuration's maximum delay. A longer wait is not
-  used: the configured delays apply and the message is parked when they are
-  exhausted, instead of Kafka removing the consumer from its group. See
+  or 503 from `http`, `https` or `vertx-http`, the `dlq` mode's default and
+  `ip-slow-backend` configurations wait for the receiver's `Retry-After`
+  (seconds or an HTTP date) as a minimum: the longer of it and the configured
+  delay, so `0` or a past date changes nothing. The wait must fit the budget:
+  for a Kafka input, its poll interval (`additionalProperties` included) less
+  the time the exchange has run and a 20 % margin; otherwise the
+  configuration's maximum delay. A longer wait is not used: the configured
+  delays apply and the message is parked when they are exhausted, instead of
+  Kafka removing the consumer from its group. See
   [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
   Upgrade: a receiver that answered 503 or 429 once and then succeeded is now
   retried after the configured delay or its `Retry-After`, and the attempt

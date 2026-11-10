@@ -45,7 +45,7 @@ class HttpRetryAfterTest {
         try (var context = new DefaultCamelContext()) {
             Exchange exchange = failed(context, status, Map.of("retry-after", "7"), 1);
             defaultProfile.process(exchange);
-            assertEquals(7_000L, exchange.getMessage().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
+            assertEquals(7_000L, exchange.getIn().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
         }
     }
 
@@ -54,16 +54,53 @@ class HttpRetryAfterTest {
         try (var context = new DefaultCamelContext()) {
             Exchange serverError = failed(context, 500, Map.of("Retry-After", "7"), 1);
             defaultProfile.process(serverError);
-            assertNull(serverError.getMessage().getHeader(Exchange.REDELIVERY_DELAY));
+            assertNull(serverError.getIn().getHeader(Exchange.REDELIVERY_DELAY));
 
             Exchange withoutHeader = failed(context, 503, Map.of(), 1);
             defaultProfile.process(withoutHeader);
-            assertNull(withoutHeader.getMessage().getHeader(Exchange.REDELIVERY_DELAY));
+            assertNull(withoutHeader.getIn().getHeader(Exchange.REDELIVERY_DELAY));
 
             Exchange exhausted = failed(context, 503, Map.of("Retry-After", "7"), 4);
             defaultProfile.process(exhausted);
-            assertNull(exhausted.getMessage().getHeader(Exchange.REDELIVERY_DELAY),
+            assertNull(exhausted.getIn().getHeader(Exchange.REDELIVERY_DELAY),
                     "No redelivery follows the third, so nothing is timed");
+        }
+    }
+
+    @Test
+    void retryAfterIsAMinimumSoZeroOrAPastDateKeepsTheConfiguredDelay() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            String past = DateTimeFormatter.RFC_1123_DATE_TIME.format(
+                    clock.instant().minusSeconds(30).atZone(ZoneOffset.UTC));
+            for (String value : new String[] {"0", past}) {
+                Exchange exchange = failed(context, 503, Map.of("Retry-After", value), 2);
+                defaultProfile.process(exchange);
+                assertNull(exchange.getIn().getHeader(Exchange.REDELIVERY_DELAY),
+                        "Retry-After " + value + " must not spend the redeliveries at once");
+            }
+            Exchange shorter = failed(context, 429, Map.of("Retry-After", "1"), 3);
+            defaultProfile.process(shorter);
+            assertNull(shorter.getIn().getHeader(Exchange.REDELIVERY_DELAY), "The configured 4 s is longer");
+        }
+    }
+
+    @Test
+    void anApplicationsOwnMaximumRedeliveriesCounts() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            // An onException with maximumRedeliveries(5): Camel sets the header from it.
+            // The fifth redelivery's configured delay is 16 s, so a 30 s Retry-After is used.
+            Exchange more = failed(context, 503, Map.of("Retry-After", "30"), 5);
+            more.getIn().setHeader(Exchange.REDELIVERY_MAX_COUNTER, 5);
+            defaultProfile.process(more);
+            assertEquals(30_000L, more.getIn().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
+
+            // After a timed wait, no redelivery follows: no delay is left for the failure handler.
+            Exchange last = failed(context, 503, Map.of("Retry-After", "9"), 1);
+            defaultProfile.process(last);
+            assertEquals(9_000L, last.getIn().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
+            last.getIn().setHeader(Exchange.REDELIVERY_COUNTER, 4);
+            defaultProfile.process(last);
+            assertNull(last.getIn().getHeader(Exchange.REDELIVERY_DELAY));
         }
     }
 
@@ -73,7 +110,7 @@ class HttpRetryAfterTest {
             // Without a Kafka input, the budget is the configured maximum delay: Camel's 60 s.
             Exchange exchange = failed(context, 503, Map.of("Retry-After", "61"), 1);
             defaultProfile.process(exchange);
-            assertNull(exchange.getMessage().getHeader(Exchange.REDELIVERY_DELAY));
+            assertNull(exchange.getIn().getHeader(Exchange.REDELIVERY_DELAY));
         }
     }
 
@@ -91,6 +128,14 @@ class HttpRetryAfterTest {
                     Clock.fixed(Instant.ofEpochMilli(created + 30_000), ZoneOffset.UTC));
             assertEquals(50_000L, thirtySecondsLater.budgetMillis(fresh));
 
+            Exchange overridden = failed(context, 503, Map.of(), 1);
+            overridden.getExchangeExtension().setFromEndpoint(context.getEndpoint(
+                    "kafka:orders?maxPollIntervalMs=100000&additionalProperties.max.poll.interval.ms=50000"));
+            var atOverriddenCreation = new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null),
+                    Clock.fixed(Instant.ofEpochMilli(overridden.getClock().getCreated()), ZoneOffset.UTC));
+            assertEquals(40_000L, atOverriddenCreation.budgetMillis(overridden),
+                    "Kafka applies additionalProperties last");
+
             Exchange unset = failed(context, 503, Map.of(), 1);
             unset.getExchangeExtension().setFromEndpoint(context.getEndpoint("kafka:orders"));
             var atUnsetCreation = new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null),
@@ -102,7 +147,7 @@ class HttpRetryAfterTest {
             var timing = new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null),
                     Clock.fixed(Instant.ofEpochMilli(fits.getClock().getCreated()), ZoneOffset.UTC));
             timing.process(fits);
-            assertEquals(200_000L, fits.getMessage().getHeader(Exchange.REDELIVERY_DELAY, Long.class),
+            assertEquals(200_000L, fits.getIn().getHeader(Exchange.REDELIVERY_DELAY, Long.class),
                     "A Kafka input may wait longer than the configured maximum, within its poll budget");
 
             Exchange tooLong = failed(context, 503, Map.of("Retry-After", "241"), 1);
@@ -110,7 +155,7 @@ class HttpRetryAfterTest {
             new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null),
                     Clock.fixed(Instant.ofEpochMilli(tooLong.getClock().getCreated()), ZoneOffset.UTC))
                     .process(tooLong);
-            assertNull(tooLong.getMessage().getHeader(Exchange.REDELIVERY_DELAY));
+            assertNull(tooLong.getIn().getHeader(Exchange.REDELIVERY_DELAY));
         }
     }
 
@@ -119,17 +164,17 @@ class HttpRetryAfterTest {
         try (var context = new DefaultCamelContext()) {
             Exchange exchange = failed(context, 503, Map.of("Retry-After", "30"), 1);
             defaultProfile.process(exchange);
-            assertEquals(30_000L, exchange.getMessage().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
+            assertEquals(30_000L, exchange.getIn().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
 
             HttpRetryAfter.afterTiming(exchange);
-            assertNull(exchange.getMessage().getHeader(Exchange.REDELIVERY_DELAY),
+            assertNull(exchange.getIn().getHeader(Exchange.REDELIVERY_DELAY),
                     "Removed before the redelivery runs");
 
             // The second redelivery after a 500: Camel's back-off would grow from 30 s.
             exchange.setException(new IllegalStateException("receiver failed"));
-            exchange.getMessage().setHeader(Exchange.REDELIVERY_COUNTER, 2);
+            exchange.getIn().setHeader(Exchange.REDELIVERY_COUNTER, 2);
             defaultProfile.process(exchange);
-            assertEquals(2_000L, exchange.getMessage().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
+            assertEquals(2_000L, exchange.getIn().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
         }
     }
 
@@ -153,7 +198,7 @@ class HttpRetryAfterTest {
         Exchange exchange = new DefaultExchange(context);
         exchange.setException(new HttpOperationFailedException(
                 "http://receiver/invoices", status, "status " + status, null, headers, ""));
-        exchange.getMessage().setHeader(Exchange.REDELIVERY_COUNTER, next);
+        exchange.getIn().setHeader(Exchange.REDELIVERY_COUNTER, next);
         return exchange;
     }
 }

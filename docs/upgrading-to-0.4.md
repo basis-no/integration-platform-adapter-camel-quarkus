@@ -181,18 +181,20 @@ The changelog's Unreleased section has the details; in short:
   poll, so for a route on `ip-slow-backend` set `maxPollRecords=1` on its Kafka
   input or raise `maxPollIntervalMs`. See
   [Automatic Retry](retry-dlq-replay.md#automatic-retry).
-- **The HTTP client's own retries are off.** On the `http` and `https`
-  components the adapter sets `automaticRetriesDisabled`, so the client no
-  longer repeats a request answered with 503 or 429 by itself, POST included,
-  outside the step ledger; every repeat is a recorded Camel redelivery. After a
-  429 or 503 the next redelivery waits for the receiver's `Retry-After` when it
+- **The HTTP client's own retries are off.** On every instance of Camel's
+  `http` component (`http`, `https` or the application's own name) the adapter
+  sets `automaticRetriesDisabled`, so the client no longer repeats a request
+  answered with 503 or 429 by itself, POST included, outside the step ledger;
+  every repeat is a recorded Camel redelivery. After a 429 or 503, in the
+  default and `ip-slow-backend` configurations, the next redelivery waits for
+  the longer of the receiver's `Retry-After` and the configured delay when it
   fits the budget (for a Kafka input, its poll interval less the time the
   exchange has run and a 20 % margin; otherwise the configuration's maximum
   delay); a longer `Retry-After` gets the configured delays. A receiver that
   answered 503 once and then succeeded now records one more redelivery. To
   keep the client's own retries, set
-  `camel.component.http.automatic-retries-disabled=false` (and the `https`
-  one); an application that builds its own `HttpComponent` bean with them on
+  `camel.component.<name>.automatic-retries-disabled=false` for the component's
+  name; an application that builds its own `HttpComponent` bean with them on
   must set it too, or the adapter turns them off. See
   [Automatic Retry](retry-dlq-replay.md#automatic-retry).
 - **Spaced re-reads of a record whose outcome is not durable.** 0.3.6 read

@@ -20,15 +20,19 @@ import java.util.Map;
  *
  * <p>Camel runs this {@code onExceptionOccurred} processor after a failed attempt and before it
  * decides on and times the next redelivery, which takes the per-exchange
- * {@link Exchange#REDELIVERY_DELAY} header in place of the configured delay. A wait that does not
- * fit the budget is not used: the configured delay applies, and the attempt goes on through the
- * normal retries and, when they are exhausted, to the DLQ. Once a wait has been used, every later
- * redelivery of the exchange gets its configured delay explicitly, because Camel's back-off would
- * otherwise grow from the {@code Retry-After} wait.
+ * {@link Exchange#REDELIVERY_DELAY} header in place of the configured delay. {@code Retry-After} is
+ * a minimum: the wait is the longer of it and the configured delay, so a {@code Retry-After} of 0
+ * or a date in the past (a skewed clock) does not spend the redeliveries at once. A wait that does
+ * not fit the budget is not used: the configured delay applies, and the attempt goes on through
+ * the normal retries and, when they are exhausted, to the DLQ. Once a wait has been used, every
+ * later redelivery of the exchange gets its configured delay explicitly, because Camel's back-off
+ * would otherwise grow from the {@code Retry-After} wait.
+ *
+ * <p>The number of redeliveries is Camel's own for the exchange ({@link
+ * Exchange#REDELIVERY_MAX_COUNTER}), so an application's {@code onException} with its own maximum
+ * counts; its own delays do not, and the route configuration's apply instead.
  */
 final class HttpRetryAfter implements Processor {
-    /** Kafka's default {@code max.poll.interval.ms}. */
-    static final long DEFAULT_POLL_INTERVAL_MS = 300_000;
     /** The share of the poll interval kept for the rest of the attempt. */
     static final double POLL_MARGIN = 0.2;
     private static final String TIMED = "basis.messageStore.retryAfterTimed";
@@ -67,33 +71,48 @@ final class HttpRetryAfter implements Processor {
 
     @Override
     public void process(Exchange exchange) {
-        Integer next = exchange.getMessage().getHeader(Exchange.REDELIVERY_COUNTER, Integer.class);
-        if (next == null || next < 1 || next > policy.getMaximumRedeliveries()) {
-            // No redelivery follows: nothing to time.
+        Integer next = exchange.getIn().getHeader(Exchange.REDELIVERY_COUNTER, Integer.class);
+        if (next == null || next < 1 || next > maximumRedeliveries(exchange)) {
+            // No redelivery follows: nothing to time, and no delay left for the failure handler.
+            if (Boolean.TRUE.equals(exchange.getProperty(TIMED, Boolean.class))) {
+                exchange.getIn().removeHeader(Exchange.REDELIVERY_DELAY);
+            }
             return;
         }
         Throwable failure = exchange.getException() != null
                 ? exchange.getException()
                 : exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
-        Long wait = retryAfterMillis(failure);
-        if (wait != null && wait <= budgetMillis(exchange)) {
-            exchange.getMessage().setHeader(Exchange.REDELIVERY_DELAY, wait);
+        Long retryAfter = retryAfterMillis(failure);
+        long configured = configuredDelay(next);
+        if (retryAfter != null && retryAfter > configured && retryAfter <= budgetMillis(exchange)) {
+            exchange.getIn().setHeader(Exchange.REDELIVERY_DELAY, retryAfter);
             exchange.setProperty(TIMED, true);
         } else if (Boolean.TRUE.equals(exchange.getProperty(TIMED, Boolean.class))) {
-            exchange.getMessage().setHeader(Exchange.REDELIVERY_DELAY, configuredDelay(next));
+            exchange.getIn().setHeader(Exchange.REDELIVERY_DELAY, configured);
         }
     }
 
     /**
      * Removes the delay header once Camel has used it, before the redelivery runs, so that it
-     * cannot time another error handler's redelivery.
+     * cannot time another error handler's redelivery, such as a sub-route's.
      *
      * @param exchange the exchange about to be redelivered
      */
     static void afterTiming(Exchange exchange) {
         if (Boolean.TRUE.equals(exchange.getProperty(TIMED, Boolean.class))) {
-            exchange.getMessage().removeHeader(Exchange.REDELIVERY_DELAY);
+            exchange.getIn().removeHeader(Exchange.REDELIVERY_DELAY);
         }
+    }
+
+    /**
+     * Camel's maximum for this exchange: the header it sets from the effective redelivery policy,
+     * which is an application's {@code onException} one where that applies; without it (Camel sets
+     * none for 0), the route configuration's. A negative maximum redelivers without end.
+     */
+    private int maximumRedeliveries(Exchange exchange) {
+        Integer max = exchange.getIn().getHeader(Exchange.REDELIVERY_MAX_COUNTER, Integer.class);
+        int value = max != null ? max : policy.getMaximumRedeliveries();
+        return value < 0 ? Integer.MAX_VALUE : value;
     }
 
     /**
@@ -103,8 +122,7 @@ final class HttpRetryAfter implements Processor {
      */
     long budgetMillis(Exchange exchange) {
         if (exchange.getFromEndpoint() instanceof KafkaEndpoint kafka) {
-            Integer configured = kafka.getConfiguration().getMaxPollIntervalMs();
-            long interval = configured == null || configured <= 0 ? DEFAULT_POLL_INTERVAL_MS : configured;
+            long interval = KafkaPollInterval.of(kafka.getConfiguration());
             long elapsed = Math.max(0, clock.millis() - exchange.getClock().getCreated());
             return (long) (interval * (1 - POLL_MARGIN)) - elapsed;
         }
