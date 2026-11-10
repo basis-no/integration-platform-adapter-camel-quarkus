@@ -77,8 +77,11 @@ bridge, under the application's own Camel Quarkus BOM:
 
 With the bridge, readiness turns NotReady (HTTP 503) while a consumer is stopped
 or cannot reach the broker, and Ready again after it reconnects; an idle
-consumer is Ready. While the consumer reconnects, readiness can alternate before
-it settles. NotReady does not restart a pod, so alert on a sustained NotReady.
+consumer is Ready. While permissions are denied and the consumer reconnects,
+readiness can alternate before it settles on NotReady. NotReady does not
+restart a pod, so alert on a sustained NotReady. This behaviour was qualified
+on the 0.3 line with one application BOM; qualify it under your own BOM and
+route lifecycle.
 
 Set the readiness probe's timeout to 3–5 seconds: while the consumer
 reconnects, Camel's Kafka health check can take more than 2 seconds to answer.
