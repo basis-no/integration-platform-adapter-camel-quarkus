@@ -15,6 +15,11 @@ Documentation only; no code, schema or configuration change.
   outage, set `autoOffsetReset=earliest` on the Kafka input, and check the DLQ
   for copies of a message by `x-bip-message-id` before resending it. See
   [Retry and DLQ](README.md#retry-and-dlq).
+- Known limitation, documented: a `toD` whose target resolves to Kafka only at
+  runtime, such as `language:header:receiverUrl`, does not invalidate the
+  activity counters' publication coverage, so its records are not counted
+  while coverage is reported as supported. See
+  [Kafka activity metrics](docs/activity-metrics.md).
 
 ## 0.3.6 — 2026-11-04
 

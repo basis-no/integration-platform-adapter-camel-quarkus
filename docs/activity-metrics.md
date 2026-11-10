@@ -42,6 +42,15 @@ possible. Dynamic Kafka destinations, unknown dynamic schemes, ACK0 or disabled
 metadata make publication coverage unsupported for that process. A successful
 send without fresh assigned-offset metadata also invalidates coverage.
 
+Known limitation in 0.3.x: a `toD` whose component is chosen only when it
+sends, through a scheme that is known but not Kafka, such as
+`toD("language:header:receiverUrl")`, does not invalidate publication coverage.
+If it ends up publishing to Kafka, that record is not counted while coverage is
+still reported as supported. Do not select `record_published` for an
+application that has such a send. `main` treats such a send as a possible Kafka
+destination and reports publication coverage as unsupported
+([#64](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/pull/64)).
+
 The exporter snapshots existing metadata identities before each send and counts
 only new, unique records after producer completion. It preserves application
 headers and payloads. An attempted send, reused metadata or duplicate completion
