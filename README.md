@@ -35,7 +35,9 @@ authorize publication. See [Releasing](docs/releasing.md).
 
 ## 0.3 maintenance line
 
-`0.3.6` is the current maintenance release. It retains the 0.3.4 replay and
+The 0.3 line continues as a maintained series: the strict series, with one
+input topic per integration, which gets further 0.3.x patch releases, also
+after 0.4.0. 0.4 is the flexible series. `0.3.6` is the current maintenance release. It retains the 0.3.4 replay and
 failure-ownership safeguards and the 0.3.5 inspection options. See
 [0.3.4 qualification](docs/maintenance-qualification.md) and
 [0.3.5 inspection qualification](docs/delivery-audit.md#qualification-and-rollout)
@@ -266,6 +268,45 @@ the message. To recover such a message, either:
 The 0.4.0 development line, not yet released, records the send once per try.
 A message that 0.3.x parked keeps its `DELIVERED` step after the upgrade, so
 its resend needs the redo too.
+
+Known Message Store outage limitation in 0.3.x
+([#84](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/84),
+[#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66)):
+while the Message Store cannot be written, a Kafka record's outcome cannot be
+recorded, so its offset is not committed and the consumer reads the record again
+at once, without waiting, for as long as the outage lasts, and runs the route,
+with its redeliveries, on every read. The partition waits; no record is
+committed early.
+
+- With `basis.message-store.step-outcome-store=postgres`, a tracked send
+  checks the store before it runs, so while the store is down it fails before it
+  reaches its receiver and is not repeated. A send that ran just before the
+  store went down, whose `DELIVERED` outcome could not be recorded, can run once
+  more after the store is back. With the `noop` step store, every read runs the
+  route's sends again.
+- A message that fails while the store is down is parked in the DLQ on each
+  read, before its outcome write fails again, so the DLQ can hold several copies
+  of it, with the same `x-bip-message-id`. After the store is back, its last read
+  may complete or park it once more.
+
+What to do:
+
+- For an outage that lasts longer than a few minutes, scale the integration
+  down to zero replicas until the store accepts writes again, then scale it back
+  up. Its uncommitted records are read again from the committed offsets.
+- Set `autoOffsetReset=earliest` on the Kafka input, or
+  `camel.component.kafka.auto-offset-reset=earliest`, before relying on this.
+  A partition that has no committed offset yet starts where the consumer's
+  `auto.offset.reset` says, and Camel's default is `latest`: after a restart or
+  a rebalance, the consumer would start after a record that was never
+  committed. The adapter does not set or check this in 0.3.x.
+- After an outage, before resending anything from the DLQ, check it for copies
+  of the same message (the same `x-bip-message-id`), check the message's latest
+  status in the Message Store, and resend each message once, only if it did not
+  complete.
+
+A pause while the store is down is planned for 0.4, not released; it is not
+part of 0.3.x.
 
 Processing time still needs an application-specific budget: bounded receiver
 timeouts and retries, number of transactions per input, poll batch size and

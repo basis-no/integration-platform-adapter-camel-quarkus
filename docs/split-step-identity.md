@@ -144,7 +144,8 @@ Not detected, so these skips are logged at INFO only:
 - Moving a route to per-part ids changes its keys. A replay of a message
   recorded before the change sends its first part once more.
 
-0.4 gives each part and iteration its own step key; 0.3.6 is the last 0.3
-release. Changing the adapter's step identity is not part of 0.3.x. Existing
+0.4 gives each part and iteration its own step key. The 0.3 line continues as
+a maintained series, but changing the adapter's step identity is not part of
+0.3.x. Existing
 `bip_step_outcome` keys would no longer match, and replays of earlier messages
 would repeat their sends.
