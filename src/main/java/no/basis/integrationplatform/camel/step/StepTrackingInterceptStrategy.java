@@ -8,10 +8,10 @@ import org.apache.camel.model.ProcessorDefinition;
 import org.apache.camel.model.RecipientListDefinition;
 import org.apache.camel.model.RouteDefinition;
 import org.apache.camel.model.SplitDefinition;
-import org.apache.camel.util.URISupport;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import no.basis.integrationplatform.camel.EndpointUriMasking;
 import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
 import no.basis.integrationplatform.camel.HttpTimeoutOptions;
 import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
@@ -222,7 +222,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return;
         }
         String routeId = routeId(definition);
-        String endpoint = URISupport.sanitizeUri(endpointSend.endpointUri());
+        String endpoint = EndpointUriMasking.mask(endpointSend.endpointUri());
         if (!allowGeneratedStepIds) {
             throw new IllegalStateException("Endpoint send to " + endpoint + " in route " + routeId
                     + " has no explicit id; its step id would be the generated " + endpointSend.nodeId()
