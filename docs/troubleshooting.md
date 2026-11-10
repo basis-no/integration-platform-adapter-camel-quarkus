@@ -27,6 +27,12 @@
   cancelled. The record is read again and its outcome written again; check the
   synchronous standby and the database's replication status
   (`pg_stat_replication`).
+- An error that says a Message Store transaction "committed, but the commit
+  reported a warning" means the commit succeeded but PostgreSQL reported a
+  warning with it, which the adapter cannot tell apart from an unconfirmed
+  commit. The record is read again, and fails again, until the warning's source
+  is removed: for example a deferred constraint trigger with `RAISE WARNING`
+  on a `bip_*` table. The error names the warning.
 - Confirm `allow-manual-commit=true`, `auto-commit-enable=false` and
   `break-on-first-error=true`.
 - Check whether the guarded `no-commit` test profile is active.

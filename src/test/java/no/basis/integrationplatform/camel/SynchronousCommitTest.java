@@ -57,9 +57,8 @@ class SynchronousCommitTest {
     @BeforeEach
     void setUp() throws Exception {
         direct = dataSource();
+        requireStandby(false);
         try (Connection connection = direct.getConnection(); Statement statement = connection.createStatement()) {
-            statement.execute("alter system reset synchronous_standby_names");
-            statement.execute("select pg_reload_conf()");
             statement.execute("drop table if exists bip_message_attempt, bip_message_log, bip_step_outcome");
             for (String resource : List.of("bip_message_store.sql", "bip_step_outcome.sql")) {
                 for (String sql : resource(resource).split(";")) {
@@ -145,6 +144,32 @@ class SynchronousCommitTest {
     }
 
     @Test
+    void aLoginThatHidesWarningsStillGetsTheUnconfirmedCommitReported() throws Exception {
+        try (Connection admin = direct.getConnection(); Statement statement = admin.createStatement()) {
+            statement.execute("drop role if exists quiet_writer");
+            statement.execute("create role quiet_writer login password 'quiet'");
+            statement.execute("grant select, insert, update on bip_message_log, bip_message_attempt, bip_step_outcome "
+                    + "to quiet_writer");
+            statement.execute("alter role quiet_writer set client_min_messages = error");
+        }
+        PGSimpleDataSource quiet = new PGSimpleDataSource();
+        quiet.setURL(POSTGRES.getJdbcUrl());
+        quiet.setUser("quiet_writer");
+        quiet.setPassword("quiet");
+        requireStandby(true);
+        try (Connection physical = quiet.getConnection()) {
+            assertEquals("error", queryOn(physical, "show client_min_messages"));
+            DataSource pool = singleConnection(physical);
+            int pid = pid(physical);
+
+            StepOutcomeStoreException failure = assertInstanceOf(StepOutcomeStoreException.class,
+                    cancelWhileWaiting(pid, () -> new PostgresStepOutcomeStore(pool).recordDelivered(delivered())));
+            assertTrue(message(failure).contains("a synchronous standby did not confirm it"), message(failure));
+            assertEquals("error", queryOn(physical, "show client_min_messages"), "the setting held for the call only");
+        }
+    }
+
+    @Test
     void theNetworkTimeoutNotTheStatementTimeoutEndsACommitWaitingForTheStandby() throws Exception {
         requireStandby(true);
         MessageStoreTimeouts timeouts = MessageStoreTimeouts.of(Duration.ofSeconds(1), Duration.ofSeconds(1));
@@ -171,25 +196,20 @@ class SynchronousCommitTest {
     /** Runs the call, cancels its backend once it waits for the standby, and returns the call's failure. */
     private Throwable cancelWhileWaiting(int pid, Runnable call) throws Exception {
         CompletableFuture<Void> running = CompletableFuture.runAsync(call);
-        awaitSyncRepWait(pid);
-        try (Connection admin = direct.getConnection(); Statement statement = admin.createStatement()) {
-            statement.execute("select pg_cancel_backend(" + pid + ")");
+        if (!waitsForStandby(pid, running, Duration.ofSeconds(10))) {
+            throw new AssertionError("The commit did not wait for the synchronous standby");
         }
+        cancel(pid);
         ExecutionException failure = assertThrows(ExecutionException.class, () -> running.get(20, TimeUnit.SECONDS));
         return failure.getCause();
     }
 
-    private void awaitSyncRepWait(int pid) throws Exception {
-        Instant deadline = Instant.now().plusSeconds(10);
-        while (Instant.now().isBefore(deadline)) {
-            if ("SyncRep".equals(query("select wait_event from pg_stat_activity where pid = " + pid))) {
-                return;
-            }
-            Thread.sleep(50);
-        }
-        throw new AssertionError("The commit did not wait for the synchronous standby");
-    }
-
+    /**
+     * Sets or resets the required standby and proves that commits follow it. {@code show
+     * synchronous_standby_names} reflects the reload, not whether committing backends
+     * already wait, so a throwaway commit on its own connection is the probe: it must wait
+     * for the standby (and is then cancelled), or must complete.
+     */
     private void requireStandby(boolean required) throws Exception {
         try (Connection connection = direct.getConnection(); Statement statement = connection.createStatement()) {
             statement.execute(required
@@ -197,13 +217,53 @@ class SynchronousCommitTest {
                     : "alter system reset synchronous_standby_names");
             statement.execute("select pg_reload_conf()");
         }
-        Instant deadline = Instant.now().plusSeconds(10);
-        String expected = required ? "standby_that_never_connects" : "";
-        while (!expected.equals(query("show synchronous_standby_names"))) {
-            if (Instant.now().isAfter(deadline)) {
-                throw new AssertionError("synchronous_standby_names was not reloaded");
+        Instant deadline = Instant.now().plusSeconds(20);
+        while (Instant.now().isBefore(deadline)) {
+            try (Connection probe = direct.getConnection()) {
+                int pid = pid(probe);
+                // A commit waits for the standby only when its transaction wrote WAL; the catalog
+                // rows of a temporary table do, and need no table of their own.
+                CompletableFuture<Void> commit = CompletableFuture.runAsync(() -> {
+                    try (Statement statement = probe.createStatement()) {
+                        statement.execute("create temporary table sync_probe (id int)");
+                    } catch (SQLException e) {
+                        throw new IllegalStateException(e);
+                    }
+                });
+                boolean waited = waitsForStandby(pid, commit, Duration.ofSeconds(2));
+                if (waited) {
+                    cancel(pid);
+                }
+                commit.get(10, TimeUnit.SECONDS);
+                if (waited == required) {
+                    return;
+                }
             }
-            Thread.sleep(50);
+        }
+        throw new AssertionError("Commits did not " + (required ? "start" : "stop") + " waiting for the standby");
+    }
+
+    private boolean waitsForStandby(int pid, CompletableFuture<?> commit, Duration within) throws Exception {
+        Instant deadline = Instant.now().plus(within);
+        while (Instant.now().isBefore(deadline) && !commit.isDone()) {
+            if ("SyncRep".equals(query("select wait_event from pg_stat_activity where pid = " + pid))) {
+                return true;
+            }
+            Thread.sleep(20);
+        }
+        return false;
+    }
+
+    private void cancel(int pid) throws SQLException {
+        try (Connection admin = direct.getConnection(); Statement statement = admin.createStatement()) {
+            statement.execute("select pg_cancel_backend(" + pid + ")");
+        }
+    }
+
+    private static String queryOn(Connection connection, String sql) throws SQLException {
+        try (Statement statement = connection.createStatement(); ResultSet resultSet = statement.executeQuery(sql)) {
+            resultSet.next();
+            return resultSet.getString(1);
         }
     }
 

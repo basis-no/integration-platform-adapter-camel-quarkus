@@ -41,8 +41,13 @@ public final class MessageStoreTimeouts {
 
     private static final long NETWORK_MARGIN_SECONDS = 5;
     private static final Duration MINIMUM = Duration.ofMillis(1);
-    private static final String APPLY_SQL =
-            "select set_config('statement_timeout', ?, true), set_config('lock_timeout', ?, true)";
+    /**
+     * The timeouts, and {@code client_min_messages} at {@code warning}: a role, database or
+     * connection setting of {@code error} would suppress the warning of an unconfirmed
+     * synchronous commit, which then would count as confirmed.
+     */
+    private static final String APPLY_SQL = "select set_config('statement_timeout', ?, true), "
+            + "set_config('lock_timeout', ?, true), set_config('client_min_messages', 'warning', true)";
     private static final Executor DIRECT = Runnable::run;
 
     private final Duration statementTimeout;

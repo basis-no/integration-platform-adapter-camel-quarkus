@@ -22,7 +22,9 @@
   a warning ("committed locally, but might not have been replicated"), and the
   record is now read again and its outcome written again (the writes are
   idempotent) instead of being committed to Kafka. `statement_timeout` does not
-  end a synchronous commit's wait; the network timeout does.
+  end a synchronous commit's wait; the network timeout does. The call's own
+  transaction sets `client_min_messages` to `warning`, so that a role or
+  database setting of `error` cannot hide the warning.
   Upgrade: an outcome or step-outcome statement that legitimately needs longer
   fails now; raise the property. Set `loginTimeout` in the JDBC URL as well
   (see [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts)).
