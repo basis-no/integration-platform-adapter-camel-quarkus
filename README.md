@@ -87,6 +87,11 @@ Start with the [documentation index](docs/index.md).
   replay topic named by its row, and does not check that the route that
   recorded it still consumes that topic. The 0.3.x releases refuse both.
   Fixed for 0.4.0; see [Manual Replay](docs/retry-dlq-replay.md#manual-replay).
+- 0.3.x and 0.4.0-rc1 put no timeout on a Message Store call: an outcome or
+  step-outcome write that waits on a lock or on a database that stopped
+  answering holds the Kafka consumer thread without limit. Fixed for 0.4.0
+  with statement, lock and network timeouts; see
+  [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts).
 - 0.3.x and 0.4.0-rc1 let Camel warn at route start that the adapter's
   intercept strategy "does not return an AsyncProcessor instance", once per
   untracked processor such as `validate`. Harmless; fixed for 0.4.0. See
