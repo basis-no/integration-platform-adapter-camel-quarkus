@@ -42,6 +42,7 @@ import java.util.concurrent.TimeUnit;
 /** Records terminal lifecycle outcomes and owns the Kafka acknowledgement boundary. */
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
+    private static final String HTTP_NOT_REPLAYABLE = "a synchronous HTTP boundary is not replayable";
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
     private static final String ENVELOPE_PREFIX = "x-bip-";
     private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
@@ -456,6 +457,11 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         Object body = exchange.getMessage().getBody();
         if (isPayloadReference(exchange)) {
             resolvePayloadReference(exchange, body);
+            if (boundaryKind == MessageBoundaryKind.HTTP) {
+                // The route still reads the referenced object, but the row keeps no reference:
+                // nothing could replay it, and the object belongs to the caller.
+                metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+            }
             return;
         }
 
@@ -465,6 +471,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, sizeBytes);
         }
 
+        if (boundaryKind == MessageBoundaryKind.HTTP) {
+            // A replay cannot answer the original caller, so a synchronous HTTP boundary is
+            // never replayable, also when basis.message-store.replay.enabled is true.
+            metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+            keepForParking(exchange, body);
+            return;
+        }
         if (!payloadPolicy.replayEnabled()) {
             metadataOnly(exchange, "replay disabled by policy");
             keepForParking(exchange, body);
