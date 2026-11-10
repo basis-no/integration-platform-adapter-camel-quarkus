@@ -75,6 +75,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .deadLetterHandleNewException(false)
                         .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null)))
                         .onRedelivery(this::timedRedelivery)
+                        .onPrepareFailure(HttpRetryAfter::clearDelay)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
                         .useExponentialBackOff()
@@ -86,6 +87,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(
                                 SLOW_BACKEND_REDELIVERIES, SLOW_BACKEND_FIRST_DELAY_MS, SLOW_BACKEND_MAX_DELAY_MS)))
                         .onRedelivery(this::timedRedelivery)
+                        .onPrepareFailure(HttpRetryAfter::clearDelay)
                         .maximumRedeliveries(SLOW_BACKEND_REDELIVERIES)
                         .redeliveryDelay(SLOW_BACKEND_FIRST_DELAY_MS)
                         .useExponentialBackOff()

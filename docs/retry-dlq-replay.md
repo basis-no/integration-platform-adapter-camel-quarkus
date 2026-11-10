@@ -76,16 +76,27 @@ the `record-failed` failure mode and `bip-ingress-normalization` keep their
 configured behaviour. A `netty-http` failure carries no response headers, so a
 429 or 503 from `netty-http` gets the configured delays.
 
+For a non-Kafka input the budget is the configuration's maximum delay, so each
+redelivery can wait that long: with the default configuration up to three
+waits of 60 seconds, and with `ip-slow-backend` six of 20 seconds, on top of
+the attempts. A synchronous caller, such as an HTTP request that a route
+answers, waits for all of it. Give such a route `ip-no-retry` or its own
+configuration with short delays.
+
 An application's own `onException` with its own redelivery policy: its maximum
-number of redeliveries counts, but the configured delays the adapter uses as
-the minimum, and after a `Retry-After` wait, are the route configuration's,
-not the `onException`'s. An `onException` that sets its own
-`onExceptionOccurred` replaces the adapter's, and then `Retry-After` is not
+number of redeliveries counts, an unlimited one included, but the configured
+delays the adapter uses as the minimum, and after a `Retry-After` wait, are the
+route configuration's, not the `onException`'s. An `onException` that sets its
+own `onExceptionOccurred` replaces the adapter's, and then `Retry-After` is not
 used.
 
 To turn the client's own retry back on, set
 `camel.component.http.automatic-retries-disabled=false` (and the `https` one,
-or the name of the application's own component). Its repeats are then not
+or the name of the application's own component). The property is the only way:
+the adapter sets the option on every instance, so a `false` set in code, in a
+`ComponentCustomizer` or on the component bean can be overwritten (the adapter cannot tell it from the default), and a retry
+strategy that an `httpClientConfigurer` installs does not run, because the
+option turns off the client's retries altogether. Its repeats are then not
 counted or timed by the adapter: a receiver can get more requests than the
 recorded redeliveries, and the client waits for any `Retry-After` without an
 upper limit on the Kafka consumer thread.

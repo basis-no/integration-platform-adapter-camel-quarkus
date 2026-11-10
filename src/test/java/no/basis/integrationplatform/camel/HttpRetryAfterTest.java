@@ -61,6 +61,7 @@ class HttpRetryAfterTest {
             assertNull(withoutHeader.getIn().getHeader(Exchange.REDELIVERY_DELAY));
 
             Exchange exhausted = failed(context, 503, Map.of("Retry-After", "7"), 4);
+            exhausted.getIn().setHeader(Exchange.REDELIVERY_MAX_COUNTER, 3);
             defaultProfile.process(exhausted);
             assertNull(exhausted.getIn().getHeader(Exchange.REDELIVERY_DELAY),
                     "No redelivery follows the third, so nothing is timed");
@@ -96,11 +97,27 @@ class HttpRetryAfterTest {
 
             // After a timed wait, no redelivery follows: no delay is left for the failure handler.
             Exchange last = failed(context, 503, Map.of("Retry-After", "9"), 1);
+            last.getIn().setHeader(Exchange.REDELIVERY_MAX_COUNTER, 3);
             defaultProfile.process(last);
             assertEquals(9_000L, last.getIn().getHeader(Exchange.REDELIVERY_DELAY, Long.class));
             last.getIn().setHeader(Exchange.REDELIVERY_COUNTER, 4);
             defaultProfile.process(last);
             assertNull(last.getIn().getHeader(Exchange.REDELIVERY_DELAY));
+        }
+    }
+
+    @Test
+    void withoutCamelsMaximumTheWaitIsSetAndClearedBeforeTheFailureHandler() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            // Camel sets no maximum header for an onException maximum of 0 or -1 (unlimited).
+            Exchange unlimited = failed(context, 503, Map.of("Retry-After", "9"), 2);
+            defaultProfile.process(unlimited);
+            assertEquals(9_000L, unlimited.getIn().getHeader(Exchange.REDELIVERY_DELAY, Long.class),
+                    "An unlimited maximum keeps honouring Retry-After");
+
+            // With a maximum of 0 no redelivery follows; the failure handler gets no delay.
+            HttpRetryAfter.clearDelay(unlimited);
+            assertNull(unlimited.getIn().getHeader(Exchange.REDELIVERY_DELAY));
         }
     }
 

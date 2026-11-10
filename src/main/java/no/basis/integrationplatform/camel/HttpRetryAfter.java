@@ -30,7 +30,10 @@ import java.util.Map;
  *
  * <p>The number of redeliveries is Camel's own for the exchange ({@link
  * Exchange#REDELIVERY_MAX_COUNTER}), so an application's {@code onException} with its own maximum
- * counts; its own delays do not, and the route configuration's apply instead.
+ * counts; its own delays do not, and the route configuration's apply instead. Camel sets that
+ * header only for a maximum above 0, so without it the maximum is 0 or unlimited: the wait is
+ * still set, which an unlimited maximum uses, and {@link #clearDelay} removes it before the
+ * failure handler when no redelivery follows.
  */
 final class HttpRetryAfter implements Processor {
     /** The share of the poll interval kept for the rest of the attempt. */
@@ -105,14 +108,24 @@ final class HttpRetryAfter implements Processor {
     }
 
     /**
-     * Camel's maximum for this exchange: the header it sets from the effective redelivery policy,
-     * which is an application's {@code onException} one where that applies; without it (Camel sets
-     * none for 0), the route configuration's. A negative maximum redelivers without end.
+     * Removes a delay the adapter set, before Camel hands the exchange to its failure handler (the
+     * DLQ or an application's {@code onException} handler): no redelivery follows then.
+     *
+     * @param exchange the exchange about to be handed to the failure handler
      */
-    private int maximumRedeliveries(Exchange exchange) {
+    static void clearDelay(Exchange exchange) {
+        afterTiming(exchange);
+    }
+
+    /**
+     * Camel's maximum for this exchange: the header it sets from the effective redelivery policy,
+     * which is an application's {@code onException} one where that applies. Camel sets it only for
+     * a maximum above 0; without it, the maximum is 0 or unlimited, and {@link #clearDelay} covers
+     * the case where no redelivery follows.
+     */
+    private static int maximumRedeliveries(Exchange exchange) {
         Integer max = exchange.getIn().getHeader(Exchange.REDELIVERY_MAX_COUNTER, Integer.class);
-        int value = max != null ? max : policy.getMaximumRedeliveries();
-        return value < 0 ? Integer.MAX_VALUE : value;
+        return max == null || max < 0 ? Integer.MAX_VALUE : max;
     }
 
     /**

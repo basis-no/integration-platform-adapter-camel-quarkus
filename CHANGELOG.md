@@ -19,13 +19,19 @@
   the time the exchange has run and a 20 % margin; otherwise the
   configuration's maximum delay. A longer wait is not used: the configured
   delays apply and the message is parked when they are exhausted, instead of
-  Kafka removing the consumer from its group. See
+  Kafka removing the consumer from its group. A non-Kafka input, such as an
+  HTTP request a route answers, can now hold its synchronous caller for up to
+  each redelivery's maximum delay (3 × 60 s with the default configuration)
+  when the receiver asks for it. See
   [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
   Upgrade: a receiver that answered 503 or 429 once and then succeeded is now
   retried after the configured delay or its `Retry-After`, and the attempt
-  records one more redelivery. An application that configures its own
-  `HttpComponent` bean with the client's retries on must set
-  `camel.component.http.automatic-retries-disabled=false` to keep them.
+  records one more redelivery. The property is the only way to keep the
+  client's own retries: an application that turns them on in code, in a
+  `ComponentCustomizer` or with a retry strategy through `httpClientConfigurer`
+  must set `camel.component.<name>.automatic-retries-disabled=false`. A route
+  that answers a synchronous caller and calls a receiver that sends long
+  `Retry-After` values should use `ip-no-retry` or short delays of its own.
 - The failure handling follows the input type instead of one global setting.
   A Kafka boundary parks a failed message in the DLQ and commits after it, as
   before. An HTTP audit-only boundary records `FAILED`, hands the failure back

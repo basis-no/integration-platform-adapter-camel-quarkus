@@ -255,8 +255,12 @@ The changelog's Unreleased section has the details; in short:
   answered 503 once and then succeeded now records one more redelivery. To
   keep the client's own retries, set
   `camel.component.<name>.automatic-retries-disabled=false` for the component's
-  name; an application that builds its own `HttpComponent` bean with them on
-  must set it too, or the adapter turns them off. See
+  name; it is the only way, so an application that turns them on in code, in a
+  `ComponentCustomizer` or with a retry strategy through `httpClientConfigurer`
+  must set it too, or the adapter turns them off. A non-Kafka input, such as an
+  HTTP request a route answers, can hold its caller for up to each
+  redelivery's maximum delay (3 × 60 s with the default configuration) when the
+  receiver asks for it; give such a route `ip-no-retry` or short delays. See
   [Automatic Retry](retry-dlq-replay.md#automatic-retry).
 - **Spaced re-reads of a record whose outcome is not durable.** 0.3.6 read
   such a record again at once, several times a second. Now the first read
