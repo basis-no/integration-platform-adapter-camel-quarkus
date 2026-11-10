@@ -23,6 +23,14 @@
   records one more redelivery. An application that configures its own
   `HttpComponent` bean with the client's retries on must set
   `camel.component.http.automatic-retries-disabled=false` to keep them.
+- [Upgrading from 0.3.x to 0.4.0](docs/upgrading-to-0.4.md) collects what to
+  do before upgrading, the behaviour that changed on purpose (the stricter
+  `dlq-uri` check, a stopped exchange that fails being read again,
+  `boundary-routes`, object-backed inputs parked as their claim check, with
+  its known limitation) and the upgrade actions below. The getting-started
+  page documents the Camel health bridge and the readiness probe timeout, and
+  the payload storage page the edge of the replay expiry cap, which until now
+  were only in the 0.3.6 notes.
 - Startup refuses a credential-like name in
   `basis.message-store.step.output-checkpoint.header-names`, naming each one,
   by the rule that masks header values in parked DLQ records (`Authorization`,
