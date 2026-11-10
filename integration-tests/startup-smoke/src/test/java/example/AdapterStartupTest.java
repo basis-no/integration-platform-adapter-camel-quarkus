@@ -27,6 +27,15 @@ class AdapterStartupTest {
     }
 
     @Test
+    void registersTheOutputCheckpointHeaderCheckAsAStartupObserver() {
+        // The check is a package-private bean; its observer must run in a real application.
+        var observers = io.quarkus.arc.Arc.container().beanManager()
+                .resolveObserverMethods(new io.quarkus.runtime.StartupEvent());
+        assertTrue(observers.stream().anyMatch(observer -> observer.getBeanClass().getName()
+                .equals("no.basis.integrationplatform.camel.OutputCheckpointHeaderValidator")), observers.toString());
+    }
+
+    @Test
     void discoversKeyValueStoreWithoutStartingItsInactiveDataSource() {
         assertTrue(keyValues.isResolvable());
         // ApplicationScoped proxy creation must not invoke the producer or open JDBC.
