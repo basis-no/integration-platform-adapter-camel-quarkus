@@ -172,7 +172,7 @@ final class RestSendHeaders {
     private static IllegalStateException unfiltered(Endpoint rest, Throwable cause) {
         return new IllegalStateException("Cannot add a consumed Kafka record's credential headers and the Kafka "
                 + "consumer's kafka.* headers to the header filter of the rest: send "
-                + URISupport.sanitizeUri(rest.getEndpointUri()) + "; it could send them to its receiver", cause);
+                + EndpointUriMasking.mask(rest.getEndpointUri()) + "; it could send them to its receiver", cause);
     }
 
     /**
@@ -230,7 +230,7 @@ final class RestSendHeaders {
                 filterClass = REST_FILTERS.get(c.getName());
             }
             if (filterClass == null) {
-                throw new IllegalStateException("A rest: send through " + URISupport.sanitizeUri(endpoint.getEndpointUri())
+                throw new IllegalStateException("A rest: send through " + EndpointUriMasking.mask(endpoint.getEndpointUri())
                         + " is not covered: the adapter keeps a consumed Kafka record's credential headers off rest: "
                         + "sends through the http, vertx-http and netty-http components only; use one of them as the "
                         + "rest producer component");
