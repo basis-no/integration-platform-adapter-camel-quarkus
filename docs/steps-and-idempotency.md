@@ -312,6 +312,59 @@ Explicit redo executes the operation again with the same idempotency key and
 replaces the checkpoint after success. Output checkpoints require the Postgres
 step store; tiered payload mode keeps large response bodies replayable.
 
+### A Crash Before the Checkpoint Is Written
+
+The delivered outcome and its checkpoint are written after the receiver
+answers. If the process dies in between, nothing is recorded and the Kafka
+record is not committed, so it is read again after the restart and the step
+runs again, with the same `Idempotency-Key`. The adapter cannot tell that the
+receiver already answered. An output-producing receiver must therefore answer a
+repeated key with the same output it gave the first time (the usual contract
+of an idempotency key), or the route continues with a second, different
+result. `OutputCheckpointCrashTest` pins this: one call before the crash,
+nothing committed or recorded, the same key on the call after the restart, and
+no call on a later replay, which restores the checkpoint.
+
+### What a Checkpoint Stores
+
+- **Content:** the response body as the route left it after the send, its
+  content type from `x-bip-content-type`, and only the headers and exchange
+  properties named in
+  `basis.message-store.step.output-checkpoint.header-names` and
+  `property-names`, as JSON-compatible values.
+- **Where:** in the `bip_step_outcome` row, inline up to
+  `basis.message-store.payload.inline-threshold-bytes`; a larger body goes to
+  object storage in the `tiered` payload mode, up to `object-max-bytes`, and
+  fails its capture otherwise.
+- **Retention:** a checkpoint expires `basis.message-store.payload.retention-days`
+  after capture, like a captured payload. A replay that finds it expired fails
+  closed; redo captures a new one.
+- **Sensitivity:** the adapter does not encrypt checkpoints. Encryption at rest
+  is the database's and the bucket's. Treat a checkpoint like the message
+  payload: it is application data, readable by whoever can read the Message
+  Store.
+- **No credentials:** startup refuses a credential-like name in
+  `header-names` (the rule that masks header values in parked DLQ records:
+  `Authorization`, `Cookie`, `Set-Cookie`, names containing `token`,
+  `secret`, `password`, `session`, `auth` and the like, and names ending in
+  `-key` or `_key`), naming each one. A credential restored on replay would be
+  stale and kept for the whole retention; obtain a fresh one on each attempt
+  instead. The rule goes by the name only, so a harmless header whose name
+  matches it, such as `X-Partition-Key`, `X-Idempotency-Key`, `X-Author` or
+  `X-Session-Count`, is refused too: copy its value to an exchange property and
+  list that in `property-names`. Exchange property names are not checked: name
+  only properties that hold no credentials.
+
+### Side Effects With and Without Output
+
+| | `SIDE_EFFECT` | `OUTPUT_SIDE_EFFECT` |
+| --- | --- | --- |
+| Replay after delivery | Skipped | Skipped; its checkpointed output is restored |
+| Checkpoint missing, expired or corrupt | Not needed | The replay fails closed |
+| Redo | Runs again with the same key | Runs again with the same key and replaces the checkpoint |
+| Crash after the call, before the outcome write | Runs again with the same key | Runs again with the same key; the receiver must answer with the same output |
+| Step store | Postgres for the skip | Postgres required |
+
 ## Custom Classification
 
 An integration with unusual component semantics may provide an
