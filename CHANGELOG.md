@@ -26,6 +26,17 @@
   Upgrade: an outcome or step-outcome statement that legitimately needs longer
   fails now; raise the property. Set `loginTimeout` in the JDBC URL as well
   (see [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts)).
+- The `ip-slow-backend` route configuration caps each redelivery delay at 20
+  seconds: it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before
+  the configured failure mode applies. Before, the delays doubled up to Camel's
+  default cap of 60 seconds and waited 195 seconds, which together with seven
+  attempts could outlast the Kafka consumer's 300-second
+  `max.poll.interval.ms`; Kafka then removed the consumer from its group and
+  delivered the record again, so it could run, and be parked, more than once.
+  The number of redeliveries and the first delay are unchanged. The interval
+  covers all records of one poll: for a route on `ip-slow-backend`, set
+  `maxPollRecords=1` on its Kafka input or raise `maxPollIntervalMs`. See
+  [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
 - The application refuses to start when `basis.delivery-audit.routes` or
   `basis.input-audit.routes` (`BASIS_DELIVERY_AUDIT_ROUTES`,
   `BASIS_INPUT_AUDIT_ROUTES`) has a value. Adapter 0.3.5 and 0.3.6 offered
