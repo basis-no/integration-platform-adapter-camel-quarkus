@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+- Only a managed Kafka input is parked in the DLQ, as in adapter 0.3.6. Before,
+  `main` parked any exchange that reached the adapter's dead letter channel: a
+  request that a Kafka route sent on an exchange of its own, for example with a
+  `ProducerTemplate` to a `direct:` route, became a DLQ record of its own with
+  a parking ERROR, and its failure was handled there, so the caller never saw
+  it and the input completed and was committed. A failed input from a source
+  that is not Kafka was parked into the Kafka DLQ too. Such an exchange now
+  fails back to its caller with its own exception, without a parked record and
+  without the parking ERROR, which 0.3.6 still logs for it.
+  Upgrade: a route that sends requests on exchanges of its own must handle
+  their failures, or let them fail the input; a timer or poller route sees its
+  failure instead of a DLQ record.
 - A replay request whose `redoSteps` names a step is refused with
   `basis.message-store.step-outcome-store=noop`, the default, with `409
   Conflict` and an error that says to resend without `redoSteps`, before the

@@ -102,6 +102,18 @@ to no endpoint at all, for Kafka with `acks=0` or a transactional producer
 commits only after the input offset, for `direct:` with
 `failIfNoConsumers=false`, and for any other endpoint.
 
+Only a managed Kafka input is parked: an exchange that carries the consumed
+record's commit handle, which the route policy keeps from the Kafka manual
+commit header. That includes the copies Camel makes of the input, for a split,
+multicast, recipient list, enrich or wire tap. The adapter's dead letter channel
+applies to every route, but an exchange without the handle, such as a request
+that a route sends to a `direct:` route with a `ProducerTemplate`, or an input
+from a timer or poller, fails back to its caller with its own exception:
+no DLQ record is written for it, and no ERROR says it is parked. The caller owns
+its recovery, for example by letting the failure fail the Kafka input, which is
+then retried and parked. A `direct:` route that runs on the input's own
+exchange, as a plain `to("direct:…")` does, is part of the input and parks it.
+
 An application's own `onException` changes this. If it leaves a failure
 unhandled (`handled(false)`), the adapter does not park it: the message is
 recorded `FAILED`, not committed, and read again. If it marks the failure

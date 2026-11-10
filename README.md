@@ -97,6 +97,9 @@ Start with the [documentation index](docs/index.md).
   input instead of the message the route left, and logs that a handled message
   is being parked. 0.3.6 fixed it, and so does 0.4.0; see
   [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- On `main`, only a managed Kafka input is parked in the DLQ, as in 0.3.6; a
+  request on an exchange of its own, or a timer or poller input, fails back to
+  its caller. See [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - The 0.3 line continues as a maintained series, with its current scope (one
