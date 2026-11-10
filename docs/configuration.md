@@ -11,6 +11,8 @@ into integration repositories.
 | `basis.message-store.sink` | `BASIS_MESSAGE_STORE_SINK` | `log`, `postgres`, `kafka`; default `log` | Deployment profile. Production uses `postgres`; `kafka` requires a separate lifecycle consumer. |
 | `basis.message-store.status-topic` | `BASIS_MESSAGE_STORE_STATUS_TOPIC` | topic; default `bip.message.status` | Deployment-owned. Used only by the Kafka sink. |
 | `basis.message-store.step-outcome-store` | `BASIS_MESSAGE_STORE_STEP_OUTCOME_STORE` | `noop`, `postgres`; default `noop` | Deployment profile. Production replay protection requires `postgres`. |
+| `basis.message-store.statement-timeout` | `BASIS_MESSAGE_STORE_STATEMENT_TIMEOUT` | duration of at least `1ms`, such as `10s`; default `10s` | Deployment-owned. Longest each statement of an outcome or step-outcome call may run (Postgres `statement_timeout`, set for that call's transaction only; inside an application transaction, the statement's JDBC query timeout). The call's JDBC network timeout is this value plus 5 seconds. Keep it well under the Kafka `max.poll.interval.ms`. See [Message Store call timeouts](#message-store-call-timeouts). |
+| `basis.message-store.lock-timeout` | `BASIS_MESSAGE_STORE_LOCK_TIMEOUT` | duration of at least `1ms` and at most the statement timeout; default `5s` | Deployment-owned. Longest each such statement may wait for a lock (Postgres `lock_timeout`, for that call's transaction only; not set inside an application transaction). |
 | `basis.message-store.test-profile` | `BASIS_MESSAGE_STORE_TEST_PROFILE` | `disabled`, `no-persistence`, `no-commit`, `no-persistence-no-commit`; default `disabled` | Test-only; non-default values are unsafe in production. |
 | `basis.message-store.allow-test-profiles` | `BASIS_MESSAGE_STORE_ALLOW_TEST_PROFILES` | boolean; default `false` | Explicit test guard. Production deployments should keep `false`. |
 | `basis.message-store.dlq-uri` | `BASIS_MESSAGE_STORE_DLQ_URI` | A fixed, non-transactional `kafka:` URI (not `acks=0`) or the application's own `direct:` route; default `kafka:bip.message.dlq` | Deployment-owned terminal parking endpoint. The adapter records `DLQ` and commits only after this endpoint accepted the record. |
@@ -33,7 +35,7 @@ into integration repositories.
 | `basis.message-store.step.repeatable-ids` | `BASIS_MESSAGE_STORE_STEP_REPEATABLE_IDS` | exact node ids; default empty | App-owned replay classification for safe reads/authentication. |
 | `basis.message-store.step.side-effect-ids` | `BASIS_MESSAGE_STORE_STEP_SIDE_EFFECT_IDS` | exact node ids; default empty | App-owned durable write classification. Requires stable ids. |
 | `basis.message-store.step.output-side-effect-ids` | `BASIS_MESSAGE_STORE_STEP_OUTPUT_SIDE_EFFECT_IDS` | exact node ids; default empty | App-owned writes whose output must be restored on replay. |
-| `basis.message-store.step.output-checkpoint.header-names` | `BASIS_MESSAGE_STORE_STEP_OUTPUT_CHECKPOINT_HEADER_NAMES` | header names; default empty | App-owned allowlist; only JSON-compatible, non-sensitive metadata. |
+| `basis.message-store.step.output-checkpoint.header-names` | `BASIS_MESSAGE_STORE_STEP_OUTPUT_CHECKPOINT_HEADER_NAMES` | header names; default empty; credential-like names refused at startup | App-owned allowlist; only JSON-compatible, non-sensitive metadata. See [What a Checkpoint Stores](steps-and-idempotency.md#what-a-checkpoint-stores). |
 | `basis.message-store.step.output-checkpoint.property-names` | `BASIS_MESSAGE_STORE_STEP_OUTPUT_CHECKPOINT_PROPERTY_NAMES` | exchange properties; default empty | App-owned allowlist; only JSON-compatible, non-sensitive metadata. |
 | `basis.message-store.key-value.sweep-interval-seconds` | `BASIS_MESSAGE_STORE_KEY_VALUE_SWEEP_INTERVAL_SECONDS` | integer seconds `1..3600`; default `3600` | Adapter cleanup cadence for expired [Key-Value Store](key-value-store.md) rows after its first use; no effect while unused. |
 | `basis.traffic.signals` | `BASIS_TRAFFIC_SIGNALS` | Comma-separated `record_admitted`, `record_published`, or `none`; unset or empty selects `record_admitted` | Integration-owned event selection; see [Kafka activity metrics](activity-metrics.md). An explicit list selects exactly its events. |
@@ -43,6 +45,20 @@ into integration repositories.
 | `basis.message-store.kafka.sasl-jaas-config` | `BASIS_MESSAGE_STORE_KAFKA_SASL_JAAS_CONFIG` | unset | Secret binding; required for SASL. Never place credentials in routes or Git. |
 | `basis.message-store.kafka.ssl-truststore-location` | `BASIS_MESSAGE_STORE_KAFKA_SSL_TRUSTSTORE_LOCATION` | unset | Mounted CA/truststore path. Hostname verification remains enabled. |
 | `basis.message-store.kafka.ssl-truststore-type` | `BASIS_MESSAGE_STORE_KAFKA_SSL_TRUSTSTORE_TYPE` | `JKS` by default | Use `PEM` for a mounted broker CA certificate. |
+
+## Settings Removed Since 0.3.x
+
+This version does not read these settings of adapter 0.3.5 and 0.3.6. So that
+an upgraded integration does not lose their effect without notice, the
+application refuses to start when one of them, or any other name under
+`basis.delivery-audit.` or `basis.input-audit.`, has a value, from any
+configuration source, including its environment variable. An empty value, which
+disabled the feature in 0.3.x, only logs a warning; remove it.
+
+| 0.3.x setting | Environment variable | What 0.3.x did | Instead, in this version |
+| --- | --- | --- | --- |
+| `basis.delivery-audit.routes` | `BASIS_DELIVERY_AUDIT_ROUTES` | Recorded each request to the selected `direct:` routes as its own non-replayable row | Not available yet ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)). Remove the setting to start without it. |
+| `basis.input-audit.routes` | `BASIS_INPUT_AUDIT_ROUTES` | Recorded each run of the selected non-Kafka input routes as a non-replayable row | For an HTTP input, the [HTTP audit-only preview](ingress-and-scaling.md#http-audit-only-preview) (`basis.message-store.boundary-routes=<route id>`, `failure-mode=record-failed`, `replay.enabled=false`), which cannot be combined with adapter-managed Kafka boundaries in the same application. For a file, timer or poller input, normalize it to Kafka with `basis.message-store.ingress.normalization-routes`. Inspection of other non-Kafka inputs without Kafka is not available yet ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)). |
 
 ## Required Runtime Configuration
 
@@ -55,6 +71,7 @@ These are integration/runtime dependencies rather than adapter-owned options:
 | `camel.component.kafka.auto-commit-enable=false` | Adapter default; must remain false. |
 | `camel.component.kafka.allow-manual-commit=true` | Adapter default; must remain true. |
 | `camel.component.kafka.break-on-first-error=true` | Adapter default; must remain true. A record that was not committed is read again before the partition's later records, whose commit would otherwise move past it. |
+| `camel.component.kafka.auto-offset-reset=earliest` | Adapter default; must remain `earliest` for every Kafka boundary, on the component, the endpoint (`autoOffsetReset`) and `additionalProperties.auto.offset.reset`. The reconnect after an uncommitted record resumes from the committed offset; on a partition where the group has none yet, `latest` would resume at the end and skip the record, and `none` stops the consumer. A Kafka boundary route with any other effective value refuses to start. A new consumer group therefore starts at the beginning of each partition's retained records; so does a group whose committed offsets expired on the broker, and a boundary without a `groupId`, for which Camel generates a new group on every start and so reprocesses every retained record on each start. Give every Kafka boundary a stable `groupId`. |
 | `quarkus.datasource.jdbc.url` / `QUARKUS_DATASOURCE_JDBC_URL` | Required by Postgres sink/store/replay. |
 | `quarkus.datasource.username` / `QUARKUS_DATASOURCE_USERNAME` | Message-store database identity. |
 | `quarkus.datasource.password` / `QUARKUS_DATASOURCE_PASSWORD` | Secret binding when password auth is used. |
@@ -95,6 +112,115 @@ The operator can bound the adapter pool with
 through the JDBC URL and mounted CA certificate. These are Quarkus/JDBC settings,
 not a grant of database ownership. Network and PostgreSQL permissions enforce
 the boundary even if integration code attempts another query.
+
+## Message Store call timeouts
+
+The Postgres sink and the Postgres step outcome store run on the Kafka
+consumer thread. Each of their calls (recording an attempt's outcome, checking
+or recording a step outcome, reading an output checkpoint) is bounded per
+statement:
+
+- On a connection in autocommit mode, the usual case, the call runs in its own
+  transaction with `statement_timeout` = `basis.message-store.statement-timeout`
+  (default 10 s) and `lock_timeout` = `basis.message-store.lock-timeout`
+  (default 5 s), set with `set_config(..., true)` for that transaction only, so
+  a pooled connection keeps no session setting.
+- Each statement also has a JDBC query timeout of the statement timeout,
+  rounded up to whole seconds.
+- The JDBC network timeout (the PostgreSQL driver's socket timeout) is set to
+  the statement timeout plus 5 seconds for the call and restored afterwards, so
+  a database that stops answering without closing the connection ends the call
+  too.
+
+The timeouts bound each statement, not the call as a whole. At the defaults a
+step-outcome call runs `set_config` and one statement, and ends within about
+10 seconds, or 15 seconds when the database stops answering. The sink's record
+runs `set_config` and up to four statements, so in the worst case, each
+statement just under its timeout, it takes about 40 seconds, still well under
+the Kafka `max.poll.interval.ms`. A database that stops answering ends the
+call at the first statement that waits for it: the network timeout breaks the
+connection.
+
+A call that reaches a timeout fails like any other Message Store failure: the
+attempt is not durable, so its Kafka offset is not committed and the record is
+read again (see [Message Lifecycle](message-lifecycle.md)). Startup refuses a
+timeout under 1 ms, a lock timeout longer than the statement timeout, or a
+statement timeout whose network timeout does not fit the JDBC API (about 24
+days).
+
+**Inside an application transaction.** When the connection is already in a
+transaction on entry (autocommit off, as on a connection enlisted in a JTA
+transaction of a `transacted()` route), the transaction belongs to the
+application. The step outcome store then runs its statements in that
+transaction and neither begins, commits nor rolls it back, as before these
+timeouts. The sink commits or rolls back the connection's transaction, as it
+did before; on a connection enlisted in a JTA transaction the pool refuses that
+commit, so the sink is not supported inside a JTA transaction: its record fails
+as a store failure. The sink normally runs when the exchange completes, after
+the route's transaction has ended. In both cases no `statement_timeout` or `lock_timeout` is set,
+because a transaction-local setting would last for the rest of the
+application's transaction: each statement is bounded by its JDBC query timeout
+and the network timeout, and a lock wait by the query timeout.
+
+**Synchronous replication.** With a synchronous standby, a commit waits until
+the standby confirms it, and `statement_timeout` does not end that wait. Three
+things do, and each makes the call a Message Store failure:
+
+- The network timeout: a commit that waits longer than the statement timeout
+  plus 5 seconds breaks the connection, and the call fails.
+- A terminated connection (`pg_terminate_backend`, a server shutdown): the
+  server sends a warning with SQLSTATE `57P01` and ends the connection, so the
+  commit fails either way.
+- A cancel of the wait (a client cancel, `pg_cancel_backend`). PostgreSQL then
+  reports the commit as done with only a warning, "canceling wait for
+  synchronous replication due to user request", detail "The transaction has
+  already committed locally, but might not have been replicated to the
+  standby.", so the outcome could be lost in a failover. The adapter clears the
+  connection's warnings before the commit and treats any warning-level message
+  the commit reports (an SQLSTATE outside class `00`; notices are not counted)
+  as a failure. It does not rely on the text or on a SQLSTATE of the
+  synchronous replication warning: the user-cancel warning has only the generic
+  `01000`, and its text follows the server's `lc_messages`. The text is matched
+  only to name the cause in the error, "committed locally, but a synchronous
+  standby did not confirm it". Any other warning a commit reports also fails
+  the call, with "committed, but the commit reported a warning".
+
+The check needs the warning to reach the adapter, that is `client_min_messages`
+at `warning` or lower: with `error`, set on the role, the database or in the
+JDBC URL's `options`, the server does not send it and the commit counts as
+confirmed. The call's own transaction therefore sets `client_min_messages` to
+`warning` for that transaction only, along with the timeouts. The sink's commit
+of an application's transaction (see below) cannot set it without changing the
+application's transaction, so there the check depends on the session's
+setting; keep `client_min_messages` at its default, `notice`, for the Message
+Store login.
+
+Such a failure is not a rollback: the outcome may already be in the store. The
+record is read again and its outcome written again, which is safe, because the
+writes are idempotent: the sink upserts the message row by message id and the
+attempt row by message id and attempt, and the step outcome store upserts by
+idempotency key and never replaces `DELIVERED`. Inside an application
+transaction that the step outcome store joins, the application commits and
+these checks do not apply; the sink's commit of such a transaction is checked.
+
+The check covers the Postgres sink and the Postgres step outcome store only,
+whose writes gate the Kafka offset commit. The Key-Value Store and the replay
+audit write in autocommit mode and are not covered; neither gates a Kafka
+offset commit.
+
+Getting a connection is bounded by the deployment's datasource settings, which
+the adapter does not set:
+
+| Setting | Default | Recommendation |
+| --- | --- | --- |
+| `quarkus.datasource.jdbc.acquisition-timeout` | 5 seconds (Quarkus) | Keep it at a few seconds. It bounds the wait for a pooled connection, including one that is still being opened. |
+| `connectTimeout` in the JDBC URL | 10 seconds (PostgreSQL driver) | Keep it. |
+| `loginTimeout` in the JDBC URL | none (PostgreSQL driver) | Set it, for example `?loginTimeout=10`, so that opening a connection to a database that accepts the connection but never completes the login ends. |
+
+Keep every one of these, together with the route's own retries and receiver
+timeouts, well under the Kafka `max.poll.interval.ms` (300 seconds by
+default). The replay service, the startup checks and the Key-Value Store are
+not covered by these timeouts.
 
 Kafka security settings above apply to the Camel component (input and DLQ) and
 to the adapter's direct replay/status producers. A custom application-created

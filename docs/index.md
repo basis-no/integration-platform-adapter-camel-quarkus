@@ -13,6 +13,7 @@ GitHub and in any static documentation site.
 3. [Retry, DLQ, and replay](retry-dlq-replay.md)
 4. [Testing](testing.md)
 5. [Key-Value Store](key-value-store.md)
+6. [Upgrading from 0.3.x to 0.4.0](upgrading-to-0.4.md) (unreleased)
 
 ### Operator
 

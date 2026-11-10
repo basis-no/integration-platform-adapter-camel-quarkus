@@ -61,9 +61,44 @@ group by o.step_id, 2
 order by o.step_id, last_occurred_at desc;
 ```
 
+The query masks credentials again because rows recorded before adapter 0.4.0
+kept more of the endpoint; see [Stored Endpoints](#stored-endpoints).
+
 Renaming a generated id changes that step's key: replaying, redoing or resending
 a message recorded before the change sends it once more. Rename only once no
 such message will be processed again.
+
+## Stored Endpoints
+
+A step's endpoint is stored in `bip_step_outcome.endpoint_uri` and the
+attempt's `steps_json`, and named in the adapter's warnings, with its
+credentials masked as `xxxxxx`. The rule is the one the .NET adapter applies to
+the steps it records, so both adapters store the same value for the same URI:
+
+- what Camel's `URISupport.sanitizeUri` masks: the value of every query
+  parameter whose name contains one of Camel's sensitive option names (such as
+  `password`, `token`, `secret`, `apikey`, `user` or `clientId`), and the
+  password in a `user:password@` part, including inside a parameter value;
+- the whole user info of the endpoint's authority (`https://xxxxxx@host/…`),
+  not only its password;
+- the value of every query parameter with a credential-like name, by the rule
+  the adapter uses for the headers it masks in a DLQ record: `Authorization`,
+  cookies, authentication challenges, names containing secret, token, password,
+  passwd, credential, session, signature, apikey, api-key, api_key,
+  subscription-key, private-key or auth (such as `Signature` or
+  `X-Amz-Credential`), or ending in `-key` or `_key` (such as
+  `subscription-key`), but not `x-bip-*` or `Idempotency-Key`; also the names
+  `key`, `code`, `sig` and `pwd`, and names containing `passphrase`,
+  `passcode`, `privatekey`, `accesskey`, `accountkey` or `connectionstring`.
+  Parameter names are compared after percent-decoding (an escape that is not
+  valid UTF-8 is compared as written), ignoring case.
+
+A run of masked characters becomes one `xxxxxx`. Keywords an application adds
+with `URISupport.addSanitizeKeywords` are masked too (the .NET adapter has no
+such setting). An endpoint the adapter's patterns cannot mask within about a
+second is stored as `xxxxxx`; when an application has added keywords, Camel's
+own sanitizer also runs on it, and that pass has no such bound. The route still sends to the real endpoint; only the stored
+and logged copy is masked.
 
 ## Explicit Classification
 
@@ -143,8 +178,10 @@ holds when the route catches the failure, and when it happens in a split part,
 loop iteration or branch, which run on copies of the input's exchange. Camel's
 retries still run first, so a receiver can get the same send again; receivers
 deduplicate on the stable `Idempotency-Key`. During a Message Store outage the
-partition therefore waits at that input, as it does when parking fails. Alert
-on inputs that stay `FAILED`.
+partition therefore waits at that input, as it does when parking fails, and
+reads it again with a growing wait; see
+[Reading a record again](retry-dlq-replay.md#reading-a-record-again). Alert on
+inputs that stay `FAILED`.
 
 A separate request, such as one sent with a `ProducerTemplate`, fails on its
 own when one of its step outcomes is not recorded, also when its own route
@@ -274,6 +311,59 @@ and bytes or a stream as `byte[]`.
 Explicit redo executes the operation again with the same idempotency key and
 replaces the checkpoint after success. Output checkpoints require the Postgres
 step store; tiered payload mode keeps large response bodies replayable.
+
+### A Crash Before the Checkpoint Is Written
+
+The delivered outcome and its checkpoint are written after the receiver
+answers. If the process dies in between, nothing is recorded and the Kafka
+record is not committed, so it is read again after the restart and the step
+runs again, with the same `Idempotency-Key`. The adapter cannot tell that the
+receiver already answered. An output-producing receiver must therefore answer a
+repeated key with the same output it gave the first time (the usual contract
+of an idempotency key), or the route continues with a second, different
+result. `OutputCheckpointCrashTest` pins this: one call before the crash,
+nothing committed or recorded, the same key on the call after the restart, and
+no call on a later replay, which restores the checkpoint.
+
+### What a Checkpoint Stores
+
+- **Content:** the response body as the route left it after the send, its
+  content type from `x-bip-content-type`, and only the headers and exchange
+  properties named in
+  `basis.message-store.step.output-checkpoint.header-names` and
+  `property-names`, as JSON-compatible values.
+- **Where:** in the `bip_step_outcome` row, inline up to
+  `basis.message-store.payload.inline-threshold-bytes`; a larger body goes to
+  object storage in the `tiered` payload mode, up to `object-max-bytes`, and
+  fails its capture otherwise.
+- **Retention:** a checkpoint expires `basis.message-store.payload.retention-days`
+  after capture, like a captured payload. A replay that finds it expired fails
+  closed; redo captures a new one.
+- **Sensitivity:** the adapter does not encrypt checkpoints. Encryption at rest
+  is the database's and the bucket's. Treat a checkpoint like the message
+  payload: it is application data, readable by whoever can read the Message
+  Store.
+- **No credentials:** startup refuses a credential-like name in
+  `header-names` (the rule that masks header values in parked DLQ records:
+  `Authorization`, `Cookie`, `Set-Cookie`, names containing `token`,
+  `secret`, `password`, `session`, `auth` and the like, and names ending in
+  `-key` or `_key`), naming each one. A credential restored on replay would be
+  stale and kept for the whole retention; obtain a fresh one on each attempt
+  instead. The rule goes by the name only, so a harmless header whose name
+  matches it, such as `X-Partition-Key`, `X-Idempotency-Key`, `X-Author` or
+  `X-Session-Count`, is refused too: copy its value to an exchange property and
+  list that in `property-names`. Exchange property names are not checked: name
+  only properties that hold no credentials.
+
+### Side Effects With and Without Output
+
+| | `SIDE_EFFECT` | `OUTPUT_SIDE_EFFECT` |
+| --- | --- | --- |
+| Replay after delivery | Skipped | Skipped; its checkpointed output is restored |
+| Checkpoint missing, expired or corrupt | Not needed | The replay fails closed |
+| Redo | Runs again with the same key | Runs again with the same key and replaces the checkpoint |
+| Crash after the call, before the outcome write | Runs again with the same key | Runs again with the same key; the receiver must answer with the same output |
+| Step store | Postgres for the skip | Postgres required |
 
 ## Custom Classification
 

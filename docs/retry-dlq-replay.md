@@ -4,15 +4,32 @@
 
 The global route configuration applies unless a route selects a variant:
 
-| Configuration | Redeliveries | Initial delay | Terminal behavior |
-| --- | ---: | ---: | --- |
-| default | 3 | 1 second | configured failure mode |
-| `ip-slow-backend` | 6 | 5 seconds | configured failure mode |
-| `ip-no-retry` | 0 | none | configured failure mode |
-| `bip-ingress-normalization` | 3 | 1 second | propagate to source |
+| Configuration | Redeliveries | Delays | Total wait | Terminal behavior |
+| --- | ---: | --- | ---: | --- |
+| default | 3 | 1, 2, 4 seconds | 7 seconds | configured failure mode |
+| `ip-slow-backend` | 6 | 5, 10, 20, 20, 20, 20 seconds | 95 seconds | configured failure mode |
+| `ip-no-retry` | 0 | none | none | configured failure mode |
+| `bip-ingress-normalization` | 3 | 1, 2, 4 seconds | 7 seconds | propagate to source |
 
-Retries use exponential backoff. Automatic redelivery does not increment the
-message attempt; it adds diagnostics to that attempt.
+Retries use exponential backoff; `ip-slow-backend` caps each delay at 20
+seconds. Automatic redelivery does not increment the message attempt; it adds
+diagnostics to that attempt.
+
+On a Kafka input the waits run on the consumer thread, between attempts that
+take their own time. `max.poll.interval.ms` (300 seconds by default) bounds the
+time between two polls, and the consumer processes every record of a poll
+before it polls again (up to 500 records, Camel's default `maxPollRecords`), so
+the budget covers all records of one poll, not one record. If they take longer,
+Kafka removes the consumer from its group and the uncommitted records are
+delivered again. With `ip-slow-backend`, one record that exhausts its retries
+waits 95 seconds, so three such records in one poll already take most of the
+interval. For a route on `ip-slow-backend`, set `maxPollRecords=1` on the
+Kafka input, or raise `maxPollIntervalMs` on it to cover the records of a poll.
+With one record per poll, about 200 seconds remain for its seven attempts:
+bound each receiver call well inside that with `responseTimeout` and
+`connectTimeout` (see the table below for the forms Camel applies), and turn
+the HTTP client's own retry off, as described next, since it can double the
+requests in each attempt.
 
 The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
 client inside Camel's `http` component (Apache HttpClient 5.5 and its default
@@ -31,7 +48,7 @@ eight requests before the message is parked. Set
 `camel.component.http.automatic-retries-disabled=true` to leave every retry to
 the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
 and for routes on the `ip-slow-backend` configuration, whose own redeliveries
-already use much of the poll interval.
+already use about a third of the poll interval.
 
 On Camel 4's `http` component, bound a receiver call with `responseTimeout`
 and `connectTimeout`. Camel accepts some timeout options without applying them,
@@ -89,6 +106,29 @@ that the DLQ endpoint can never accept, for example one above the DLQ topic's
 size limit, keeps its partition waiting until an operator fixes the DLQ or
 moves the consumer group past it.
 
+### Reading a record again
+
+A Kafka record whose outcome could not be made durable, because the outcome
+write, a step outcome check or write, or the DLQ publish failed, is not
+committed and is read again. The first time, it is read again at once. If the
+same record comes back with its outcome still not durable, the adapter waits
+before handing it back: 1 second, doubling on each further read, at most 30
+seconds. The wait is also kept to half the consumer's effective
+`max.poll.interval.ms` (an `additionalProperties` value overrides the named
+option) less the time since the records of the poll that returned it began to
+be processed, including the records before it, so that the consumer polls again
+within its interval. This relies on `break-on-first-error=true`, the adapter's
+default, under which a record that is read again ends its poll; without it
+there is no wait. A committed outcome on the partition, or a later record,
+starts again at once. The consumer waits for it, also when the route completes
+on another thread, so the consumer's other partitions wait too, as they do
+after any record that is read again. The wait ends early when the application
+stops. Before, the record was read again at once
+for as long as the failure lasted, several times a second, and each read ran
+the route again, including sends that the step store did not skip and another
+DLQ record for a message that was parked. A record whose topic, partition and
+offset the adapter did not see at the start is read again at once, as before.
+
 `basis.message-store.dlq-uri` must name one fixed endpoint that reports a
 failed publish as an error: a `kafka:` endpoint whose producer waits for the
 broker and is not transactional, or the application's own `direct:` route. A
@@ -101,6 +141,18 @@ to no endpoint at all, for Kafka with `acks=0` or a transactional producer
 (`transacted`, `transactionalId` or `transactional.id`), whose transaction
 commits only after the input offset, for `direct:` with
 `failIfNoConsumers=false`, and for any other endpoint.
+
+Only a managed Kafka input is parked: an exchange that carries the consumed
+record's commit handle, which the route policy keeps from the Kafka manual
+commit header. That includes the copies Camel makes of the input, for a split,
+multicast, recipient list, enrich or wire tap. The adapter's dead letter channel
+applies to every route, but an exchange without the handle, such as a request
+that a route sends to a `direct:` route with a `ProducerTemplate`, or an input
+from a timer or poller, fails back to its caller with its own exception:
+no DLQ record is written for it, and no ERROR says it is parked. The caller owns
+its recovery, for example by letting the failure fail the Kafka input, which is
+then retried and parked. A `direct:` route that runs on the input's own
+exchange, as a plain `to("direct:…")` does, is part of the input and parks it.
 
 An application's own `onException` changes this. If it leaves a failure
 unhandled (`handled(false)`), the adapter does not park it: the message is
@@ -220,6 +272,17 @@ skip.
 
 Redo deliberately repeats an external effect. It is safe only when the
 receiver honors the stable idempotency key or repetition is acceptable.
+
+Redo needs recorded step outcomes. With
+`basis.message-store.step-outcome-store=noop`, the default, nothing is recorded
+as delivered and every step runs on every replay, so a request whose
+`redoSteps` names a step is refused with `409 Conflict` before the replay audit
+row is written or anything is published. Resend it without `redoSteps`. A list
+of blank entries counts as no redo. With `postgres`, redo works as described
+above. The rule asks the step outcome store in use, so an application's own
+`StepOutcomeStore` bean that replaces the adapter's decides through
+`recordsDeliveredSteps()`, which is `true` unless it overrides it. The same rule
+applies in the .NET adapter.
 
 The list stays inside the integration. When an exchange enters a route, the
 adapter reads `x-bip-redo-steps`, keeps the list for the attempt's step tracking
