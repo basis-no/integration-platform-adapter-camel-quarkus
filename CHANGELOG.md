@@ -42,6 +42,19 @@
   queue. A poll still in flight when its lease is lost runs to its end and can
   overlap with the next holder's: bound polls (`maxMessagesPerPoll`), use the
   source's read lock or move, and keep the work idempotent.
+- The adapter logs a warning when it journals a message id that another
+  integration already journaled on the same Message Store, as adapter 0.3.6
+  does: once per pair of integrations, then at most every ten minutes with the
+  number of such messages since. The Message Store keeps one summary row per
+  message id and one attempt row per id and attempt, so a downstream
+  integration that adopts the upstream's forwarded `x-bip-message-id` takes
+  over its rows; before, `main` did this without a log line. A replay by the
+  same integration is not reported. With the optional message recovery SQL or
+  row-level isolation between integrations, the refused write is the signal
+  instead. Give each integration its own `x-bip-message-id` and carry
+  continuity in `x-bip-correlation-id`. The warning goes away when each
+  integration owns its message ids
+  ([#30](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/30)).
 - The failure handling follows the input type instead of one global setting.
   A Kafka boundary parks a failed message in the DLQ and commits after it, as
   before. An HTTP audit-only boundary records `FAILED`, hands the failure back
