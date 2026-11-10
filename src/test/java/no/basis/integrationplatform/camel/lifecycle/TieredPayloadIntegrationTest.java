@@ -272,8 +272,12 @@ class TieredPayloadIntegrationTest {
 
         var reads = new java.util.concurrent.atomic.AtomicInteger();
         var outcomes = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        var rows = new java.util.concurrent.CopyOnWriteArrayList<no.basis.integrationplatform.camel.model.MessageAttemptResult>();
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
-                row -> outcomes.add(row.status().name()),
+                row -> {
+                    outcomes.add(row.status().name());
+                    rows.add(row);
+                },
                 "large-payload-validation",
                 new PayloadCapturePolicy(PayloadMode.TIERED, 1024, 32L * 1024 * 1024, Duration.ofDays(30), true),
                 MessageBoundaryKind.KAFKA,
@@ -303,7 +307,13 @@ class TieredPayloadIntegrationTest {
 
             assertEquals(0, reads.get(), "the route must not see a byte of an object that does not match");
             assertTrue(replayed.isFailed());
+            assertTrue(replayed.getException().getMessage().contains("does not match its reference's SHA-256"),
+                    replayed.getException().getMessage());
             assertEquals(java.util.List.of("FAILED"), outcomes);
+            // The FAILED outcome keeps the message's claim check, so a later resend still has it.
+            assertEquals("s3_object", rows.getFirst().payloadStorage());
+            assertEquals(reference.ref(), rows.getFirst().payloadRef());
+            assertEquals(reference.sha256(), rows.getFirst().payloadSha256());
         }
 
         // The unchanged object reaches the route complete.

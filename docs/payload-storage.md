@@ -55,13 +55,15 @@ the bucket, prefix, expiry and the object's size.
 An input in object storage is checked in full before its route reads any of it,
 on a replay of a claim-checked input and on the first attempt after the adapter
 stored a streamed input. The adapter copies the object to a local file in
+a subdirectory named after the host in
 `basis.message-store.payload.spool-directory` (the JVM's temporary directory by
-default) while it checks the object's size and SHA-256 against the reference,
+default; owner-only permissions), so that replicas that share a volume never
+touch each other's copies, while it checks the object's size and SHA-256 against the reference,
 and only then gives the route a stream of that checked copy. Memory stays
 bounded by a 64 KiB copy buffer, whatever the object's size. The copy is
 deleted when the exchange is done, and at once when the check fails; on Linux
-its directory entry is removed as soon as the route's stream is open, and the
-space is freed when the stream is closed. A copy left by a process that stopped
+its directory entry is removed as soon as the copy is created, so no other
+process can open it, and the space is freed when the exchange is done. A copy left by a process that stopped
 without cleaning up, such as after a crash, is deleted when the application
 starts again.
 
@@ -80,8 +82,12 @@ failure while it is read, a spool directory that is full or not writable, and
 checked copies that already fill `spool-max-bytes`, all fail the input before
 its route runs: no processor sees the payload, nothing is parked, its outcome is
 recorded `FAILED` and a consumed Kafka offset is not committed, so the record is
-read again. A changed or truncated object is read again until it is restored.
-See [Troubleshooting](troubleshooting.md#s3-replay-fails).
+read again. The `FAILED` outcome keeps the message's claim check.
+
+A changed, truncated, missing or expired object does not heal by itself, so its
+record is read again, with a growing wait, until the object is restored, and
+it blocks its partition meanwhile. See
+[Troubleshooting](troubleshooting.md#s3-replay-fails) for how to get past it.
 
 Object storage failure during required capture also fails the message. The
 adapter never claims replayability without durable bytes.

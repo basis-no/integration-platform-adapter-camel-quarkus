@@ -13,11 +13,19 @@ import org.slf4j.LoggerFactory;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.io.OutputStream;
+import java.net.InetAddress;
+import java.nio.ByteBuffer;
+import java.nio.channels.Channels;
+import java.nio.channels.FileChannel;
 import java.nio.file.DirectoryStream;
+import java.nio.file.FileSystems;
 import java.nio.file.Files;
+import java.nio.file.OpenOption;
 import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
+import java.nio.file.attribute.FileAttribute;
+import java.nio.file.attribute.PosixFilePermissions;
+import java.util.Set;
 import java.security.MessageDigest;
 import java.time.Instant;
 import java.util.HexFormat;
@@ -65,7 +73,8 @@ class VerifiedPayloadSpool {
         if (maxBytes <= 0) {
             throw new IllegalArgumentException(MAX_BYTES_PROPERTY + " must be > 0");
         }
-        this.directory = directory;
+        // One subdirectory per host, so that replicas sharing a volume never sweep each other's copies.
+        this.directory = directory.resolve(hostSegment());
         this.maxBytes = maxBytes;
         this.owner = ownerTag(ProcessHandle.current());
     }
@@ -77,6 +86,17 @@ class VerifiedPayloadSpool {
 
     private static Path defaultDirectory() {
         return Path.of(System.getProperty("java.io.tmpdir"), "basis-payload-spool");
+    }
+
+    private static String hostSegment() {
+        String host;
+        try {
+            host = InetAddress.getLocalHost().getHostName();
+        } catch (IOException | RuntimeException e) {
+            host = "local";
+        }
+        String safe = host.replaceAll("[^A-Za-z0-9._-]", "_");
+        return safe.isEmpty() || safe.startsWith(".") ? "local" : safe;
     }
 
     Path directory() {
@@ -120,11 +140,20 @@ class VerifiedPayloadSpool {
         int deleted = 0;
         try (DirectoryStream<Path> files = Files.newDirectoryStream(directory, PREFIX + "*" + SUFFIX)) {
             for (Path file : files) {
-                if (!ownerIsRunning(file.getFileName().toString()) && Files.deleteIfExists(file)) {
-                    deleted++;
+                Boolean running = ownerIsRunning(file.getFileName().toString());
+                if (running == null || running) {
+                    // A name this spool did not write, or a copy still in use, stays.
+                    continue;
+                }
+                try {
+                    if (Files.deleteIfExists(file)) {
+                        deleted++;
+                    }
+                } catch (IOException e) {
+                    LOG.warn("Could not delete checked payload copy {}: {}", file, e.toString());
                 }
             }
-        } catch (IOException e) {
+        } catch (IOException | java.nio.file.DirectoryIteratorException e) {
             LOG.warn("Could not clean up checked payload copies in {}: {}", directory, e.toString());
         }
         if (deleted > 0) {
@@ -147,16 +176,24 @@ class VerifiedPayloadSpool {
         long size = reference.sizeBytes();
         reserve(reference, size);
         Path file = null;
+        FileChannel channel = null;
         try {
-            Files.createDirectories(directory);
+            createDirectory();
             file = directory.resolve(PREFIX + owner + "-" + UUID.randomUUID() + SUFFIX);
-            copyAndCheck(reference, object, file);
-            return new CheckedCopy(Files.newInputStream(file, StandardOpenOption.DELETE_ON_CLOSE), file, size);
+            // One channel, written, checked and read back without opening the path again. Where the
+            // platform supports it (Linux), DELETE_ON_CLOSE removes the name at once, so nothing
+            // else can open the copy and even a crash leaves no file behind.
+            channel = open(file);
+            copyAndCheck(reference, object, channel);
+            channel.position(0);
+            return new CheckedCopy(Channels.newInputStream(channel), file, size);
         } catch (PayloadStorageException e) {
+            closeQuietly(channel);
             release(size);
             deleteQuietly(file);
             throw e;
         } catch (IOException | RuntimeException e) {
+            closeQuietly(channel);
             release(size);
             deleteQuietly(file);
             throw new PayloadStorageException("Object payload " + reference.ref()
@@ -164,12 +201,36 @@ class VerifiedPayloadSpool {
         }
     }
 
-    private void copyAndCheck(PayloadReference reference, Supplier<InputStream> object, Path file) throws IOException {
+    private void createDirectory() throws IOException {
+        if (posix()) {
+            Files.createDirectories(directory, ownerOnly("rwx------"));
+        } else {
+            Files.createDirectories(directory);
+        }
+    }
+
+    private static FileChannel open(Path file) throws IOException {
+        Set<OpenOption> options = Set.of(StandardOpenOption.CREATE_NEW, StandardOpenOption.READ,
+                StandardOpenOption.WRITE, StandardOpenOption.DELETE_ON_CLOSE);
+        return posix()
+                ? FileChannel.open(file, options, ownerOnly("rw-------"))
+                : FileChannel.open(file, options);
+    }
+
+    private static boolean posix() {
+        return FileSystems.getDefault().supportedFileAttributeViews().contains("posix");
+    }
+
+    private static FileAttribute<?> ownerOnly(String permissions) {
+        return PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString(permissions));
+    }
+
+    private void copyAndCheck(PayloadReference reference, Supplier<InputStream> object, FileChannel output)
+            throws IOException {
         MessageDigest digest = sha256();
         long count = 0;
         byte[] buffer = new byte[BUFFER_BYTES];
-        try (InputStream input = object.get();
-             OutputStream output = Files.newOutputStream(file, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+        try (InputStream input = object.get()) {
             int read;
             while ((read = input.read(buffer)) >= 0) {
                 count += read;
@@ -178,7 +239,10 @@ class VerifiedPayloadSpool {
                             + " is larger than its reference's " + reference.sizeBytes() + " bytes");
                 }
                 digest.update(buffer, 0, read);
-                output.write(buffer, 0, read);
+                ByteBuffer chunk = ByteBuffer.wrap(buffer, 0, read);
+                while (chunk.hasRemaining()) {
+                    output.write(chunk);
+                }
             }
         } catch (PayloadStorageException e) {
             throw e;
@@ -202,7 +266,7 @@ class VerifiedPayloadSpool {
     private void reserve(PayloadReference reference, long size) {
         while (true) {
             long current = reserved.get();
-            if (current + size > maxBytes) {
+            if (size > maxBytes - current) {
                 throw new PayloadStorageException("Object payload " + reference.ref() + " (" + size
                         + " bytes) cannot be checked now: checked copies of " + current + " bytes are in use and "
                         + MAX_BYTES_PROPERTY + " is " + maxBytes);
@@ -215,6 +279,17 @@ class VerifiedPayloadSpool {
 
     private void release(long size) {
         reserved.addAndGet(-size);
+    }
+
+    private static void closeQuietly(FileChannel channel) {
+        if (channel == null) {
+            return;
+        }
+        try {
+            channel.close();
+        } catch (IOException e) {
+            LOG.debug("Could not close a checked payload copy: {}", e.toString());
+        }
     }
 
     private static void deleteQuietly(Path file) {
@@ -242,21 +317,27 @@ class VerifiedPayloadSpool {
         return process.pid() + "-" + started;
     }
 
-    private static boolean ownerIsRunning(String fileName) {
+    /**
+     * Whether the process that wrote a copy still runs: {@code null} for a name this spool does
+     * not write, which the sweep leaves alone.
+     */
+    private static Boolean ownerIsRunning(String fileName) {
         String[] parts = fileName.substring(PREFIX.length()).split("-", 3);
         if (parts.length < 3) {
-            return false;
+            return null;
         }
+        long pid;
+        long started;
         try {
-            long pid = Long.parseLong(parts[0]);
-            long started = Long.parseLong(parts[1]);
-            return ProcessHandle.of(pid)
-                    .filter(ProcessHandle::isAlive)
-                    .map(process -> ownerTag(process).equals(pid + "-" + started))
-                    .orElse(false);
+            pid = Long.parseLong(parts[0]);
+            started = Long.parseLong(parts[1]);
         } catch (NumberFormatException e) {
-            return false;
+            return null;
         }
+        return ProcessHandle.of(pid)
+                .filter(ProcessHandle::isAlive)
+                .map(process -> ownerTag(process).equals(pid + "-" + started))
+                .orElse(false);
     }
 
     /** The checked copy; closing it deletes the file and releases its share of the spool once. */

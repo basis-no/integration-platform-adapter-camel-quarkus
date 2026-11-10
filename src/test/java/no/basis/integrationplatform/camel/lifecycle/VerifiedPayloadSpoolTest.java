@@ -33,6 +33,14 @@ class VerifiedPayloadSpoolTest {
     @TempDir
     Path directory;
 
+    /** The spool writes into a per-host subdirectory of the configured one. */
+    private Path spoolDirectory;
+
+    @org.junit.jupiter.api.BeforeEach
+    void spoolDirectory() {
+        spoolDirectory = new VerifiedPayloadSpool(directory, 1).directory();
+    }
+
     @Test
     void theRouteGetsTheCheckedCopyAndClosingItDeletesTheFile() throws Exception {
         var spool = new VerifiedPayloadSpool(directory, 1024);
@@ -123,18 +131,41 @@ class VerifiedPayloadSpoolTest {
     void startupDeletesCopiesOfProcessesThatAreGoneAndKeepsLiveOnes() throws Exception {
         var spool = new VerifiedPayloadSpool(directory, 1024);
         String current = VerifiedPayloadSpool.ownerTag(ProcessHandle.current());
-        Path live = Files.writeString(directory.resolve("spool-" + current + "-live.payload"), "in use");
-        Path crashed = Files.writeString(directory.resolve("spool-2147483646-1-dead.payload"), "left by a crash");
+        Files.createDirectories(spoolDirectory);
+        Path live = Files.writeString(spoolDirectory.resolve("spool-" + current + "-live.payload"), "in use");
+        Path crashed = Files.writeString(spoolDirectory.resolve("spool-2147483646-1-dead.payload"), "left by a crash");
+        Path foreign = Files.writeString(spoolDirectory.resolve("spool-not-ours.payload"), "a name we never write");
         long pid = ProcessHandle.current().pid();
-        Path reusedPid = Files.writeString(directory.resolve("spool-" + pid + "-1-reused.payload"), "earlier process");
-        Path unrelated = Files.writeString(directory.resolve("notes.txt"), "not a spool file");
+        Path reusedPid = Files.writeString(spoolDirectory.resolve("spool-" + pid + "-1-reused.payload"), "earlier process");
+        Path unrelated = Files.writeString(spoolDirectory.resolve("notes.txt"), "not a spool file");
 
         spool.deleteLeftovers();
 
         assertFalse(Files.exists(crashed));
         assertFalse(Files.exists(reusedPid), "the same process id with another start time is a different process");
         assertTrue(Files.exists(unrelated));
+        assertTrue(Files.exists(foreign), "a name that does not parse is not deleted");
         assertTrue(Files.exists(live), "a copy of this running process stays");
+    }
+
+    @Test
+    void theSpoolDirectoryIsOwnerOnlyAndAHugeReferenceCannotOverflowTheBound() throws Exception {
+        var spool = new VerifiedPayloadSpool(directory, Long.MAX_VALUE - 1);
+        spool.checkedCopy(reference(PAYLOAD), () -> new ByteArrayInputStream(PAYLOAD)).close();
+        if (java.nio.file.FileSystems.getDefault().supportedFileAttributeViews().contains("posix")) {
+            assertEquals("rwx------", java.nio.file.attribute.PosixFilePermissions.toString(
+                    Files.getPosixFilePermissions(spoolDirectory)));
+        }
+
+        InputStream held = spool.checkedCopy(reference(PAYLOAD), () -> new ByteArrayInputStream(PAYLOAD));
+        PayloadReference huge = new PayloadReference(1, PayloadReference.STORAGE, "s3://bucket/payloads/orders/m-2",
+                Long.MAX_VALUE, reference(PAYLOAD).sha256(), "application/octet-stream",
+                Instant.now().plus(Duration.ofDays(1)).toString());
+
+        assertThrows(PayloadStorageException.class,
+                () -> spool.checkedCopy(huge, () -> new ByteArrayInputStream(PAYLOAD)));
+        assertEquals(PAYLOAD.length, spool.reservedBytes(), "a refused reservation does not wrap the counter");
+        held.close();
     }
 
     @Test
@@ -157,7 +188,10 @@ class VerifiedPayloadSpoolTest {
     }
 
     private List<Path> files() {
-        try (Stream<Path> files = Files.list(directory)) {
+        if (!Files.isDirectory(spoolDirectory)) {
+            return List.of();
+        }
+        try (Stream<Path> files = Files.list(spoolDirectory)) {
             return files.filter(file -> file.getFileName().toString().endsWith(".payload")).toList();
         } catch (IOException e) {
             throw new IllegalStateException(e);

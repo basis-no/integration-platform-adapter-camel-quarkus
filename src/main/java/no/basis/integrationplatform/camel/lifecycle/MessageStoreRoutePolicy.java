@@ -168,6 +168,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             capturePayloadMetadata(exchange);
         } catch (PayloadStorageException e) {
             failBeforeTheRoute(exchange, e);
+        } catch (RuntimeException e) {
+            // An application's own PayloadObjectStore, or a malformed reference, may throw anything.
+            failBeforeTheRoute(exchange, new PayloadStorageException(
+                    "The payload could not be captured or checked: " + e.getClass().getSimpleName(), e));
         }
         if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
             trafficSignals.recordAdmitted(exchange);
@@ -621,15 +625,16 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void resolvePayloadReference(Exchange exchange, Object body) {
         PayloadReference reference = PayloadReference.fromJson(body);
         validateReferenceHeaders(exchange, reference);
-        if (reference.expiryInstant().isBefore(Instant.now())) {
-            throw new PayloadStorageException("Payload reference has expired: " + reference.ref());
-        }
-        objectStore.verify(reference);
-        InputStream checked = checkedCopy(exchange, reference);
+        // Before any check that can fail: a FAILED outcome must keep the message's claim check,
+        // not overwrite it with a metadata-only row.
         applyPayloadReference(exchange, reference);
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK, reference.toJsonBytes());
         exchange.getMessage().setHeader(PlatformHeaders.CONTENT_TYPE, reference.contentType());
-        exchange.getMessage().setBody(checked);
+        if (reference.expiryInstant().isBefore(Instant.now())) {
+            throw new PayloadStorageException("Payload reference has expired: " + reference.ref());
+        }
+        // Opening the object checks its existence and size first, so no separate verify call.
+        exchange.getMessage().setBody(checkedCopy(exchange, reference));
     }
 
     private void applyPayloadReference(Exchange exchange, PayloadReference reference) {
