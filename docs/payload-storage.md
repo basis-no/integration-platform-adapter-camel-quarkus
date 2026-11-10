@@ -73,6 +73,13 @@ its expiry, capped at first receipt plus twice the retention. First receipt is
 the earliest outcome this integration recorded for the message. An S3 object
 payload keeps its first expiry together with its object.
 
+The cap counts from the earliest outcome still recorded. Recording the same
+attempt again replaces that attempt's outcome time, for example when the
+original record is consumed again after a replay. If it was the earliest
+outcome, a later replay's cap starts from the next earliest one, so it can
+reach past first receipt plus twice the retention by up to the time between
+those two outcomes.
+
 Cleanup removes inline bytes or the S3 object, sets `payload_deleted_at`, and
 marks the message non-replayable while retaining lifecycle audit. Bucket
 lifecycle rules are a safety net for orphaned objects, not the database source
