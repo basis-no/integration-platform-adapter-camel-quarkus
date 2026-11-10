@@ -64,6 +64,7 @@ Start with the [documentation index](docs/index.md).
 | Publish a snapshot for remote acceptance or make a final release | [Releasing](docs/releasing.md) |
 | Find every property, default, environment variable, and safety note | [Configuration reference](docs/configuration.md) |
 | Diagnose startup, replay, persistence, or consumer problems | [Troubleshooting](docs/troubleshooting.md) |
+| Upgrade an integration from 0.3.x to the unreleased 0.4.0 | [Upgrading from 0.3.x to 0.4.0](docs/upgrading-to-0.4.md) |
 
 ## Current Status
 

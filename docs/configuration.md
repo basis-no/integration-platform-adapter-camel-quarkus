@@ -50,7 +50,8 @@ into integration repositories.
 
 This version does not read these settings of adapter 0.3.5 and 0.3.6. So that
 an upgraded integration does not lose their effect without notice, the
-application refuses to start when one of them has a value, from any
+application refuses to start when one of them, or any other name under
+`basis.delivery-audit.` or `basis.input-audit.`, has a value, from any
 configuration source, including its environment variable. An empty value, which
 disabled the feature in 0.3.x, only logs a warning; remove it.
 
