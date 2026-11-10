@@ -526,8 +526,10 @@ class MessageStoreRoutePolicyTest {
     @Test
     void anHttpRequestWithAClaimCheckIsRecordedMetadataOnlyAndNotReplayable() {
         RecordingSink sink = new RecordingSink();
+        byte[] object = "<a/>\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        // The object's real SHA-256: the adapter checks the whole object before the route reads it.
         var reference = new PayloadReference(1, PayloadReference.STORAGE, "s3://payloads/orders/order-1",
-                5, "a".repeat(64), "application/xml", Instant.now().plus(Duration.ofDays(1)).toString());
+                object.length, sha256Hex(object), "application/xml", Instant.now().plus(Duration.ofDays(1)).toString());
         PayloadObjectStore store = new PayloadObjectStore() {
             @Override
             public PayloadReference store(String integration, String messageId, InputStream payload,
@@ -537,7 +539,7 @@ class MessageStoreRoutePolicyTest {
 
             @Override
             public InputStream open(PayloadReference ignored) {
-                return new java.io.ByteArrayInputStream("<a/>\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                return new java.io.ByteArrayInputStream(object);
             }
 
             @Override
@@ -776,6 +778,14 @@ class MessageStoreRoutePolicyTest {
         assertEquals(" (cause: java.nio.file.FileSystemException: /spool: No space left on device)",
                 MessageStoreRoutePolicy.rootCause(disk));
         assertEquals(" (cause: java.lang.IllegalStateException)", MessageStoreRoutePolicy.rootCause(application));
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private Route route(String routeId) {
