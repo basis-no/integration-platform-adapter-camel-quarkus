@@ -138,8 +138,11 @@ transaction on entry (autocommit off, as on a connection enlisted in a JTA
 transaction of a `transacted()` route), the transaction belongs to the
 application. The step outcome store then runs its statements in that
 transaction and neither begins, commits nor rolls it back, as before these
-timeouts; the sink commits or rolls back the connection's transaction, as it
-did before. In both cases no `statement_timeout` or `lock_timeout` is set,
+timeouts. The sink commits or rolls back the connection's transaction, as it
+did before; on a connection enlisted in a JTA transaction the pool refuses that
+commit, so the sink is not supported inside a JTA transaction: its record fails
+as a store failure. The sink normally runs when the exchange completes, after
+the route's transaction has ended. In both cases no `statement_timeout` or `lock_timeout` is set,
 because a transaction-local setting would last for the rest of the
 application's transaction: each statement is bounded by its JDBC query timeout
 and the network timeout, and a lock wait by the query timeout.
