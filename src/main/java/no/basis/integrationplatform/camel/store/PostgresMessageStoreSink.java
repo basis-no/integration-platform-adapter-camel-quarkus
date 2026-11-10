@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.store;
 
+import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
 import org.slf4j.Logger;
@@ -142,6 +143,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     private final MessageStatusEventJson serializer;
     private final Clock clock;
     private final Duration retention;
+    private final MessageStoreTimeouts timeouts;
     private final Map<String, SharedIdReport> sharedIdReports = new ConcurrentHashMap<>();
 
     public PostgresMessageStoreSink(DataSource dataSource) {
@@ -167,10 +169,21 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
     }
 
     PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Clock clock, Duration retention) {
+        this(dataSource, serializer, clock, retention, MessageStoreTimeouts.DEFAULT);
+    }
+
+    PostgresMessageStoreSink(
+            DataSource dataSource, MessageStatusEventJson serializer, Duration retention, MessageStoreTimeouts timeouts) {
+        this(dataSource, serializer, Clock.systemUTC(), retention, timeouts);
+    }
+
+    PostgresMessageStoreSink(DataSource dataSource, MessageStatusEventJson serializer, Clock clock, Duration retention,
+            MessageStoreTimeouts timeouts) {
         this.dataSource = dataSource;
         this.serializer = serializer;
         this.clock = clock;
         this.retention = retention;
+        this.timeouts = timeouts;
     }
 
     /**
@@ -208,20 +221,13 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     @Override
     public void record(MessageAttemptResult result) {
-        try (Connection connection = dataSource.getConnection()) {
-            boolean previousAutoCommit = connection.getAutoCommit();
-            connection.setAutoCommit(false);
-            try {
+        try {
+            timeouts.inTransaction(dataSource, connection -> {
                 Instant payloadExpiresAt = cappedPayloadExpiry(connection, result);
                 upsertMessageAttempt(connection, result, payloadExpiresAt);
                 upsertMessageLog(connection, result, payloadExpiresAt);
-                connection.commit();
-            } catch (Exception e) {
-                connection.rollback();
-                throw e;
-            } finally {
-                connection.setAutoCommit(previousAutoCommit);
-            }
+                return null;
+            });
         } catch (Exception e) {
             throw new MessageStoreSinkException("Failed to record message attempt " + result.messageId()
                     + "/" + result.attempt(), e);
@@ -241,7 +247,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             return null;
         }
         Instant firstReceipt = result.occurredAt();
-        try (PreparedStatement statement = connection.prepareStatement(FIRST_RECEIPT_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, FIRST_RECEIPT_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.integration());
             try (ResultSet earliest = statement.executeQuery()) {
@@ -258,7 +264,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     private void upsertMessageAttempt(Connection connection, MessageAttemptResult result, Instant payloadExpiresAt)
             throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_ATTEMPT_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPSERT_MESSAGE_ATTEMPT_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.integration());
             statement.setString(3, result.messageId());
@@ -295,7 +301,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
 
     private void upsertMessageLog(Connection connection, MessageAttemptResult result, Instant payloadExpiresAt)
             throws SQLException {
-        try (PreparedStatement statement = connection.prepareStatement(UPSERT_MESSAGE_LOG_SQL)) {
+        try (PreparedStatement statement = timeouts.prepare(connection, UPSERT_MESSAGE_LOG_SQL)) {
             statement.setString(1, result.messageId());
             statement.setString(2, result.correlationId());
             statement.setString(3, result.contentType());
