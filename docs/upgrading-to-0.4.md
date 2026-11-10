@@ -112,19 +112,19 @@ which this version refuses (see above). 0.4 selects its message boundaries with
 - Explicit route ids, or `all`, select those routes, or every route except the
   adapter's own parking route. A selected route must be a Kafka input, or a
   `platform-http:` route for the [HTTP audit-only
-  preview](ingress-and-scaling.md#http-audit-only-preview) with its required
-  settings; any other selected route, such as a nested `direct:` route or a
-  timer, refuses to start, and so does an ingress normalization route. A Kafka
-  boundary needs `basis.message-store.failure-mode=dlq` and the HTTP preview
-  needs `record-failed`, so one application cannot have both. `all` therefore
-  starts only when every route is a Kafka input, or every route is an HTTP
-  preview route.
+  preview](ingress-and-scaling.md#http-audit-only-preview); any other selected
+  route, such as a nested `direct:` route or a timer, refuses to start, and so
+  does an ingress normalization route. Kafka boundaries and the HTTP preview can
+  run in one application: add the HTTP route id next to `auto`, for example
+  `auto,receive-order`, so that a Kafka route added later is still selected.
+  `all` starts only when every route is a Kafka input or an HTTP preview
+  route.
 
 A selected route that is not a Kafka input is never replayed into the input
 topic
 ([#101](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/101)):
 startup refuses every selected route that is neither a Kafka input nor the HTTP
-preview, and the HTTP preview requires replay to be disabled. A replay
+preview, and an HTTP preview route is never replayable. A replay
 publishes only when the message's last attempt was recorded by a Kafka route of
 this application that consumes the replay topic; a message recorded by a Kafka
 route on another topic is refused before any replay audit row is written.
@@ -173,6 +173,22 @@ Also not on this branch yet:
 ## Other Upgrade Actions from 0.3.6
 
 The changelog's Unreleased section has the details; in short:
+
+- **The failure handling follows the input type.** A Kafka boundary parks a
+  failed message in the DLQ and commits after it; an HTTP audit-only boundary
+  records `FAILED`, answers its caller with the error and is never replayable,
+  whatever `basis.message-store.failure-mode` and
+  `basis.message-store.replay.enabled` say; a normalized file, poll or queue
+  input hands the failure back to its source. An HTTP preview no longer needs
+  `failure-mode=record-failed` or `replay.enabled=false`. `record-failed` is
+  still accepted, and still refused in an application with a Kafka boundary.
+  See [Failure and Replay per Input Type](retry-dlq-replay.md#failure-and-replay-per-input-type).
+- **A JMS queue input needs `CLIENT_ACKNOWLEDGE`.** Set
+  `acknowledgementModeName=CLIENT_ACKNOWLEDGE` on a `jms:queue:` normalization
+  input; with camel-jms's default `AUTO_ACKNOWLEDGE`, a message whose route
+  failed is not delivered again
+  ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
+  See [JMS Queues](ingress-and-scaling.md#jms-queues).
 
 - **Shorter `ip-slow-backend` waits.** The `ip-slow-backend` route
   configuration caps each redelivery delay at 20 seconds: 5, 10, 20, 20, 20
