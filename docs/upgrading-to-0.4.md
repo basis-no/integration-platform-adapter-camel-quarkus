@@ -207,10 +207,6 @@ Until then the 0.3.x limitations for splits and shared message ids apply; see
 
 Also not on this branch yet:
 
-- **The shared message-id warning.** 0.3.6 warns when a message id was already
-  journaled by another integration, which then takes over that row; this
-  branch does not warn yet
-  ([#100](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/100)).
 - **Delivery audit** (`basis.delivery-audit.*`)
   ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93));
   startup refuses the setting, see [Before You Upgrade](#before-you-upgrade).
@@ -249,6 +245,11 @@ The changelog's Unreleased section has the details; in short:
   time its poll has already taken; a committed outcome resets the wait. The
   consumer's other partitions wait with it. The outcome is still not committed.
   Without `break-on-first-error=true` there is no wait.
+- **The shared message-id warning**, as in 0.3.6: the adapter warns, once per
+  pair of integrations and then at most every ten minutes with a count, when it
+  journals a message id that another integration already journaled. Give each
+  integration its own `x-bip-message-id`. See
+  [Troubleshooting](troubleshooting.md#message-id-is-also-journaled-by-another-integration).
 - **Requests on exchanges of their own fail back to their caller**, as in
   0.3.6: only a managed Kafka input is parked. Unlike 0.3.6, such a failure no
   longer logs the parking ERROR. A route that sends requests on exchanges of its
