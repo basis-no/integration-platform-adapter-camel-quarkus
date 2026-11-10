@@ -9,7 +9,9 @@
   attempts could outlast the Kafka consumer's 300-second
   `max.poll.interval.ms`; Kafka then removed the consumer from its group and
   delivered the record again, so it could run, and be parked, more than once.
-  The number of redeliveries and the first delay are unchanged. See
+  The number of redeliveries and the first delay are unchanged. The interval
+  covers all records of one poll: for a route on `ip-slow-backend`, set
+  `maxPollRecords=1` on its Kafka input or raise `maxPollIntervalMs`. See
   [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,

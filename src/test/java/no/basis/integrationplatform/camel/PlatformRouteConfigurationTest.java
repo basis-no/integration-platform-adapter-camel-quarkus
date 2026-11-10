@@ -33,7 +33,10 @@ class PlatformRouteConfigurationTest {
             context.addRoutesConfigurations(new PlatformRouteConfiguration(mode));
             RedeliveryPolicyDefinition policy = redeliveryPolicy(context, PlatformRouteConfiguration.SLOW_BACKEND);
 
-            // Camel's own policy computes the waits, including its default cap when none is set.
+            // Camel's own policy computes the waits, including its default cap when none is set. A
+            // delay pattern or collision avoidance would change them, so the profile sets neither.
+            assertNull(policy.getDelayPattern());
+            assertNull(policy.getUseCollisionAvoidance());
             var camel = new RedeliveryPolicy();
             camel.setMaximumRedeliveries(Integer.parseInt(policy.getMaximumRedeliveries()));
             camel.setRedeliveryDelay(Long.parseLong(policy.getRedeliveryDelay()));

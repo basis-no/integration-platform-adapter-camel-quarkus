@@ -16,12 +16,20 @@ seconds. Automatic redelivery does not increment the message attempt; it adds
 diagnostics to that attempt.
 
 On a Kafka input the waits run on the consumer thread, between attempts that
-take their own time, and all of it counts against `max.poll.interval.ms` (300
-seconds by default). If one record's processing takes longer, Kafka removes the
-consumer from its group and the uncommitted record is delivered again. The
-`ip-slow-backend` waits leave about 200 seconds for its seven attempts, so bound
-each receiver call well inside that, for example a `responseTimeout` of 20
-seconds, or raise `max.poll.interval.ms` with `maxPollIntervalMs` on the input.
+take their own time. `max.poll.interval.ms` (300 seconds by default) bounds the
+time between two polls, and the consumer processes every record of a poll
+before it polls again (up to 500 records, Camel's default `maxPollRecords`), so
+the budget covers all records of one poll, not one record. If they take longer,
+Kafka removes the consumer from its group and the uncommitted records are
+delivered again. With `ip-slow-backend`, one record that exhausts its retries
+waits 95 seconds, so three such records in one poll already take most of the
+interval. For a route on `ip-slow-backend`, set `maxPollRecords=1` on the
+Kafka input, or raise `maxPollIntervalMs` on it to cover the records of a poll.
+With one record per poll, about 200 seconds remain for its seven attempts:
+bound each receiver call well inside that with `responseTimeout` and
+`connectTimeout` (see the table below for the forms Camel applies), and turn
+the HTTP client's own retry off, as described next, since it can double the
+requests in each attempt.
 
 The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
 client inside Camel's `http` component (Apache HttpClient 5.5 and its default
@@ -40,7 +48,7 @@ eight requests before the message is parked. Set
 `camel.component.http.automatic-retries-disabled=true` to leave every retry to
 the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
 and for routes on the `ip-slow-backend` configuration, whose own redeliveries
-already use much of the poll interval.
+already use about a third of the poll interval.
 
 On Camel 4's `http` component, bound a receiver call with `responseTimeout`
 and `connectTimeout`. Camel accepts some timeout options without applying them,
