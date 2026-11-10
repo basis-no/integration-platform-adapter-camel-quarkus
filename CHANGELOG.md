@@ -19,6 +19,19 @@
   these parameter values no longer finds it in new rows. Step keys and
   classification by node id are unchanged.
 
+- A Kafka record whose outcome could not be made durable is read again with a
+  growing wait. Before, while the outcome write, a step outcome or the DLQ
+  publish kept failing, for example during a Message Store outage, the record
+  was read again at once, several times a second, and every read ran the route
+  again: a send the step store did not skip (with the default `noop` store, or
+  for a record without `x-bip-message-id`) reached its receiver again, and a
+  parked message got another DLQ record. Now the first read again is at once,
+  then each further read of the same record waits 1 s, doubling, at most 30 s
+  and at most half the consumer's `max.poll.interval.ms` less the time its poll
+  has already taken; a committed outcome resets it. Without
+  `break-on-first-error=true` there is no wait. The consumer's other partitions wait
+  with it. The outcome is still not committed and the partition still waits, as
+  before. No setting.
 - A Kafka boundary's consumer resets to `earliest`, and a Kafka boundary route
   whose consumer uses any other `auto.offset.reset` refuses to start, naming
   the route and its endpoint. Before, the adapter left Camel's default `latest`
