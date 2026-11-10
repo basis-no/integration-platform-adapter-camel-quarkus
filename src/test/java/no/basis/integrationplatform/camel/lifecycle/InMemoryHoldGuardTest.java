@@ -40,7 +40,7 @@ class InMemoryHoldGuardTest {
             context.addRoutePolicyFactory(factory());
             context.addRoutes(new org.apache.camel.builder.RouteBuilder() {
                 public void configure() {
-                    from("kafka:bip.orders.in?brokers=localhost:1").routeId("orders")
+                    from("kafka:bip.orders.in?brokers=localhost:1&autoOffsetReset=earliest").routeId("orders")
                             .aggregate(constant("all"), STRATEGY).completionSize(10).to("direct:batched");
                 }
             });
@@ -258,7 +258,7 @@ class InMemoryHoldGuardTest {
     }
 
     private static RouteDefinition kafka(String routeId) {
-        return new RouteDefinition().from("kafka:bip." + routeId + ".in").routeId(routeId);
+        return new RouteDefinition().from("kafka:bip." + routeId + ".in?autoOffsetReset=earliest").routeId(routeId);
     }
 
     private static MessageStoreRoutePolicyFactory factory() {
