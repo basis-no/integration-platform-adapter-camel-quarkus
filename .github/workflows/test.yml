@@ -46,12 +46,11 @@ jobs:
           install
 
       - name: Boot the packaged adapter in a Quarkus application
-        run: >-
-          ./mvnw
-          --batch-mode
-          --no-transfer-progress
-          -f integration-tests/startup-smoke/pom.xml
-          verify
+        run: |
+          version="$(./mvnw --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          ./mvnw --batch-mode --no-transfer-progress \
+            -f integration-tests/startup-smoke/pom.xml \
+            -Dadapter.version="$version" verify
 
       - name: Verify public API documentation
         run: >-

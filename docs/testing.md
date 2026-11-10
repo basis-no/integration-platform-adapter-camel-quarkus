@@ -25,7 +25,8 @@ Store's lazy datasource. CI runs it after `./mvnw install`:
 
 ```sh
 ./mvnw install
-./mvnw -f integration-tests/startup-smoke/pom.xml verify
+version="$(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout)"
+./mvnw -f integration-tests/startup-smoke/pom.xml -Dadapter.version="$version" verify
 ```
 
 ### Restricted writer against the message recovery SQL

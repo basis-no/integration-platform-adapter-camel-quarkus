@@ -15,9 +15,13 @@ It checks what only a packaged build shows:
 - an internal request's failure reaches its caller without Kafka or a database.
 
 This is a test application, not a starting point for an integration. CI runs
-it after installing the adapter build. Locally, from the repository root:
+it after installing the adapter build, against exactly the installed version:
+the fixture has no default adapter version and no snapshot repository, so a
+missing or mismatched version fails instead of resolving another build.
+Locally, from the repository root:
 
 ```sh
 ./mvnw install
-./mvnw -f integration-tests/startup-smoke/pom.xml verify
+version="$(./mvnw -q help:evaluate -Dexpression=project.version -DforceStdout)"
+./mvnw -f integration-tests/startup-smoke/pom.xml -Dadapter.version="$version" verify
 ```
