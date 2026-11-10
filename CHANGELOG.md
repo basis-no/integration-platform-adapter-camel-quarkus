@@ -18,6 +18,47 @@
   The rule goes by the name, so harmless headers such as `X-Partition-Key`,
   `X-Idempotency-Key`, `X-Author` or `X-Session-Count` are refused too: copy
   the value to an exchange property and list it in `property-names` instead.
+- A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
+  the endpoint named in the adapter's warnings mask credentials by the .NET
+  adapter's rule, so both adapters store the same value: besides what Camel's
+  `URISupport.sanitizeUri` masked, the whole user info
+  (`https://xxxxxx@host/…`) and the values of the query parameters `key`,
+  `code`, `sig`, `pwd`, names that are credential-like by the DLQ header rule
+  (such as `Signature`, `X-Amz-Credential` or a name ending in `-key`), and
+  names containing `passphrase`, `passcode`, `privatekey`, `accesskey`,
+  `accountkey` or `connectionstring`. An endpoint the patterns cannot mask
+  within about a second is stored as `xxxxxx`, instead of the step waiting on
+  the pattern (Camel's own sanitizer, which also runs when an application has
+  added keywords, has no such bound). See [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
+  Upgrade: new attempts store the masked value; rows recorded before keep
+  theirs. A query or tool that matched a stored endpoint's user name or one of
+  these parameter values no longer finds it in new rows. Step keys and
+  classification by node id are unchanged.
+- The `ip-slow-backend` route configuration caps each redelivery delay at 20
+  seconds: it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before
+  the configured failure mode applies. Before, the delays doubled up to Camel's
+  default cap of 60 seconds and waited 195 seconds, which together with seven
+  attempts could outlast the Kafka consumer's 300-second
+  `max.poll.interval.ms`; Kafka then removed the consumer from its group and
+  delivered the record again, so it could run, and be parked, more than once.
+  The number of redeliveries and the first delay are unchanged. The interval
+  covers all records of one poll: for a route on `ip-slow-backend`, set
+  `maxPollRecords=1` on its Kafka input or raise `maxPollIntervalMs`. See
+  [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
+- The application refuses to start when `basis.delivery-audit.routes` or
+  `basis.input-audit.routes` (`BASIS_DELIVERY_AUDIT_ROUTES`,
+  `BASIS_INPUT_AUDIT_ROUTES`) has a value. Adapter 0.3.5 and 0.3.6 offered
+  delivery audit and non-Kafka input inspection through them; this version
+  does not implement either, and before this change it ignored the settings,
+  so an upgraded integration lost its audit rows without notice. The error names
+  each setting and what to use instead; an empty value only logs a warning.
+  Upgrade: remove `basis.delivery-audit.routes` (delivery audit is not
+  available in this version yet, see
+  [#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)).
+  Replace `basis.input-audit.routes` with the HTTP audit-only preview for an
+  HTTP input, or ingress normalization to Kafka for a file, timer or poller
+  input. See
+  [Settings Removed Since 0.3.x](docs/configuration.md#settings-removed-since-03x).
 
 - A Kafka record whose outcome could not be made durable is read again with a
   growing wait. Before, while the outcome write, a step outcome or the DLQ

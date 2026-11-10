@@ -9,7 +9,6 @@ import org.apache.camel.spi.HeaderFilterStrategyAware;
 import org.apache.camel.spi.InterceptSendToEndpoint;
 import org.apache.camel.spi.PropertyConfigurer;
 import org.apache.camel.spi.PropertyConfigurerGetter;
-import org.apache.camel.util.URISupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -199,7 +198,7 @@ public final class ForwardedCredentialHeaders {
 
         private static IllegalStateException unfiltered(Endpoint endpoint) {
             return new IllegalStateException("Cannot add a consumed Kafka record's credential headers and the Kafka "
-                    + "consumer's kafka.* headers to the header filter of " + URISupport.sanitizeUri(endpoint.getEndpointUri())
+                    + "consumer's kafka.* headers to the header filter of " + EndpointUriMasking.mask(endpoint.getEndpointUri())
                     + "; the endpoint could send them to its receiver");
         }
     }
