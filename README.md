@@ -98,8 +98,26 @@ Start with the [documentation index](docs/index.md).
   input instead of the message the route left, and logs that a handled message
   is being parked. 0.3.6 fixed it, and so does 0.4.0; see
   [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- On `main`, a Kafka record whose outcome could not be made durable is read
+  again with a growing wait instead of several times a second; see
+  [Reading a record again](docs/retry-dlq-replay.md#reading-a-record-again).
+- 0.3.x and 0.4.0-rc1 leave a Kafka boundary's consumer on Camel's default
+  `auto.offset.reset=latest`. A record whose outcome was not durable, on a
+  partition where the consumer group has no committed offset yet, is skipped
+  after Camel's reconnect instead of read again. Workaround: set
+  `camel.component.kafka.auto-offset-reset=earliest`. Fixed for 0.4.0, which
+  ships `earliest` and refuses to start a Kafka boundary with another value;
+  see [Configuration](docs/configuration.md#required-runtime-configuration).
+- On `main`, only a managed Kafka input is parked in the DLQ, as in 0.3.6; a
+  request on an exchange of its own, or a timer or poller input, fails back to
+  its caller. See [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
+- The 0.3 line continues as a maintained series, with its current scope (one
+  input topic per integration); further 0.3.x patch releases may follow, also
+  after 0.4.0. 0.3.x documents its own known
+  limitations, among them what happens during a Message Store outage, on its
+  [`release/0.3` branch](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/blob/release/0.3/README.md#retry-and-dlq).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is
   recorded `DELIVERED` when the sub-route's dead-letter channel parks the
   message, so a resend skips it. Resend with the step in `redoSteps`; see
@@ -110,6 +128,11 @@ Start with the [documentation index](docs/index.md).
   normalization, replica-safety validation, Kafka activity counters with
   admission counting on by default (opt-in in 0.3.6), and the 0.3.6 Key-Value
   Store.
+- Delivery audit and non-Kafka input inspection from 0.3.5 and 0.3.6
+  (`basis.delivery-audit.routes`, `basis.input-audit.routes`) are not in this
+  development line yet; an application with either set refuses to start and
+  names what to use instead. See
+  [Settings Removed Since 0.3.x](docs/configuration.md#settings-removed-since-03x).
 - The `0.4` features have extensive local unit and Testcontainers coverage but
   are not released until the stacked changes are merged, released, and the
   remote acceptance campaign is complete.
