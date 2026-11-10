@@ -1,5 +1,7 @@
 package no.basis.integrationplatform.camel.lease;
 
+import io.micrometer.core.instrument.Gauge;
+import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.annotation.Priority;
 import jakarta.enterprise.event.Observes;
@@ -69,6 +71,7 @@ public class LeaseManager extends ServiceSupport {
     private final LongSupplier nanoTime;
     private final Clock clock;
     private final ConcurrentMap<String, Registration> registrations = new ConcurrentHashMap<>();
+    private final Supplier<MeterRegistry> meters;
     private volatile boolean running;
     private volatile boolean contractFailureLogged;
     private ScheduledExecutorService deadlineChecks;
@@ -79,15 +82,34 @@ public class LeaseManager extends ServiceSupport {
      * @param state the integration's Key-Value Store, created on the first lease attempt
      * @param contractGate the adapter's contract check, whose result gates every lease attempt
      */
-    @Inject
     public LeaseManager(Instance<KeyValueStore> state, ContractVersionStartupGate contractGate) {
+        this(state, contractGate, null);
+    }
+
+    /**
+     * Creates the manager for this replica on the integration's state, with a gauge per route
+     * when the application has a meter registry.
+     *
+     * @param state the integration's Key-Value Store, created on the first lease attempt
+     * @param contractGate the adapter's contract check, whose result gates every lease attempt
+     * @param registries the application's meter registry, if any
+     */
+    @Inject
+    public LeaseManager(Instance<KeyValueStore> state, ContractVersionStartupGate contractGate,
+                        Instance<MeterRegistry> registries) {
         this(replicaIdentity(), state::get, contractGate::outcome, LeaseTiming.DEFAULT, System::nanoTime,
-                Clock.systemUTC());
+                Clock.systemUTC(), () -> registries != null && registries.isResolvable() ? registries.get() : null);
     }
 
     LeaseManager(String holder, Supplier<KeyValueStore> state, Supplier<ContractVersionStartupGate.Outcome> contractCheck,
                  LeaseTiming timing, LongSupplier nanoTime, Clock clock) {
+        this(holder, state, contractCheck, timing, nanoTime, clock, () -> null);
+    }
+
+    LeaseManager(String holder, Supplier<KeyValueStore> state, Supplier<ContractVersionStartupGate.Outcome> contractCheck,
+                 LeaseTiming timing, LongSupplier nanoTime, Clock clock, Supplier<MeterRegistry> meters) {
         Objects.requireNonNull(state, "state");
+        this.meters = Objects.requireNonNull(meters, "meters");
         this.holder = Objects.requireNonNull(holder, "holder");
         this.timing = Objects.requireNonNull(timing, "timing");
         // The Key-Value Store bounds each statement itself, so a lease call fails instead of hanging.
@@ -116,6 +138,23 @@ public class LeaseManager extends ServiceSupport {
      */
     Lease lease(String name) {
         return registrations.computeIfAbsent(name, Registration::new).current;
+    }
+
+    /**
+     * Marks the named work as allowed to run only under its lease: without a Key-Value Store its
+     * gate stays closed instead of opening on every replica. Used when a deployment declares several
+     * replicas and the work's source is safe only because the lease coordinates it.
+     *
+     * @param name the route id
+     */
+    public void require(String name) {
+        registrations.computeIfAbsent(name, Registration::new).required = true;
+    }
+
+    /** Whether the named work may run only under its lease. */
+    boolean isRequired(String name) {
+        Registration registration = registrations.get(name);
+        return registration != null && registration.required;
     }
 
     /**
@@ -309,16 +348,34 @@ public class LeaseManager extends ServiceSupport {
         private final String name;
         private volatile Lease current;
         private volatile boolean wanted;
+        private volatile boolean required;
         private Activation activation;
         private long startExpectedAtNanos;
 
         private Registration(String name) {
             this.name = name;
             this.current = newLease();
+            registerGauge();
         }
 
         private Lease newLease() {
-            return new Lease(name, holder, state, timing, nanoTime, clock);
+            return new Lease(name, holder, state, timing, nanoTime, clock, () -> required);
+        }
+
+        /** 1 while this replica holds the lease, 0 while it waits, 2 while the route runs uncoordinated. */
+        private void registerGauge() {
+            MeterRegistry registry = meters.get();
+            if (registry == null) {
+                return;
+            }
+            Gauge.builder("integration_single_active_lease", this,
+                            registration -> registration.current.isHeld() ? 1
+                                    : registration.current.isUncoordinated() ? 2 : 0)
+                    .description("Single-active lease of a polling route on this replica:"
+                            + " 1 held, 0 waiting, 2 running uncoordinated without a Key-Value Store")
+                    .tag("route", name)
+                    .strongReference(true)
+                    .register(registry);
         }
 
         private synchronized void expectStart() {

@@ -547,7 +547,7 @@ class SingleActiveGateTest {
         context.addRoutes(new RouteBuilder() {
             @Override
             public void configure() {
-                from("timer:once?delay=0&repeatCount=1").routeId("once").autoStartup(false)
+                from("timer:once?delay=0&period=600000").routeId("once").autoStartup(false)
                         .process(exchange -> processed.incrementAndGet());
             }
         });
@@ -693,7 +693,7 @@ class SingleActiveGateTest {
         context.addRoutes(new RouteBuilder() {
             @Override
             public void configure() {
-                from("timer:once?delay=0&repeatCount=1").routeId("once").process(exchange -> processed.incrementAndGet());
+                from("timer:once?delay=0&period=600000").routeId("once").process(exchange -> processed.incrementAndGet());
             }
         });
 

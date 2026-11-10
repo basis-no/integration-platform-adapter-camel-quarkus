@@ -72,6 +72,27 @@ class SingleActiveExclusionTest {
     }
 
     @Test
+    void aFiniteTimerRunsOnEveryReplicaWithoutALease() throws Exception {
+        state.hold("lease/init", "pod-b", Duration.ofMinutes(5));
+        AtomicInteger ticks = new AtomicInteger();
+        install(Optional.empty());
+        context.addRoutes(new RouteBuilder() {
+            @Override
+            public void configure() {
+                from("timer:init?delay=0&repeatCount=1").routeId("init").process(exchange -> ticks.incrementAndGet());
+            }
+        });
+        context.start();
+
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (ticks.get() == 0 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertEquals(1, ticks.get(), "the one-shot tick runs although another replica holds a lease of that name");
+        assertNull(manager.current("init"), "a finite timer gets no lease");
+    }
+
+    @Test
     void anExcludedIdThatIsNotAPollingRouteRefusesTheStart() throws Exception {
         SingleActiveRoutePolicyFactory factory = install(Optional.of("transform"));
         context.addRoutes(new RouteBuilder() {
@@ -88,8 +109,8 @@ class SingleActiveExclusionTest {
     }
 
     @Test
-    void anExcludedIdOfNoRouteRefusesTheStart() throws Exception {
-        SingleActiveRoutePolicyFactory factory = install(Optional.of("heartbeta"));
+    void anExcludedIdOfNoRouteAtStartupOnlyWarns() throws Exception {
+        SingleActiveRoutePolicyFactory factory = install(Optional.of("added-later"));
         context.addRoutes(new RouteBuilder() {
             @Override
             public void configure() {
@@ -98,8 +119,21 @@ class SingleActiveExclusionTest {
         });
         context.start();
 
-        IllegalStateException error = assertThrows(IllegalStateException.class, () -> factory.verifyExclusions(context));
-        assertTrue(error.getMessage().contains("'heartbeta'"), error.getMessage());
+        // A route can still be added later, for example from a route template; the id then applies to it.
+        org.junit.jupiter.api.Assertions.assertDoesNotThrow(() -> factory.verifyExclusions(context));
+        AtomicInteger ticks = new AtomicInteger();
+        state.hold("lease/added-later", "pod-b", Duration.ofMinutes(5));
+        context.addRoutes(new RouteBuilder() {
+            @Override
+            public void configure() {
+                from("timer:later?period=20").routeId("added-later").process(exchange -> ticks.incrementAndGet());
+            }
+        });
+        long deadline = System.nanoTime() + Duration.ofSeconds(5).toNanos();
+        while (ticks.get() == 0 && System.nanoTime() < deadline) {
+            Thread.sleep(20);
+        }
+        assertTrue(ticks.get() > 0, "the route added later is excluded, so it runs without the lease");
     }
 
     private SingleActiveRoutePolicyFactory install(Optional<String> excluded) throws Exception {

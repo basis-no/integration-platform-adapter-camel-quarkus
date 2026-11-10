@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.node.ObjectNode;
 import no.basis.integrationplatform.camel.keyvalue.KeyValueStore;
 import no.basis.integrationplatform.camel.keyvalue.KeyValueEntry;
 import no.basis.integrationplatform.camel.keyvalue.KeyValueStoreException;
+import no.basis.integrationplatform.camel.keyvalue.KeyValueStoreNotConfiguredException;
 import no.basis.integrationplatform.camel.keyvalue.KeyValueLimitException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -16,6 +17,7 @@ import java.util.Objects;
 import java.util.Optional;
 import java.util.OptionalLong;
 import java.util.UUID;
+import java.util.function.BooleanSupplier;
 import java.util.function.LongSupplier;
 import java.util.function.Supplier;
 
@@ -65,6 +67,7 @@ final class Lease {
     private final LeaseTiming timing;
     private final LongSupplier nanoTime;
     private final Clock clock;
+    private final BooleanSupplier required;
 
     private volatile boolean open;
     // Read without the monitor by the deadline check; written under it.
@@ -85,6 +88,17 @@ final class Lease {
 
     Lease(String name, String holder, Supplier<KeyValueStore> state, LeaseTiming timing,
           LongSupplier nanoTime, Clock clock) {
+        this(name, holder, state, timing, nanoTime, clock, () -> false);
+    }
+
+    /**
+     * @param required whether the work may only run under the lease: then a Message Store without
+     *                 the Key-Value Store table, or no Key-Value Store at all, keeps the gate closed
+     *                 instead of letting the work run on every replica
+     */
+    Lease(String name, String holder, Supplier<KeyValueStore> state, LeaseTiming timing,
+          LongSupplier nanoTime, Clock clock, BooleanSupplier required) {
+        this.required = Objects.requireNonNull(required, "required");
         this.name = Objects.requireNonNull(name, "name");
         this.key = KEY_PREFIX + name;
         this.holder = Objects.requireNonNull(holder, "holder");
@@ -102,9 +116,19 @@ final class Lease {
         return holder;
     }
 
-    /** Whether the work may run on this replica right now. */
+    /**
+     * Whether the work may run on this replica right now. The deadline is evaluated here as well as
+     * by the periodic check, so a gate never reads open after its holder's deadline. Without a fencing
+     * token a holder that pauses (a long garbage collection, a frozen process) between this check and
+     * its work can still overlap with the next holder by that pause.
+     */
     boolean isOpen() {
-        return open;
+        return open && !deadlinePassed();
+    }
+
+    /** Whether the work runs on every replica because there is no Key-Value Store to coordinate it. */
+    boolean isUncoordinated() {
+        return status == Status.UNCOORDINATED;
     }
 
     /** Whether this replica holds the lease. */
@@ -181,12 +205,15 @@ final class Lease {
             currentValue = value;
         }
         try {
-            KeyValueStore store = state.get();
+            KeyValueStore store = resolveStore();
             if (current == Status.HELD) {
                 renew(store, currentValue);
             } else {
                 acquire(store);
             }
+        } catch (NoKeyValueStore e) {
+            // The application has no Key-Value Store: no Message Store datasource or app.name.
+            unavailable(e.getCause().getMessage());
         } catch (KeyValueLimitException e) {
             limited(e);
         } catch (KeyValueStoreException e) {
@@ -196,8 +223,8 @@ final class Lease {
                 unreachable(e);
             }
         } catch (RuntimeException e) {
-            // The Key-Value Store could not be created at all: no Message Store datasource or app.name.
-            unavailable(e.toString());
+            // Anything else is not a missing store: keep the gate closed, as for an unreachable one.
+            unreachable(e);
         } finally {
             ObjectNode deferred = null;
             synchronized (this) {
@@ -304,6 +331,26 @@ final class Lease {
         }
     }
 
+    /** Signals that the application has no Key-Value Store, as opposed to one that fails. */
+    private static final class NoKeyValueStore extends RuntimeException {
+        NoKeyValueStore(KeyValueStoreNotConfiguredException cause) {
+            super(cause.getMessage(), cause, false, false);
+        }
+    }
+
+    private KeyValueStore resolveStore() {
+        try {
+            return state.get();
+        } catch (RuntimeException e) {
+            for (Throwable cause = e; cause != null; cause = cause.getCause()) {
+                if (cause instanceof KeyValueStoreNotConfiguredException notConfigured) {
+                    throw new NoKeyValueStore(notConfigured);
+                }
+            }
+            throw e;
+        }
+    }
+
     private void acquire(KeyValueStore store) {
         long sent = nanoTime.getAsLong();
         ObjectNode candidate = JsonNodeFactory.instance.objectNode()
@@ -355,10 +402,25 @@ final class Lease {
         // key starts again at version 1 for whoever creates it next, so a version alone proves nothing.
         Optional<KeyValueEntry> current = store.get(key);
         boolean owned = current.isPresent() && heldValue.equals(current.get().value());
+        // The deadline counts from the send of the write that sets the expiry: the store sets it when the
+        // write runs, which is after this send, so the lease always outlives the gate.
         long sent = nanoTime.getAsLong();
         OptionalLong renewed = owned
                 ? store.compareAndSet(key, current.get().version(), heldValue, timing.leaseDuration())
                 : OptionalLong.empty();
+        boolean releaseStale = false;
+        synchronized (this) {
+            if (status != Status.HELD) {
+                // The deadline closed the gate while this renewal was in flight. If it still went through,
+                // the row would block the other replicas until it expires: let it go. A detached instance
+                // releases what it held through releaseWhenIdle().
+                releaseStale = renewed.isPresent() && status == Status.WAITING;
+            }
+        }
+        if (releaseStale) {
+            release(heldValue);
+            return;
+        }
         synchronized (this) {
             if (status != Status.HELD) {
                 return;
@@ -394,7 +456,7 @@ final class Lease {
         }
     }
 
-    private synchronized void unreachable(KeyValueStoreException failure) {
+    private synchronized void unreachable(RuntimeException failure) {
         if (status == Status.HELD) {
             if (deadlinePassed()) {
                 LOG.warn("Single-active route {} stops: {} held by {} could not be renewed within {}",
@@ -430,6 +492,22 @@ final class Lease {
 
     private synchronized void unavailable(String reason) {
         if (status == Status.UNCOORDINATED || status == Status.DETACHED) {
+            return;
+        }
+        if (required.getAsBoolean()) {
+            // The replica check accepted this route only because the lease coordinates it: running it on
+            // every replica would duplicate its source, so the work stays stopped until the store exists.
+            if (status == Status.HELD) {
+                lose();
+            }
+            open = false;
+            if (reported != Reported.UNAVAILABLE) {
+                LOG.error("Single-active route {} stays stopped on every replica: it needs its lease, because"
+                        + " several replicas are declared, but the Key-Value Store is unavailable ({}); it runs"
+                        + " once the Message Store has " + KeyValueStores.TABLE + " and the application a"
+                        + " Key-Value Store", name, reason);
+                reported = Reported.UNAVAILABLE;
+            }
             return;
         }
         LOG.warn("Single-active route {} runs on every replica: the Key-Value Store is unavailable ({}); it is"

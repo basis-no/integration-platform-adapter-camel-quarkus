@@ -36,6 +36,8 @@ final class SingleActiveRoutePolicy extends RoutePolicySupport {
     private final LeaseManager manager;
     private volatile boolean gateExchanges;
     private final AtomicBoolean unregisteredWarned = new AtomicBoolean();
+    // The lease instance whose first skipped trigger was logged at INFO; later skips log at DEBUG.
+    private volatile Lease skipLogged;
 
     SingleActiveRoutePolicy(LeaseManager manager) {
         this.manager = manager;
@@ -108,7 +110,13 @@ final class SingleActiveRoutePolicy extends RoutePolicySupport {
             return;
         }
         if (!lease.isOpen()) {
-            LOG.trace("Single-active route {} skips a trigger: this replica does not hold its lease", routeId);
+            if (skipLogged != lease) {
+                skipLogged = lease;
+                LOG.info("Single-active route {} skips its triggers while this replica does not hold its lease;"
+                        + " the replica that holds it runs them", routeId);
+            } else {
+                LOG.debug("Single-active route {} skips a trigger: this replica does not hold its lease", routeId);
+            }
             exchange.setRouteStop(true);
         }
     }

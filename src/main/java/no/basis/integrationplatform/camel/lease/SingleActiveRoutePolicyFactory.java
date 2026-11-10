@@ -55,18 +55,23 @@ public class SingleActiveRoutePolicyFactory implements RoutePolicyFactory {
     }
 
     /**
-     * Refuses an excluded id that names no polling route of the application, so a
-     * typo cannot leave a route coordinated that the application meant to run on
-     * every replica, or hide that the id does not exist.
+     * Refuses an excluded id that names a route that does not poll, and warns about an id
+     * that names no route at startup: a route can still be added later, for example from a
+     * route template, but a typo would otherwise leave a route coordinated unnoticed.
      */
     void verifyExclusions(CamelContext camelContext) {
         Model model = camelContext.getCamelContextExtension().getContextPlugin(Model.class);
         for (String routeId : excluded) {
             Route route = camelContext.getRoute(routeId);
             RouteDefinition definition = model == null ? null : model.getRouteDefinition(routeId);
-            if (route == null || definition == null || !SingleActiveRoutes.coordinates(camelContext, definition)) {
+            if (route == null || definition == null) {
+                LOG.warn("{} lists '{}', which names no route at startup; it applies if such a polling route"
+                        + " is added later", SingleActiveRoutes.EXCLUDED_ROUTES, routeId);
+                continue;
+            }
+            if (!SingleActiveRoutes.coordinates(camelContext, definition)) {
                 throw new IllegalStateException(SingleActiveRoutes.EXCLUDED_ROUTES + " lists '" + routeId
-                        + "', which is not a polling route of this application; list only the ids of timer,"
+                        + "', which is not a route the adapter runs under a lease; list only the ids of timer,"
                         + " cron, quartz, scheduler or polling routes that are to run on every replica");
             }
         }
@@ -74,7 +79,17 @@ public class SingleActiveRoutePolicyFactory implements RoutePolicyFactory {
 
     @Override
     public RoutePolicy createRoutePolicy(CamelContext camelContext, String routeId, NamedNode route) {
-        if (!(route instanceof RouteDefinition definition) || !SingleActiveRoutes.coordinates(camelContext, definition)) {
+        if (!(route instanceof RouteDefinition definition)) {
+            return null;
+        }
+        if (SingleActiveRoutes.isFiniteTimer(camelContext, definition)) {
+            LOG.warn("Timer route {} has a finite repeatCount, so it runs on every replica, not under a lease:"
+                    + " a tick dropped on a replica without the lease, such as the new pod of a rolling update,"
+                    + " would never fire again. Make it idempotent across replicas, or use a recurring timer",
+                    routeId);
+            return null;
+        }
+        if (!SingleActiveRoutes.coordinates(camelContext, definition)) {
             return null;
         }
         if (excluded.contains(routeId)) {

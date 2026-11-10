@@ -34,6 +34,18 @@ class SingleActiveRoutesTest {
     }
 
     @Test
+    void leavesATimerWithAFiniteRepeatCountUncoordinated() {
+        assertFalse(coordinates("timer:init?repeatCount=1"), "a dropped one-shot tick would never fire again");
+        assertFalse(coordinates("timer:init?delay=0&repeatCount=3"));
+        assertTrue(coordinates("timer:poll?repeatCount=0&period=1000"), "repeatCount=0 repeats forever");
+        assertTrue(coordinates("timer:poll?period=1000"));
+        context.getPropertiesComponent().addInitialProperty("init.count", "1");
+        assertFalse(coordinates("timer:init?repeatCount={{init.count}}"));
+        assertTrue(SingleActiveRoutes.isFiniteTimer(context, new RouteDefinition().from("timer:init?repeatCount=1")));
+        assertFalse(SingleActiveRoutes.isFiniteTimer(context, new RouteDefinition().from("file:/input")));
+    }
+
+    @Test
     void resolvesPlaceholdersBeforeDeciding() {
         context.getPropertiesComponent().addInitialProperty("orders.source", "timer:poll?period=60000");
 

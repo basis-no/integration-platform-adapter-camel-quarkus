@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import java.util.Optional;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -49,8 +50,24 @@ class IngressReplicaSafetyTest {
     }
 
     @Test
+    void requiresTheLeaseOfARouteItAcceptsOnlyBecauseOfTheLease() {
+        var required = new java.util.ArrayList<String>();
+        IngressReplicaSafety several = new IngressReplicaSafety(Optional.of(3), Optional.empty(), required::add);
+        IngressReplicaSafety undeclared = new IngressReplicaSafety(Optional.empty(), Optional.empty(), required::add);
+        IngressReplicaSafety single = new IngressReplicaSafety(Optional.of(1), Optional.empty(), required::add);
+
+        several.validate(context, "poll-files", route("file:/input?move=.done"));
+        undeclared.validate(context, "poll-ledger", route("timer:ledger?period=60000"));
+        single.validate(context, "poll-one", route("file:/one"));
+        several.validate(context, "poll-master", route("master:ingress:file:/input"));
+
+        assertEquals(java.util.List.of("poll-files", "poll-ledger"), required,
+                "only routes the check accepted because of their lease must have it; one replica, or master:, need none");
+    }
+
+    @Test
     void rejectsAPollingSourceExcludedFromTheLeasesWithMultipleReplicas() {
-        IngressReplicaSafety safety = new IngressReplicaSafety(Optional.of(3), Optional.of("poll-files, other"));
+        IngressReplicaSafety safety = new IngressReplicaSafety(Optional.of(3), Optional.of("poll-files, other"), routeId -> { });
 
         IllegalArgumentException error = assertThrows(IllegalArgumentException.class,
                 () -> safety.validate(context, "poll-files", route("file:/input?move=.done")));

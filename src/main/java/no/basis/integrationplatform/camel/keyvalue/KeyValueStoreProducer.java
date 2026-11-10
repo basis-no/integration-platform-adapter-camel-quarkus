@@ -38,7 +38,7 @@ public class KeyValueStoreProducer {
             Instance<DataSource> dataSource) {
         // The message log falls back to a placeholder name; shared state under one would mix integrations.
         String integration = integrationName.filter(name -> !name.isBlank())
-                .orElseThrow(() -> new IllegalStateException(
+                .orElseThrow(() -> new KeyValueStoreNotConfiguredException(
                         "Key-Value Store requires app.name, the integration identity its keys belong to"));
         if (sweepIntervalSeconds < 1 || sweepIntervalSeconds > MAX_SWEEP_INTERVAL_SECONDS) {
             throw new IllegalStateException("basis.message-store.key-value.sweep-interval-seconds must be 1 to "
@@ -48,7 +48,7 @@ public class KeyValueStoreProducer {
             throw MessageStoreDataSource.ambiguous("Key-Value Store");
         }
         if (!dataSource.isResolvable()) {
-            throw new IllegalStateException("Key-Value Store requires a JDBC DataSource for the Message Store");
+            throw new KeyValueStoreNotConfiguredException("Key-Value Store requires a JDBC DataSource for the Message Store");
         }
         PostgresKeyValueStore state = new PostgresKeyValueStore(dataSource.get(), integration);
         state.startSweep(Duration.ofSeconds(sweepIntervalSeconds));

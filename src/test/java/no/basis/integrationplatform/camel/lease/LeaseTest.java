@@ -1,6 +1,7 @@
 package no.basis.integrationplatform.camel.lease;
 
 import no.basis.integrationplatform.camel.keyvalue.KeyValueStore;
+import no.basis.integrationplatform.camel.keyvalue.KeyValueStoreNotConfiguredException;
 import org.junit.jupiter.api.Test;
 
 import java.time.Duration;
@@ -166,7 +167,8 @@ class LeaseTest {
         assertEquals(CLOSED, lease.attempt(), "the gate closed during the attempt and the late result did not reopen it");
 
         assertFalse(lease.isOpen(), "a late successful renewal does not revive the lease");
-        assertEquals(2, state.rows.get(KEY).version(), "the store did apply the late renewal");
+        assertNull(state.rows.get(KEY), "the store applied the late renewal, and the row is released so another"
+                + " replica need not wait for it to expire");
     }
 
     @Test
@@ -493,12 +495,67 @@ class LeaseTest {
     @Test
     void anIntegrationWithoutAMessageStoreRunsUncoordinated() {
         Lease withoutStore = lease("pod-a", () -> {
-            throw new IllegalStateException("Key-Value Store requires a JDBC DataSource for the Message Store");
+            throw new KeyValueStoreNotConfiguredException("Key-Value Store requires a JDBC DataSource for the Message Store");
         });
 
         assertEquals(OPENED, withoutStore.attempt());
         assertTrue(withoutStore.isOpen());
+        assertTrue(withoutStore.isUncoordinated());
         assertEquals(NONE, withoutStore.attempt());
+    }
+
+    @Test
+    void anyOtherFailureToCreateTheStoreKeepsTheGateClosed() {
+        // An ambiguous datasource, a CDI failure: not a store that does not exist, so nothing runs uncoordinated.
+        Lease misconfigured = lease("pod-a", () -> {
+            throw new IllegalStateException("Key-Value Store requires the application's default JDBC DataSource");
+        });
+
+        assertEquals(NONE, misconfigured.attempt());
+        assertFalse(misconfigured.isOpen());
+        assertFalse(misconfigured.isUncoordinated());
+    }
+
+    @Test
+    void anUnexpectedFailureOfAStoreCallKeepsTheGateClosed() {
+        state.beforePutIfAbsent = () -> {
+            throw new IllegalArgumentException("unexpected");
+        };
+
+        assertEquals(NONE, lease.attempt());
+        assertFalse(lease.isOpen());
+    }
+
+    @Test
+    void aRequiredLeaseStaysClosedWithoutTheTableOrWithoutAStore() {
+        Lease required = new Lease("poll-orders", "pod-a", () -> state, LeaseTiming.DEFAULT, clock::nanoTime, clock,
+                () -> true);
+        state.provisioned = false;
+
+        assertEquals(NONE, required.attempt(), "the replica check relied on the lease: no uncoordinated fallback");
+        assertFalse(required.isOpen());
+        assertFalse(required.isUncoordinated());
+
+        state.provisioned = true;
+        clock.advance(ATTEMPT);
+        assertEquals(OPENED, required.attempt(), "once the table exists the lease is acquired as usual");
+        assertTrue(required.isHeld());
+
+        Lease requiredWithoutStore = new Lease("poll-orders", "pod-a", () -> {
+            throw new KeyValueStoreNotConfiguredException("Key-Value Store requires app.name");
+        }, LeaseTiming.DEFAULT, clock::nanoTime, clock, () -> true);
+        assertEquals(NONE, requiredWithoutStore.attempt());
+        assertFalse(requiredWithoutStore.isOpen());
+    }
+
+    @Test
+    void theGateReadsClosedOnceTheDeadlinePassedEvenBeforeTheDeadlineCheckRuns() {
+        assertEquals(OPENED, lease.attempt());
+        assertTrue(lease.isOpen());
+
+        clock.advance(DEADLINE.plusMillis(1));
+
+        assertFalse(lease.isOpen(), "isOpen evaluates the deadline itself, not only the periodic check");
     }
 
     private static Runnable once(Runnable action) {

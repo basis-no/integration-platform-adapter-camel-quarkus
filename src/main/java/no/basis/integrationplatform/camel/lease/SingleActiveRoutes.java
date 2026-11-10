@@ -18,7 +18,8 @@ import java.util.stream.Collectors;
  * <p>A route is single-active when its consumer polls on a schedule: its
  * endpoint is a {@link ScheduledPollEndpoint} (file and FTP directories,
  * database queries, mailboxes, object stores, {@code scheduler:}) or its scheme
- * is {@code timer}, {@code quartz} or {@code cron}. A {@code master:} route
+ * is {@code timer}, {@code quartz} or {@code cron}, except a {@code timer} with a
+ * finite {@code repeatCount} ({@link #isFiniteTimer}). A {@code master:} route
  * already coordinates itself and is left alone, as is every other consumer:
  * Kafka consumer groups, HTTP, broker queues, {@code direct:} and
  * {@code seda:}.</p>
@@ -59,7 +60,7 @@ public final class SingleActiveRoutes {
             return false;
         }
         if (SCHEDULED_SCHEMES.contains(scheme)) {
-            return true;
+            return !finiteTimer(scheme, uri);
         }
         if (endpoint == null) {
             // The route resolved this endpoint already, so this is a registry lookup of the same instance.
@@ -94,6 +95,52 @@ public final class SingleActiveRoutes {
                         .filter(id -> !id.isEmpty())
                         .collect(Collectors.toUnmodifiableSet()))
                 .orElse(Set.of());
+    }
+
+    /**
+     * Whether the route's input is a {@code timer:} with a finite {@code repeatCount}, such as a
+     * one-shot initialization timer. It is not coordinated: its few ticks would be dropped for good
+     * on a replica that does not hold the lease when they fire, for example on the new pod of a
+     * rolling update while the old pod still holds it, and a timer does not fire them again.
+     *
+     * @param camelContext context that resolves placeholders
+     * @param route route definition
+     * @return whether the input is a timer that stops after a finite number of ticks
+     */
+    public static boolean isFiniteTimer(CamelContext camelContext, RouteDefinition route) {
+        FromDefinition input = route.getInput();
+        if (input == null) {
+            return false;
+        }
+        Endpoint endpoint = input.getEndpoint();
+        String uri = endpoint != null ? endpoint.getEndpointUri() : input.getEndpointUri();
+        if (uri == null) {
+            return false;
+        }
+        uri = camelContext.resolvePropertyPlaceholders(uri);
+        return finiteTimer(scheme(uri), uri);
+    }
+
+    private static boolean finiteTimer(String scheme, String uri) {
+        if (!"timer".equals(scheme)) {
+            return false;
+        }
+        int query = uri.indexOf('?');
+        if (query < 0) {
+            return false;
+        }
+        for (String parameter : uri.substring(query + 1).split("&")) {
+            int equals = parameter.indexOf('=');
+            if (equals > 0 && "repeatCount".equals(parameter.substring(0, equals))) {
+                try {
+                    return Long.parseLong(parameter.substring(equals + 1).trim()) > 0;
+                } catch (NumberFormatException e) {
+                    // Camel refuses the endpoint itself.
+                    return false;
+                }
+            }
+        }
+        return false;
     }
 
     private static String scheme(String uri) {
