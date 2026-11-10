@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.step;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
+import no.basis.integrationplatform.camel.EndpointUriMasking;
 import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
 import no.basis.integrationplatform.camel.HttpTimeoutOptions;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
@@ -28,7 +29,6 @@ import org.apache.camel.support.AsyncCallbackToCompletableFutureAdapter;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
 import org.apache.camel.support.PluginHelper;
 import org.apache.camel.support.processor.DelegateAsyncProcessor;
-import org.apache.camel.util.URISupport;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -202,7 +202,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return;
         }
         String routeId = routeId(definition);
-        String endpoint = URISupport.sanitizeUri(endpointSend.endpointUri());
+        String endpoint = EndpointUriMasking.mask(endpointSend.endpointUri());
         if (!allowGeneratedStepIds) {
             throw new IllegalStateException("Tracked send to " + endpoint + " in route " + routeId
                     + " has no explicit id; its step id would be the generated " + endpointSend.nodeId()
