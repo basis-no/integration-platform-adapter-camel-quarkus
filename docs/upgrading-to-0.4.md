@@ -163,14 +163,16 @@ stored a streamed input. The route then reads the checked copy. Two new
 deployment settings:
 
 - `basis.message-store.payload.spool-directory`, by default
-  `<java.io.tmpdir>/basis-payload-spool` (a per-host subdirectory with
-  owner-only permissions is used inside it);
-- `basis.message-store.payload.spool-max-bytes`, by default `10737418240`: the
-  checked copies one process holds at once. In `tiered` mode startup refuses a
-  value below `object-max-bytes`.
+  `<java.io.tmpdir>/basis-payload-spool` (a per-host subdirectory is used
+  inside it, owner-only where the file system supports POSIX permissions);
+- `basis.message-store.payload.spool-max-bytes`, by default `10737418240`
+  (10 GiB, as `object-max-bytes`): the checked copies one process holds at
+  once. In `tiered` mode startup refuses a value below `object-max-bytes`, so
+  raise both together.
 
-Give the spool directory disk for `spool-max-bytes`: a pod's ephemeral storage
-limit, or a volume mounted at the directory.
+Mount a dedicated, size-limited volume at the spool directory with room for
+`spool-max-bytes`: a copy has no directory entry while it is read, and may not
+count toward a pod's ephemeral-storage accounting.
 
 A payload that cannot be captured or checked (a changed, truncated, missing or
 expired object, an object store failure, a full or unwritable spool) fails the

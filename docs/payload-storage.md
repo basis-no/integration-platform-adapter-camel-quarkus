@@ -57,8 +57,8 @@ on a replay of a claim-checked input and on the first attempt after the adapter
 stored a streamed input. The adapter copies the object to a local file in
 a subdirectory named after the host in
 `basis.message-store.payload.spool-directory` (the JVM's temporary directory by
-default; owner-only permissions), so that replicas that share a volume never
-touch each other's copies, while it checks the object's size and SHA-256 against the reference,
+default), so that replicas that share a volume never touch each other's
+copies, while it checks the object's size and SHA-256 against the reference,
 and only then gives the route a stream of that checked copy. Memory stays
 bounded by a 64 KiB copy buffer, whatever the object's size. The copy is
 deleted when the exchange is done, and at once when the check fails; on Linux
@@ -67,12 +67,19 @@ process can open it, and the space is freed when the exchange is done. A copy le
 without cleaning up, such as after a crash, is deleted when the application
 starts again.
 
+Where the file system supports POSIX permissions, the adapter creates the
+subdirectory owner-only (`rwx------`) and each copy owner-only (`rw-------`);
+a directory that already exists, such as a mounted volume, keeps its own
+permissions.
+
 The checked copies one process holds at once are bounded by
-`basis.message-store.payload.spool-max-bytes`, by default the same as
-`object-max-bytes`, so that an object of the largest accepted size always fits
-when it is the only one. In `tiered` mode startup refuses a smaller value. Give
-the spool directory room for that much: a pod's ephemeral storage, or a volume
-mounted at the directory.
+`basis.message-store.payload.spool-max-bytes`, 10 GiB by default, the same as
+the default `object-max-bytes`, so that an object of the largest accepted size
+always fits when it is the only one. In `tiered` mode startup refuses a smaller
+value, so raise both together. Mount a dedicated, size-limited volume at the
+spool directory, with room for `spool-max-bytes`: on Linux a copy has no
+directory entry while it is read, and such a file may not count toward a pod's
+ephemeral-storage accounting.
 
 An output checkpoint is checked completely before it is restored; see
 [Output-Producing Side Effects](steps-and-idempotency.md#output-producing-side-effects).

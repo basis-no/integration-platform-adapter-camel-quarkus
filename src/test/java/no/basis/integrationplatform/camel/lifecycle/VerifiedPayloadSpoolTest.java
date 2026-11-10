@@ -169,6 +169,16 @@ class VerifiedPayloadSpoolTest {
     }
 
     @Test
+    void theLoggedReasonNamesTheRootCause() {
+        var failure = new PayloadStorageException("Object payload s3://b/k could not be copied for checking",
+                new IOException("wrapped", new java.nio.file.FileSystemException("/spool: No space left on device")));
+
+        assertEquals(" (cause: java.nio.file.FileSystemException: /spool: No space left on device)",
+                MessageStoreRoutePolicy.rootCause(failure));
+        assertEquals("", MessageStoreRoutePolicy.rootCause(new PayloadStorageException("no cause")));
+    }
+
+    @Test
     void startupRefusesASpoolSmallerThanTheLargestObjectPayload() {
         var tiered = new PayloadCapturePolicy(PayloadMode.TIERED, 1024, 4096, Duration.ofDays(30), true);
         var inline = new PayloadCapturePolicy(PayloadMode.POSTGRES_INLINE, 1024, 4096, Duration.ofDays(30), true);

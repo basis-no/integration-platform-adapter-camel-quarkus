@@ -185,12 +185,28 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
      * without a commit, so the record is read again.
      */
     private void failBeforeTheRoute(Exchange exchange, PayloadStorageException failure) {
-        LOG.error("Message {} did not reach its route: {}",
-                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure.getMessage());
+        LOG.error("Message {} did not reach its route: {}{}",
+                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure.getMessage(), rootCause(failure));
         closeCheckedCopy(exchange);
         exchange.getMessage().setBody(null);
         exchange.setException(failure);
         exchange.setRouteStop(true);
+    }
+
+    /**
+     * The innermost cause, so that a full disk, a refused or missing object and a timeout can be
+     * told apart. Exception texts of the file system and the object store carry no payload content.
+     */
+    static String rootCause(Throwable failure) {
+        Throwable root = failure;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        if (root == failure) {
+            return "";
+        }
+        return " (cause: " + root.getClass().getName()
+                + (root.getMessage() == null ? "" : ": " + root.getMessage()) + ")";
     }
 
     private void closeCheckedCopy(Exchange exchange) {

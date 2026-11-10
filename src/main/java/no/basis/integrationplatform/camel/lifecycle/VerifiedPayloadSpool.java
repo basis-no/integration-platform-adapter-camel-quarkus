@@ -10,6 +10,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.io.BufferedInputStream;
 import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
@@ -186,7 +187,7 @@ class VerifiedPayloadSpool {
             channel = open(file);
             copyAndCheck(reference, object, channel);
             channel.position(0);
-            return new CheckedCopy(Channels.newInputStream(channel), file, size);
+            return new CheckedCopy(new BufferedInputStream(Channels.newInputStream(channel), BUFFER_BYTES), file, size);
         } catch (PayloadStorageException e) {
             closeQuietly(channel);
             release(size);
