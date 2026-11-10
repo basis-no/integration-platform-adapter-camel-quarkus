@@ -24,7 +24,7 @@ GitHub and in any static documentation site.
 5. [Configuration reference](configuration.md)
 6. [Kafka activity metrics](activity-metrics.md)
 7. [Troubleshooting](troubleshooting.md)
-7. [Releasing](releasing.md)
+8. [Releasing](releasing.md)
 
 ## Sources of Truth
 

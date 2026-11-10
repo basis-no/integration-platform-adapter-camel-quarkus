@@ -15,16 +15,27 @@
   `app.name`), polling routes run on every replica as before, with one warning
   per route; an unreachable Key-Value Store keeps their work stopped. A route
   listed in the new `basis.message-store.single-active.excluded-routes` runs on
-  every replica. An ingress normalization route whose polling source is
-  coordinated this way is accepted with several declared replicas. See
-  [Single-Active Routes](docs/single-active.md).
+  every replica. A `timer:` with a finite `repeatCount`, such as a one-shot
+  initialization timer, is not leased: it runs on every replica, with a startup
+  WARN, because a tick dropped on the new pod of a rolling update would never
+  fire again. An ingress normalization route whose polling source is
+  coordinated this way is accepted with several declared replicas, and then
+  requires its lease: without `bip_key_value` it does no work and logs an
+  ERROR, instead of running on every replica. The gauge
+  `integration_single_active_lease{route}` reports 1 held, 0 waiting, 2
+  uncoordinated. See [Single-Active Routes](docs/single-active.md).
   Upgrade: with `bip_key_value` provisioned, a polling route that ran on every
   replica now runs on one; list a route that must run on every replica (a
   per-replica cache refresh or heartbeat) in
   `basis.message-store.single-active.excluded-routes`. Give polling routes
   stable ids, since the lease is named after the route id. The first ticks
-  after startup wait for the Message Store check and the lease, so a one-shot
-  timer may fire up to a few seconds later or, on a standby, not at all.
+  after startup wait for the Message Store check and the lease. A queue
+  consumed by polling, such as `aws2-sqs:` or `azure-storage-queue:`, becomes
+  single-active too, so its consumption no longer scales with replicas; use a
+  broker consumer, or list the route, where several replicas should share a
+  queue. A poll still in flight when its lease is lost runs to its end and can
+  overlap with the next holder's: bound polls (`maxMessagesPerPoll`), use the
+  source's read lock or move, and keep the work idempotent.
 - [Upgrading from 0.3.x to 0.4.0](docs/upgrading-to-0.4.md) collects what to
   do before upgrading, the behaviour that changed on purpose (the stricter
   `dlq-uri` check, a stopped exchange that fails being read again,

@@ -149,7 +149,10 @@ timings and the failover times.
 The deployment sets `basis.message-store.deployment-replicas` from the
 Kubernetes Deployment's replica count. An ingress normalization route whose
 polling source the adapter coordinates through its lease is accepted with any
-declared replica count. An uncoordinated polling route, including one listed
+declared replica count. With several or no declared replicas its lease is then
+required: without `bip_key_value`, or without a Key-Value Store, the route does
+no work on any replica, and the adapter logs an ERROR naming it, instead of
+running it on every replica as an ordinary polling route would. An uncoordinated polling route, including one listed
 in `basis.message-store.single-active.excluded-routes`, is accepted only with
 one declared replica. A source can also be coordinated by Camel `master:` with
 `camel-quarkus-kubernetes-cluster-service` and its Kubernetes leader-election

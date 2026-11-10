@@ -39,8 +39,8 @@ Common fail-fast causes include:
 - normalization route also selected as a lifecycle boundary;
 - normalization without the durable Postgres step store;
 - unsafe polling with missing or multiple declared replicas;
-- an id in `basis.message-store.single-active.excluded-routes` that names no
-  polling route of the application;
+- an id in `basis.message-store.single-active.excluded-routes` that names a
+  route the adapter does not run under a lease;
 - store schema version mismatch in `bip_contract`;
 - a Message Store without a table or column this adapter writes, for example
   one provisioned for an earlier adapter version. The error names the missing
@@ -114,6 +114,12 @@ deployment count in application properties; the deployment sets it.
   reachable again.
 - The Message Store check has not passed or failed at startup: no lease is
   taken until it passes.
+- The route is an ingress normalization route the replica check accepted
+  because of its lease, and the Message Store has no `bip_key_value` table
+  (ERROR "stays stopped on every replica: it needs its lease"): provision the
+  table, or declare one replica.
+- The gauge `integration_single_active_lease{route=…}` shows this replica's
+  state: `1` held, `0` waiting, `2` uncoordinated.
 
 ## Replayed Route Has a Missing Response Body
 

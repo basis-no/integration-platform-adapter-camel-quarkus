@@ -28,7 +28,8 @@ A route is coordinated when its consumer polls on a schedule:
   `ftps:`, `sql:`, `jpa:`, `mail:`/`imap:`, object stores and queue-like
   services consumed by polling such as `aws2-s3:`, `aws2-sqs:`,
   `azure-storage-blob:`, `azure-storage-queue:`, `minio:`, and `scheduler:`; or
-- its scheme is `timer:`, `quartz:` or `cron:`.
+- its scheme is `timer:`, `quartz:` or `cron:`, except a `timer:` with a
+  finite `repeatCount` (see [Finite Timers](#finite-timers)).
 
 Property placeholders in the `from` URI are resolved first. Every other route
 is left alone: `kafka:`, `platform-http:`, `jms:`/`sjms2:` queues,
@@ -68,16 +69,27 @@ route:
 - For a trigger consumer (`timer:`, `quartz:`, `cron:`) the exchange is the
   work. A trigger that fires on a replica without the lease stops its route
   before the first processor, so nothing runs; a trigger has no source to
-  acknowledge, so nothing is lost. The trigger itself still fires on every
-  replica: a timer with `repeatCount` counts its ticks on every replica, so
-  ticks skipped on a standby are not repeated after a handover. A trigger that
-  fires while this replica is still acquiring the lease (at startup, or right
-  after the route was added or started) waits up to 5 seconds for that attempt
-  and runs if it succeeded, so a one-shot timer such as
-  `timer:once?delay=0&repeatCount=1` keeps its only tick on a sole replica; a
-  tick still skipped after that wait is lost. The wait runs on the timer or
-  Quartz thread that fired the trigger, so that thread fires nothing else
-  meanwhile.
+  acknowledge, so nothing is lost but that tick. The trigger itself still fires
+  on every replica, so ticks skipped on a standby are not repeated after a
+  handover. A trigger that fires while this replica is still acquiring the
+  lease (at startup, or right after the route was added or started) waits up
+  to 5 seconds for that attempt and runs if it succeeded; a tick still skipped
+  after that wait is lost. The wait runs on the timer or Quartz thread that
+  fired the trigger, so that thread fires nothing else meanwhile. The first
+  skipped tick of each activation is logged at INFO, later ones at DEBUG.
+
+### Finite Timers
+
+A `timer:` with a finite `repeatCount`, such as a one-shot initialization
+timer `timer:init?repeatCount=1`, is not coordinated: it runs on every replica,
+as before, and startup logs a WARN naming it. Under a lease its few ticks
+could be dropped for good: on the new pod of a rolling update the tick fires
+while the old pod still holds the lease, and a timer does not fire it again.
+Make such work idempotent across replicas (for example with a
+`putIfAbsent` marker in the Key-Value Store), or use a recurring timer. A
+Quartz or cron trigger with a finite repeat count is coordinated like any
+other trigger; list it in `basis.message-store.single-active.excluded-routes`
+if it must not be dropped.
 
 The lease follows the route's life as Camel runs it. A lease is acquired once
 Camel has started the route, whatever decided that: the route's or the
@@ -143,9 +155,14 @@ The holder is the Key-Value Store key `lease/<routeId>` of the integration:
 its value names the replica, its version counts the renewals, and its expiry is
 30 seconds after the last renewal. Read it like any other key, for example
 `KeyValueStore.get("lease/poll-orders")`, or in an operator's read of the
-integration's keys. Do not write `lease/` keys from the application. Deleting the key hands the work over: the holder closes
-its gate at its next renewal and one replica, possibly the same, acquires a
-new lease.
+integration's keys. Do not write `lease/` keys from the application.
+Deleting the key hands the work over: the holder closes its gate at its next
+renewal and one replica, possibly the same, acquires a new lease.
+
+With a Micrometer registry in the application, the gauge
+`integration_single_active_lease{route="<routeId>"}` reports each coordinated
+route on this replica: `1` while it holds the lease, `0` while it waits, and
+`2` while it runs uncoordinated without a Key-Value Store.
 
 The adapter logs the protocol with the route id and the holder: at INFO when a
 lease is acquired or released, at WARN when a route's gate closes because the
@@ -166,6 +183,30 @@ and versions are the only Key-Value Store data the adapter logs.
   bounded on shutdown by Camel's shutdown timeout, so a handover can overlap
   by that time. Sources stay at-least-once.
 
+### Overlap While Work Is in Flight
+
+The lease decides when work may begin, not when it ends. A poll that began
+while this replica held the lease runs to its end even if the lease is lost
+meanwhile, for example while the database is unreachable for longer than the
+20 second deadline; the next holder may then begin its own poll after the
+lease expired, 30 seconds after the last renewal, while the first one is still
+working. A long batch, such as a directory poll that picks up many files at
+once, makes that overlap likely. To keep it harmless:
+
+- bound each poll, for example with `maxMessagesPerPoll` on a `file:` or
+  `ftp:` consumer, so a poll ends well within the deadline;
+- use the source's own claim where it has one, such as a file read lock
+  (`readLock=changed` or `markerFile`) or a `move` on completion, so two
+  replicas never take the same item;
+- make the work idempotent, for example with `KeyValueIdempotentRepository`
+  (see [Key-Value Store](key-value-store.md#deduplicating-input)).
+
+The gate also evaluates the holder's deadline every time it is consulted, so
+it never reads open after the deadline. The lease has no fencing token: a
+holder whose process pauses (a long garbage collection, a frozen container)
+between consulting the gate and starting its work can overlap with the next
+holder by the length of that pause.
+
 Leases are ordinary Key-Value Store keys: each costs one read and one write
 every 10 seconds (more while a holder retries a failed renewal) and counts
 toward the integration's [limits](key-value-store.md#limits-and-errors).
@@ -177,10 +218,13 @@ local cache or reports the replica's own health, is listed by id in
 `basis.message-store.single-active.excluded-routes` (comma-separated; see
 [Configuration](configuration.md)). An excluded route gets no lease, never
 touches its `lease/` key, and runs on every replica as Camel runs it; the
-adapter logs it once at INFO. Startup refuses an excluded id that names no
-polling route of the application, so a typo cannot leave a route coordinated or
-hide a missing route. An excluded polling route counts as uncoordinated for the
-replica check of ingress normalization routes (see
+adapter logs it once at INFO. Startup refuses an excluded id that names a route
+the adapter does not run under a lease (a Kafka, HTTP or `direct:` route, for
+example), and logs a WARN for an id that names no route at startup: such an id
+applies to a polling route with that id that is added later, for example from a
+route template, but a typo would leave the intended route coordinated, so check
+the WARN. An excluded polling route counts as uncoordinated for the replica
+check of ingress normalization routes (see
 [Ingress and Scaling](ingress-and-scaling.md#singleton-polling)).
 
 ## Without a Key-Value Store
@@ -188,11 +232,20 @@ replica check of ingress normalization routes (see
 When the Message Store has no `bip_key_value` table, or the integration has no
 Message Store datasource or `app.name` (so it has no Key-Value Store), polling
 routes work on every replica, as earlier adapter versions do, and the adapter
-logs one warning per route. It checks again at every attempt. The first Key-
-Value Store call that succeeds proves the table exists: the gate closes at once
-and the route waits for its lease like any other, so a replica that was working
-uncoordinated stops as soon as the table appears and resumes only when it holds
-the lease.
+logs one warning per route. Only these two conditions open the gate without a
+lease; any other failure to create or call the Key-Value Store keeps it closed.
+The adapter checks again at every attempt. The first Key-Value Store call that
+succeeds proves the table exists: the gate closes at once and the route waits
+for its lease like any other, so a replica that was working uncoordinated stops
+as soon as the table appears and resumes only when it holds the lease.
+
+The exception is an ingress normalization route that the replica check
+accepted only because its lease coordinates it, that is, with several or no
+declared replicas (see
+[Ingress and Scaling](ingress-and-scaling.md#singleton-polling)). Running it on
+every replica would duplicate its source, so without a Key-Value Store it does
+no work, on every replica, and the adapter logs an ERROR naming it; it runs
+once the table exists.
 
 An unreachable database is not this case. A replica that cannot reach the
 Message Store keeps the gates of its polling routes closed and keeps trying.
