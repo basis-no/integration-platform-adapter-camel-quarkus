@@ -58,6 +58,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
     @Override
     public void configuration() {
+        HttpClientRetries.disableByDefault(getContext());
         if (failureMode == MessageFailureMode.RECORD_FAILED) {
             recordFailedConfigurations();
             return;
@@ -66,7 +67,8 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration()
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
-                        .onRedelivery(this::captureRedeliveryDiagnostics)
+                        .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null)))
+                        .onRedelivery(this::timedRedelivery)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
                         .useExponentialBackOff()
@@ -75,7 +77,8 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration(SLOW_BACKEND)
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
-                        .onRedelivery(this::captureRedeliveryDiagnostics)
+                        .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(6, 5000, null)))
+                        .onRedelivery(this::timedRedelivery)
                         .maximumRedeliveries(6)
                         .redeliveryDelay(5000)
                         .useExponentialBackOff()
@@ -84,7 +87,8 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration(NO_RETRY)
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
-                        .onRedelivery(this::captureRedeliveryDiagnostics)
+                        .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(0, 0, null)))
+                        .onRedelivery(this::timedRedelivery)
                         .maximumRedeliveries(0));
 
         ingressNormalizationConfiguration();
@@ -148,6 +152,12 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (max != null) {
             exchange.setProperty(PlatformExchangeProperties.AUTO_REDELIVERY_MAX, max);
         }
+    }
+
+    /** Runs before a redelivery whose delay the adapter may have timed by {@code Retry-After}. */
+    void timedRedelivery(Exchange exchange) {
+        HttpRetryAfter.afterTiming(exchange);
+        captureRedeliveryDiagnostics(exchange);
     }
 
     /**

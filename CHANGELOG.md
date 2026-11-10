@@ -2,6 +2,27 @@
 
 ## Unreleased
 
+- The HTTP client inside Camel's `http` and `https` components no longer
+  repeats a request by itself: the adapter sets `automaticRetriesDisabled` on
+  both unless the application sets
+  `camel.component.http.automatic-retries-disabled` (or the `https` one). Before,
+  the client repeated a request answered with 503 or 429 once, POST included,
+  inside one Camel attempt and outside the step ledger, and waited for any
+  `Retry-After` with no upper limit on the Kafka consumer thread. Every repeat
+  is now a recorded Camel redelivery, sent with the step's `Idempotency-Key`,
+  so `auto_redelivery_count` matches the requests a receiver got. After a 429
+  or 503, the `dlq` mode's route configurations time the next redelivery by the
+  receiver's `Retry-After` (seconds or an HTTP date) when it fits the budget:
+  for a Kafka input, its poll interval less the time the exchange has run and a
+  20 % margin; otherwise the configuration's maximum delay. A longer wait is not
+  used: the configured delays apply and the message is parked when they are
+  exhausted, instead of Kafka removing the consumer from its group. See
+  [Automatic Retry](docs/retry-dlq-replay.md#automatic-retry).
+  Upgrade: a receiver that answered 503 or 429 once and then succeeded is now
+  retried after the configured delay or its `Retry-After`, and the attempt
+  records one more redelivery. An application that configures its own
+  `HttpComponent` bean with the client's retries on must set
+  `camel.component.http.automatic-retries-disabled=false` to keep them.
 - A Kafka record whose outcome could not be made durable is read again with a
   growing wait. Before, while the outcome write, a step outcome or the DLQ
   publish kept failing, for example during a Message Store outage, the record
