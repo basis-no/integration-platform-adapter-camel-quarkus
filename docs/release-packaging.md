@@ -97,6 +97,22 @@ environments. These names never existed as repository secrets, so a job outside
 the environments resolves them to empty values instead of a stale repository
 secret.
 
+The settings this path reads, all from `release.yml`:
+
+- repository variables `RELEASE_SIGNER_FINGERPRINT`, the release key's primary
+  fingerprint in 40 uppercase hexadecimal characters (`build` reads it and has
+  no environment, so it cannot be an environment variable), and
+  `RELEASE_SIGNING_PUBLIC_KEY`, the armored public key including the CI subkey
+  (`sign-upload` and `release-page.yml` verify signatures against it);
+- environments `release` and `release-publish`, each with required reviewers
+  (at least two, "prevent self-review" on), no administrator bypass and a
+  deployment rule that allows only tags; the jobs refuse to run otherwise;
+- on both environments the variable `TRUSTED_TOOLING_SHA` and the secrets
+  `RELEASE_CENTRAL_TOKEN_USERNAME` and `RELEASE_CENTRAL_TOKEN_PASSWORD`, and on
+  `release` also the secret `RELEASE_SIGNING_SUBKEY`;
+- a tag ruleset that lets only release managers create `v*` tags and refuses
+  their update and deletion.
+
 ## Offline release signing
 
 Use this path while the repository is private, whenever the protected
@@ -365,7 +381,9 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
   unattended. Coding agents never operate the release keyring.
 - For an offline release, Central tokens are generated per release window, live
   only in the release shell session and are revoked after publication. The
-  protected-tag path's token lives only in the release environments' secrets.
+  protected-tag path's token lives only in the release environments' secrets,
+  and the [snapshot lane](#snapshot-lane)'s only in the `snapshot`
+  environment's secrets.
 - If the key or its backup may be compromised, publish its revocation
   certificate to both keyservers below, stop releases and rotate.
 - For the [protected-tag release](#protected-tag-release-in-ci), the primary key
@@ -454,7 +472,7 @@ protected-tag release:
 The lane never signs (Central does not require signatures on snapshots) and
 never calls the publisher API that releases use. A re-run of `upload` refuses;
 dispatch a new run, which uploads a new timestamped build. Repository settings
-the lane needs, in addition to those of the release path:
+the lane needs, in addition to those of the [release path](#protected-tag-release-in-ci):
 
 - snapshot publishing enabled for the namespace in the Central portal;
 - the environment `snapshot` with the same two required reviewers and "prevent
