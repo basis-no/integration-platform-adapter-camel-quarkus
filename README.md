@@ -693,7 +693,10 @@ consumed record's `x-bip-redo-steps` is honoured only when all of these hold:
   copy of it, no longer redoes anything. An attempt recorded `FAILED` was not
   committed and is read again, so it may still redo. A later read of a
   completed or parked attempt that fails, such as a copy of its record, does
-  not turn it `FAILED`: the Message Store keeps the attempt as it ended.
+  not turn it `FAILED`: the Message Store keeps the attempt as it ended. Its
+  summary in `bip_message_log` still shows the failed read until the copy is
+  parked or completes. Every writer of `bip_message_attempt` on the store must
+  keep this rule, the .NET adapter and older adapter versions included.
 
 On any other record the list is ignored with a warning, and its delivered
 steps are skipped as on any redelivery. The Message Store is asked once per
