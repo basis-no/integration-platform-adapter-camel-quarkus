@@ -631,10 +631,11 @@ not made again only because its outcome was lost:
    record is read again later. A mark wins over a redo list: the earlier read
    of the same record already made that send.
 
-A failed store call ends the attempt: every tracked send after it in the same
-attempt fails before it sends, with the same failure, including a redelivery
-of the same send and a later send after a `doCatch`. Sends already running in
-parallel parts still finish.
+A failed store call ends the attempt: every send through `to` or `toD` after it
+in the same attempt fails before it sends, with the same failure, tracked or not
+(such as a `direct:` call), including a redelivery of the same send and a later
+send after a `doCatch`. Other processing goes on as the route says, but nothing
+is committed. Sends already running in parallel parts still finish.
 
 A record without `x-bip-message-id` keeps the id generated for it while the
 same offset is read again in the process, so its marks match. Split parts with
@@ -645,7 +646,11 @@ offset is committed, or when a record at any other offset of the partition
 begins. A restart, or a rebalance to another process, loses them, so the next
 read there can send once more with the same `Idempotency-Key`. A mark whose
 step the next read does not reach, because the route takes another path, is
-not written.
+not written. When parts of one attempt share a step key, only the part that
+reaches it first is written from the mark; the others are skipped and reported
+as not delivered, as for a ledger skip. Marks and kept ids match by offset only,
+so after a topic is deleted and created again, restart the integrations that
+consume it.
 
 The adapter's ERROR lines for a record that is not committed end with
 `storeError=<class>` and the SQLSTATE, so an alert can tell these cases apart:
@@ -661,9 +666,10 @@ its partition: every write for it fails, so it is neither recorded nor parked.
 From 0.3.7, before the route runs, the adapter checks the raw bytes of the
 headers the store keeps as text, `x-bip-message-id`, `x-bip-correlation-id`,
 `x-bip-content-type`, `x-bip-source-system` and `x-bip-target-system`, and
-refuses a value that contains a NUL byte or is longer than 1,024 bytes. A
-refused record's route does not run, so nothing is sent. This applies to a
-managed Kafka input, one with the adapter's manual commit.
+refuses a value that contains a NUL byte or is longer than 1,024 bytes. Header
+names are matched ignoring case. A refused record's route does not run, so
+nothing is sent. This applies to a managed Kafka input, one with the adapter's
+manual commit.
 
 The same terminal path runs when the step outcomes that failed all failed with
 a SQLSTATE of class `22` or `54000` for the record's own data, for example an id
@@ -674,7 +680,8 @@ record is read again instead:
 
 1. The record is parked, unless it was parked already or, for the outcome
    write, its route completed. `x-bip-error` gives the reason, which header was
-   refused and why or the SQLSTATE, and says whether a send had returned; the
+   refused and why or the SQLSTATE, says whether a send had returned, and ends
+   with the record's position as `(record <topic>/<partition>@<offset>)`; the
    refused value is not copied into it.
 2. A reduced outcome is recorded under the record's own `x-bip-message-id`,
    with its own attempt, `DLQ` (or `COMPLETED` when its route completed), the
@@ -695,8 +702,11 @@ name-based UUID. The .NET adapter derives the same id.
 After three records in a row on a partition took this path because the store
 refused their data (records the boundary check refused do not count), the next
 one is held back, not committed, with `storeError=schema`, so that a setting or
-column that fails every record does not drain the topic into the DLQ. A normal
-commit on the partition resets the count, and a restart does too.
+column that fails every record does not drain the topic into the DLQ. The
+held-back record is read again with the growing wait and goes on once the store
+takes it, for example after the setting or column is fixed. A normal commit on
+the partition resets the count, and a restart does too: if the records really
+carry data the store cannot hold, each restart parks three more of them.
 
 A failure text the adapter stores has U+0000 replaced with U+FFFD, so that a
 failure's own message cannot make its step or record unstorable.

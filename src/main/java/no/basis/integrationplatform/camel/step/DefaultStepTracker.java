@@ -260,9 +260,16 @@ public class DefaultStepTracker implements StepTracker {
         exchange.setProperty(PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY, idempotencyKey);
         exchange.setProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, true);
         exchange.setProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, true);
-        exchange.setProperty(PlatformExchangeProperties.STEP_FROM_MARK, mark.step());
         exchange.getMessage().setHeader(PlatformHeaders.IDEMPOTENCY_KEY, idempotencyKey);
         exchange.getMessage().setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, idempotencyKey);
+        String repeatedIn = StepVisits.of(exchange).repeatedIn(StepVisits.path(exchange), idempotencyKey);
+        if (repeatedIn != null) {
+            // Another part of this attempt took the mark's send: this part shares its step key and
+            // was not delivered, which the skip reports as a ledger skip does.
+            exchange.setProperty(StepVisits.REPEATED_IN, repeatedIn);
+            return;
+        }
+        exchange.setProperty(PlatformExchangeProperties.STEP_FROM_MARK, mark.step());
         LOG.warn("Step {} of message {} was sent in an earlier read of record {}, and its DELIVERED outcome is "
                         + "written now; the send is not repeated", mark.step().step(),
                 exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), mark.position());
