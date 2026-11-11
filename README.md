@@ -265,15 +265,16 @@ the message. To recover such a message, either:
   same `Idempotency-Key`; or
 - check at the receiver whether it got the message.
 
-This needs no resend. Any later read of the parked record skips the send and
-records the message `COMPLETED`, although the receiver never got it. Such a
-read comes from:
+The same loss also happens without a resend. With the `postgres` step store,
+any later read of the parked record skips the send and, when the rest of the
+route succeeds, records the message `COMPLETED`, although the receiver never
+got it. Such a read comes from:
 
 - a commit that fails after the DLQ publish, for example because a receiver
   that accepts the connection and never answers kept the route busy for longer
   than the consumer's `max.poll.interval.ms` (5 minutes by default; with the
   `http` component's default timeouts, four tries take about 12 minutes);
-- a rebalance;
+- a rebalance that takes the partition away before the commit;
 - a crash between the DLQ publish and the commit.
 
 The Message Store then shows `COMPLETED`, so there is no parked message to
@@ -285,7 +286,7 @@ To find the messages this happened to:
    (`bip.message.dlq` unless `basis.message-store.dlq-uri` names another), as
    far back as its retention reaches, with a Kafka tool that prints headers,
    for example
-   `kafka-console-consumer.sh --topic bip.message.dlq --from-beginning --property print.headers=true`.
+   `kafka-console-consumer.sh --bootstrap-server <host:port> --topic bip.message.dlq --from-beginning --property print.headers=true --timeout-ms 10000`.
 2. Look up those ids in the Message Store. The ones to check are `COMPLETED`
    although they have a DLQ record:
 
@@ -296,6 +297,10 @@ To find the messages this happened to:
      and status = 'COMPLETED'
      and message_id in ('<id from the DLQ>', '<another id>');
    ```
+
+   A message that was parked and later resent with success is listed too. A
+   row with `last_attempt` = 1 was never resent, so it was read again by
+   itself.
 
 3. For each of them, read its attempts in `bip_message_attempt` (see
    [Read Model](#read-model)). A sub-route step listed as `SKIPPED` in
@@ -325,8 +330,8 @@ partition waits; no record is committed early.
 - **When the store can be read but not written, a tracked send is repeated on
   every read, without end.** Examples: the database is read-only (after a
   failover onto a standby, or for maintenance), or the integration's database
-  role has lost its write privilege; a full disk probably does the same. On
-  every read:
+  role has lost its write privilege; a full disk probably does the same. With
+  the `postgres` step store, on every read:
   - the store check passes, and the send reaches its receiver;
   - its `DELIVERED` outcome cannot be written, so the offset is not committed;
   - the next read sends again. The route's redeliveries can also repeat the
@@ -334,9 +339,11 @@ partition waits; no record is committed early.
 
   One message can be sent dozens of times a minute. Readiness stays `UP`. The
   ERROR log says that the message was not parked because a step outcome was
-  not checked or recorded, with the database's error. Every repeat carries the
-  same `Idempotency-Key`, so only a receiver that deduplicates by that key is
-  safe.
+  not checked or recorded, with the database's error. For a record that
+  carries `x-bip-message-id`, every repeat has the same `Idempotency-Key`, so
+  only a receiver that deduplicates by that key is safe. A record without that
+  header gets a new message id, and so a new key, on every read; deduplication
+  by key does not stop its repeats.
 - With the `postgres` step store, a message that fails at a tracked send's
   store check is not parked: the adapter logs at ERROR that it was not parked
   because a step outcome was not checked or recorded, and the record is read
@@ -356,7 +363,8 @@ What to do:
   repeats their outside sends. The ERROR log shows a database error such as
   `cannot execute INSERT in a read-only transaction` or
   `permission denied for table bip_step_outcome`. Scale them back up once writes
-  work again. Receivers should deduplicate by `Idempotency-Key`.
+  work again. Receivers should deduplicate by `Idempotency-Key`; this helps
+  only for records that carry `x-bip-message-id`.
 - When the store cannot be read either, and the outage lasts longer than a
   few minutes, scale the integration down to zero replicas until the store
   accepts writes again, then scale it back up. Its uncommitted records are read

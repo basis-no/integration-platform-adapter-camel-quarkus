@@ -19,14 +19,14 @@ Documentation only; no code, schema or configuration change.
   Message Store cannot be read. When the store can be read but not written (a
   read-only database after a failover or for maintenance, a lost write
   privilege, probably a full disk), 0.3.6 repeats the send on every read of the
-  record, without end, with the same `Idempotency-Key`, while readiness stays
-  `UP`. The README's runbook now says to scale the integrations to zero at once
+  record, without end, with the same `Idempotency-Key` when the record carries
+  `x-bip-message-id`, while readiness stays `UP`. The README's runbook now says to scale the integrations to zero at once
   in that case. Receivers should deduplicate by `Idempotency-Key`
   ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
 - Known limitation, extended: a failed send in a `direct:` sub-route that was
-  recorded `DELIVERED` needs no resend to be lost. Any later read of the parked
-  record, for example after a commit that failed because a receiver that never
-  answers kept the route busy past the poll interval, records the message
+  recorded `DELIVERED` is also lost without a resend. Any later read of the
+  parked record, for example after a commit that failed because a receiver that
+  never answers kept the route busy past the poll interval, records the message
   `COMPLETED`. The README gives a way to find such messages: `COMPLETED` in the
   Message Store, with a record on the DLQ topic
   ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
