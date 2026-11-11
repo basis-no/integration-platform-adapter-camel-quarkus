@@ -394,7 +394,8 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
   export only that subkey (`gpg --armor --export-secret-subkeys
   CI_SUBKEY_FINGERPRINT!`), and paste the export only into the
   `RELEASE_SIGNING_SUBKEY` secret of environment `release`. Delete the temporary
-  keyring and publish the updated public key. The workflow refuses an export that
+  keyring and publish the updated public key to both keyservers and the
+  `RELEASE_SIGNING_PUBLIC_KEY` repository variable. The workflow refuses an export that
   contains the primary secret key. Revoke and replace the CI subkey on its
   expiry, on any doubt about the environment, or when a reviewer leaves; the
   primary key and its other subkeys stay valid.
