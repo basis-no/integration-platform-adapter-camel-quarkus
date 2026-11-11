@@ -75,8 +75,10 @@ portal, and publish or drop the deployment there under the same approvals.
 Any re-run counts, also one of a failed `build` or `attest`: from the second
 attempt on, `sign-upload` and `publish` refuse, even when nothing was uploaded.
 The tag cannot be pushed again, so finish such a release on the release
-workstation with the [offline path](#offline-release-signing), from an unsigned
-inspection of the tag's commit, and skip the runbook's tag step.
+workstation with the [offline path](#offline-release-signing), from that run's
+own `unsigned-central-candidate-X.Y.Z` artifact: use the run's ID as `RUN` and
+skip the runbook's inspect and tag steps (inspection refuses a version that is
+already tagged).
 
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
