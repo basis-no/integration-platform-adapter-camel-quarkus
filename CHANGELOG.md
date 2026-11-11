@@ -7,7 +7,32 @@
   `pwd` and other credential parameters, such as `passwd`, `session` and
   `cookie`, that rows recorded before the stored-endpoint masking rule kept in
   clear. Before, it printed them.
-
+- A Kafka input that arrives as a claim check, on a replay or a DLQ resend, and
+  whose object can never pass its check is parked in the DLQ as its claim check
+  and committed after the DLQ accepted it, instead of being read again forever
+  and holding up every later record of its partition: its object's SHA-256 does
+  not match the reference, the store reports another size or the object has more
+  bytes, the object store answers that the key does not exist, the reference has
+  expired, or the claim check is malformed or its headers do not match it (parked
+  as it came, with a metadata-only row). Its outcome is `DLQ`. A failure that may
+  pass is read again as before: an object store that cannot be reached, refuses
+  access or times out, a bucket that does not exist, a download that ends before
+  the reference's size (reported as `ended after N of its reference's M bytes`), a
+  reference outside the configured bucket or prefix, a full or unwritable spool,
+  and any failure on the first attempt of a streamed input. A missing object is
+  now reported as `Payload object does not exist: <ref>` when the store answers
+  that the key does not exist (a one-byte GET after the HEAD tells a missing key
+  from a missing bucket); otherwise still as `Payload object is unavailable`. An
+  application's own `PayloadObjectStore` throws the new
+  `UnresolvablePayloadException` only when its store answered that the object
+  does not exist or has another size than the reference. See
+  [Object Metadata and Verification](docs/payload-storage.md#object-metadata-and-verification)
+  ([#160](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/160)).
+  Upgrade: watch the DLQ for replays and resends whose object is gone, changed
+  or expired; they are parked before their route runs. A host clock far ahead,
+  or an endpoint setting that points at another store, parks the claim checks
+  it reads. On AWS S3, grant `s3:ListBucket` on the payload prefix so that a
+  deleted object is answered as missing (404), not refused (403).
 - An input whose payload is in object storage is checked in full, its size and
   SHA-256 against its reference, before its route reads any of it: on a replay
   of a claim-checked input and on the first attempt after the adapter stored a
@@ -20,7 +45,8 @@
   changed, truncated, missing or expired object, an object store failure, and a
   spool that is full or not writable now fail the input before its route runs:
   its outcome is `FAILED`, nothing is parked and its Kafka offset is not
-  committed. Before, such a failure during capture or resolution was only logged
+  committed (a claim check that can never pass is parked; see the entry above).
+  Before, such a failure during capture or resolution was only logged
   by Camel at WARN and the route ran anyway. New deployment settings:
   `basis.message-store.payload.spool-directory` (default
   `<java.io.tmpdir>/basis-payload-spool`) and
@@ -377,8 +403,15 @@
   the only signing material there is the protected tag path's dedicated CI
   subkey and environment-scoped Central token (above). Post-publication readback
   compares public bytes with the unsigned
-  receipt and the signed-entries digest. Snapshot publication stays suspended;
-  acceptance uses locally built artifacts.
+  receipt and the signed-entries digest.
+- Publish a reviewed `X.Y.Z-SNAPSHOT` to Central's snapshot repository for
+  testing in another environment, through `publish-snapshot.yml`: a manual run
+  on the head of `main` or `release/0.3` builds and tests it without
+  credentials, records build provenance, and uploads the same unsigned bytes
+  only after an approval in the protected environment `snapshot`, from the
+  release tools at the trusted commit, then reads them back. A re-run never
+  uploads again. It needs repository settings first; see
+  `docs/release-packaging.md#snapshot-lane`.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,

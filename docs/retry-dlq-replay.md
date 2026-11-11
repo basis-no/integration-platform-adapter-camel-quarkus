@@ -251,6 +251,15 @@ when the dead letter channel actually parks the message. To work with the
 consumed input in a handler, use Camel's `useOriginalMessage()` on the
 `onException` and `${exception.message}` for the error.
 
+A managed Kafka input that arrives as a claim check whose object can never pass
+its check (changed, deleted, reported by the store with another size, expired,
+or a malformed claim check) is parked by the adapter before its route runs,
+through the same dead-letter route and with the same commit after the DLQ
+accepted it. Neither the route's error handler nor an application's
+`onException` sees it, since the route does not run; a failure that may pass is
+read again. See
+[Object Metadata and Verification](payload-storage.md#object-metadata-and-verification).
+
 Camel skips the dead letter channel's preparation and the adapter's
 dead-letter route for an exchange that its route stopped
 (`exchange.setRouteStop(true)`) before it failed. The adapter then records

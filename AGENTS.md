@@ -96,7 +96,8 @@ GitHub release-note readback and the applicable qualification/documentation gate
 A `vX.Y.Z` tag starts `release.yml`, which builds an unsigned candidate and then
 waits for human approval in protected environments before signing, uploading and
 publishing; the alternative is offline signing on the release workstation (see
-below). Snapshot publication is suspended. The release-page workflow verifies
+below). A reviewed snapshot is published only through the approval-gated,
+manual snapshot lane. The release-page workflow verifies
 actual public bytes before creating notes. The synthetic CI gate does not replace
 full candidate review, the signer's receipt or portal validation before release.
 Never rebuild or republish packages merely to repair missing release notes.
@@ -106,7 +107,7 @@ release. See `docs/releasing.md`.
 ## Production credential boundary
 
 The primary (certify) release key never exists in GitHub, CI, agent or development
-hosts. Signing and Central upload happen in exactly one of two places:
+hosts. Signing and Central uploads happen only in these places:
 
 - `release.yml` jobs `sign-upload` and `publish`, which run in the protected
   environments `release` and `release-publish` (required reviewers, tag-only
@@ -114,6 +115,11 @@ hosts. Signing and Central upload happen in exactly one of two places:
   never run Maven, the wrapper, tests or candidate files. Only their environment
   secrets hold the CI signing subkey and a Central token. This path exists only
   once the repository is public and those settings are in place.
+- `publish-snapshot.yml` job `upload`, which runs in the protected environment
+  `snapshot` (required reviewers, deployment rule for `main` and `release/0.3`),
+  checks out only the release tools (and the root `pom.xml`) at
+  `TRUSTED_TOOLING_SHA`, never signs and uploads only an unsigned snapshot.
+  Only its environment secrets hold a snapshot Central token.
 - The trusted release workstation, where a human release manager runs
   `sign-candidate.py` and `central-recovery.py` from reviewed `main` (also for a
   `release/0.3` source commit).
