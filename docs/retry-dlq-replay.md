@@ -211,6 +211,52 @@ the route again, including sends that the step store did not skip and another
 DLQ record for a message that was parked. A record whose topic, partition and
 offset the adapter did not see at the start is read again at once, as before.
 
+### A record whose own values the store cannot hold
+
+A record whose envelope values PostgreSQL cannot store would otherwise block
+its partition: every write for it fails, so it is neither recorded nor parked.
+Before the route runs, the adapter checks the raw bytes of the headers the
+store keeps as text, `x-bip-message-id`, `x-bip-correlation-id`,
+`x-bip-content-type`, `x-bip-source-system` and `x-bip-target-system`, and
+refuses a value that contains a NUL byte or is longer than 1,024 bytes. A
+refused record's route does not run, so nothing is sent.
+
+The same terminal path runs when the step outcomes that failed all failed with
+a SQLSTATE of class `22` or `54000` for the record's own data, for example an id
+the route set itself that is too long for the step ledger's index, also when
+the route caught the failure, or when the outcome write fails so while every
+step outcome was written. When a step outcome failed for another reason, the
+record is read again instead:
+
+1. The record is parked, unless it was parked already or, for the outcome
+   write, its route completed. `x-bip-error` gives the reason, which header was
+   refused and why or the SQLSTATE, and says whether a send had returned; the
+   refused value is not copied into it.
+2. A reduced outcome is recorded under the record's own `x-bip-message-id`,
+   with its own attempt, `DLQ` (or `COMPLETED` when its route completed), the
+   payload as captured, the reason as its error, and no correlation id, content
+   type, source or target system or steps. No step outcome is written. If the
+   store refuses that too, it is written without the payload, not replayable,
+   and the record is not parked again on its next reads in the process.
+3. The offset is committed only after both are durable; otherwise the record is
+   read again and the path runs again. The consumer then goes on with the next
+   record, and an ERROR line ends with `storeError=record-data`.
+
+When `x-bip-message-id` itself is refused, the record is parked and recorded
+under an id derived from its position: the UUID made from the first 16 bytes of
+SHA-256 over `kafka-record`, the integration name, the topic, the partition and
+the offset, joined by line feeds, with the version and variant bits of a
+name-based UUID. The .NET adapter derives the same id.
+
+After three records in a row on a partition took this path because the store
+refused their data (records the boundary check refused do not count), the next
+one is held back, not committed, with `storeError=schema`, so that a setting or
+column that fails every record does not drain the topic into the DLQ. A normal
+commit on the partition resets the count, and a restart does too.
+
+A failure text the adapter stores has U+0000 replaced with U+FFFD, so that a
+failure's own message cannot make its step or record unstorable.
+
 `basis.message-store.dlq-uri` must name one fixed endpoint that reports a
 failed publish as an error: a `kafka:` endpoint whose producer waits for the
 broker and is not transactional, or the application's own `direct:` route. A

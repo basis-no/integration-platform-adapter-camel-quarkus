@@ -375,6 +375,14 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         /** Prepares the send, or returns {@code null} when an earlier attempt delivered this step. */
         private Send prepare(Exchange exchange) {
+            Throwable earlier = StepOutcomeFailure.of(exchange);
+            if (earlier != null) {
+                // A store failure ends the attempt: no later send of it, nor a redelivery of this
+                // one, is made, since nothing it does can be committed.
+                exchange.getExchangeExtension().setRedeliveryExhausted(true);
+                throw new StepOutcomeStoreException("Not sent: a step outcome of this attempt was not checked or "
+                        + "recorded, so the input is read again", earlier);
+            }
             stepOutcome(exchange, () -> stepTracker.beforeSend(exchangeWithInterceptProperties(exchange)));
             if (alreadyDelivered(exchange)) {
                 stepTracker.restoreSkippedOutput(exchange);
@@ -428,6 +436,8 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 work.run();
             } catch (RuntimeException | Error failure) {
                 StepOutcomeFailure.record(exchange, failure);
+                // No redelivery waits: a redelivery of this send fails before it sends.
+                exchange.getExchangeExtension().setRedeliveryExhausted(true);
                 throw failure;
             }
         }
