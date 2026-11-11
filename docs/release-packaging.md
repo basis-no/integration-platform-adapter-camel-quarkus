@@ -84,7 +84,8 @@ from the download step on, and do not create the tag again. Fetch the tag into
 `$TOOLS` (`git -C "$TOOLS" fetch origin tag "v$VERSION"`) before the readback.
 If more than one attempt of `build` retained a candidate, download the newest by
 its artifact ID (`gh api "repos/$GH_REPO/actions/runs/$RUN/artifacts"` lists
-them), and do not re-run the run again after the download: `release-page.yml`
+them; fetch one with `gh api "repos/$GH_REPO/actions/artifacts/<id>/zip" >
+candidate.zip`, then unzip it into the download step's directory), and do not re-run the run again after the download: `release-page.yml`
 reads the newest candidate, and a rebuilt one has other bytes. A transient
 `build` failure can simply be re-run, since signing is already off for the run;
 if `build` cannot produce a candidate at all, release the next patch version
@@ -219,6 +220,7 @@ directory outside it for this release's evidence:
 TOOLS=/path/to/reviewed-main-checkout
 RELEASE=/path/to/releases/X.Y.Z    # new, empty, outside $TOOLS
 VERSION=X.Y.Z SOURCE=<40-character source commit> SIGNER=<40-character fingerprint>
+export GH_REPO=basis-no/integration-platform-adapter-camel-quarkus
 mkdir -p "$RELEASE" && cd "$RELEASE"
 ```
 
