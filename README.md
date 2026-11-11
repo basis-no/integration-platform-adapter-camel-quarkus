@@ -202,8 +202,10 @@ Kafka input a stable `groupId`, on the endpoint or as
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
 processing completed or DLQ publication was confirmed. An unparked `FAILED`
 outcome, failed journal write or failed commit leaves the exchange failed. A
-step outcome that cannot be checked or recorded fails the send's exchange after
-Camel's retries; the input is then recorded as `FAILED` and neither parked nor
+step outcome that cannot be checked or recorded fails the send's exchange (up
+to 0.3.6 after Camel's retries; from 0.3.7 at once, without redeliveries, the
+dead letter channel or an application's own `onException`); the input is then
+recorded as `FAILED` and neither parked nor
 committed, also when the route catches the failure or it happens in a split
 part. A separate request, such as one sent with a `ProducerTemplate`, fails in
 the same case but does not hold back the input that sent it: an input that
@@ -418,10 +420,13 @@ each read ran the route again, so the log grew quickly.
   A restart, or a rebalance to another process, loses what was kept, so the
   next read there sends once more. Readiness stays `UP`. Up to 0.3.6 the ERROR
   log says that the message was not parked because a step outcome was not
-  checked or recorded, with the database's error. From 0.3.7 that line is gone,
-  since the dead letter channel no longer runs for such an attempt; the ERROR
-  line is `Message <id> is not committed: a step outcome was not checked or
-  recorded, so it is consumed again`, with the database's error, and it ends
+  checked or recorded, with the database's error. From 0.3.7 that line no
+  longer appears for an attempt that a store failure ended, since the dead
+  letter channel does not run for it (it can still appear when the route caught
+  the store failure and a later step that is not a send failed); alert on the
+  ERROR line `Message <id> is not committed: a step outcome was not checked or
+  recorded, so it is consumed again`, which is logged in every case, with the
+  database's error, and it ends
   with `storeError=read-only` or `storeError=privilege` and the SQLSTATE. For a
   record that carries `x-bip-message-id`, every repeat has the same
   `Idempotency-Key`, so only a receiver that deduplicates by that key is safe.
