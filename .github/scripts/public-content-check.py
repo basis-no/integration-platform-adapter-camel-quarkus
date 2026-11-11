@@ -59,7 +59,9 @@ def main():
         return hits
 
     findings = []
-    commits = git("rev-list", "--no-merges", args.range).split()
+    # Topological order: a date walk can stop early when a commit is older than its
+    # parent, and then lists commits the base already contains.
+    commits = git("rev-list", "--topo-order", "--no-merges", args.range).split()
     for commit in commits:
         short = commit[:10]
         author, committer = git("show", "-s", "--format=%ae%n%ce", commit).split("\n")[:2]
