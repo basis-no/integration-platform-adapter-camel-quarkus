@@ -19,16 +19,38 @@ import java.sql.SQLException;
 import java.util.function.Supplier;
 
 /**
- * Message-store schema version startup gate.
+ * Message-store schema startup gate.
  *
  * <p>When the adapter runs with the Postgres sink it must refuse to start
  * against a schema provisioned for a different store schema version (contract
  * major). The database operator records the provisioned version in
  * {@code bip_contract}. An absent table or empty row is treated as major 1,
  * with a loud warning.</p>
+ *
+ * <p>With the Postgres sink or the Postgres step store, it also refuses to start when the
+ * store lacks a table or column this adapter writes, such as a store provisioned for an
+ * earlier adapter version: every outcome would otherwise fail to record, and each Kafka
+ * record would be processed again and again. One catalog query checks them against the
+ * schema the adapter ships in {@code db/message-store/}.</p>
+ *
+ * <p>Camel Quarkus starts the Camel context before the {@link StartupEvent}
+ * that runs this check, so work the adapter starts on its own, such as
+ * acquiring the lease of a polling route, consults {@link #outcome()} and
+ * waits for {@link Outcome#PASSED} rather than running against a Message
+ * Store the adapter is about to refuse.</p>
  */
 @ApplicationScoped
 public class ContractVersionStartupGate {
+    /** The state of the startup check. */
+    public enum Outcome {
+        /** The check has not run yet. */
+        PENDING,
+        /** The check passed, or there was nothing to check. */
+        PASSED,
+        /** The check failed; the adapter refuses to start. */
+        FAILED
+    }
+
     /** Contract major implemented by this adapter. */
     public static final int EXPECTED_CONTRACT_MAJOR = 1;
 
@@ -49,29 +71,36 @@ public class ContractVersionStartupGate {
     static final long DEFAULT_RETRY_DELAY_MS = 3_000L;
 
     private final String sinkMode;
+    private final boolean postgresSteps;
+    private final MessageStoreSchema schema;
     private final Supplier<DataSource> dataSource;
     private final int maxAttempts;
     private final long retryDelayMs;
+    private volatile Outcome outcome = Outcome.PENDING;
 
     /**
-     * Creates the startup gate from the effective sink and optional datasource.
+     * Creates the startup gate from the effective sink and step store and the optional datasource.
      *
      * @param sinkMode configured message-store sink
+     * @param stepOutcomeStore configured step outcome store
+     * @param replayEnabled whether messages are captured for replay, which writes replay audit rows
      * @param dataSource Quarkus datasource handle
      * @param testProfile active test-profile policy
      */
     @Inject
     public ContractVersionStartupGate(
             @ConfigProperty(name = "basis.message-store.sink", defaultValue = "log") String sinkMode,
+            @ConfigProperty(name = "basis.message-store.step-outcome-store", defaultValue = "noop") String stepOutcomeStore,
+            @ConfigProperty(name = "basis.message-store.replay.enabled", defaultValue = "true") boolean replayEnabled,
             Instance<DataSource> dataSource,
             MessageStoreTestProfileConfig testProfile) {
-        this(testProfile.effectiveSink(sinkMode), () -> {
+        this(testProfile.effectiveSink(sinkMode), testProfile.effectiveStepOutcomeStore(stepOutcomeStore), replayEnabled, () -> {
             if (dataSource.isAmbiguous()) {
                 // Otherwise the app reports ready and every journal write fails.
                 throw MessageStoreDataSource.ambiguous("basis.message-store.sink=postgres");
             }
             return dataSource.isResolvable() ? dataSource.get() : null;
-        });
+        }, DEFAULT_MAX_ATTEMPTS, DEFAULT_RETRY_DELAY_MS);
     }
 
     ContractVersionStartupGate(String sinkMode, Supplier<DataSource> dataSource) {
@@ -79,7 +108,15 @@ public class ContractVersionStartupGate {
     }
 
     ContractVersionStartupGate(String sinkMode, Supplier<DataSource> dataSource, int maxAttempts, long retryDelayMs) {
+        this(sinkMode, "noop", true, dataSource, maxAttempts, retryDelayMs);
+    }
+
+    ContractVersionStartupGate(String sinkMode, String stepOutcomeStore, boolean replayEnabled,
+            Supplier<DataSource> dataSource, int maxAttempts, long retryDelayMs) {
         this.sinkMode = sinkMode;
+        boolean postgresSink = "postgres".equals(sinkMode);
+        this.postgresSteps = "postgres".equals(stepOutcomeStore);
+        this.schema = MessageStoreSchema.required(postgresSink, postgresSink && replayEnabled, postgresSteps);
         this.dataSource = dataSource;
         this.maxAttempts = Math.max(1, maxAttempts);
         this.retryDelayMs = retryDelayMs;
@@ -90,29 +127,53 @@ public class ContractVersionStartupGate {
     }
 
     /**
+     * Returns the state of the check: pending until the startup event ran it,
+     * then passed or failed for the rest of the process.
+     *
+     * @return the outcome so far
+     */
+    public Outcome outcome() {
+        return outcome;
+    }
+
+    /**
      * @throws IllegalStateException when the provisioned contract major differs
-     *         from {@link #EXPECTED_CONTRACT_MAJOR}; failing fast beats silently
-     *         writing a mismatched schema shape.
+     *         from {@link #EXPECTED_CONTRACT_MAJOR}, or when the store lacks a table or
+     *         column this adapter writes; failing fast beats silently writing a
+     *         mismatched schema shape.
      */
     void verify() {
-        if (!"postgres".equals(sinkMode)) {
+        try {
+            doVerify();
+            outcome = Outcome.PASSED;
+        } catch (RuntimeException e) {
+            outcome = Outcome.FAILED;
+            throw e;
+        }
+    }
+
+    private void doVerify() {
+        boolean postgresSink = "postgres".equals(sinkMode);
+        if (!postgresSink && schema.isEmpty()) {
             return;
         }
         DataSource resolved = dataSource.get();
         if (resolved == null) {
-            return;
+            // The sink and the step store are created on their first use, so they would fail only
+            // after a message was processed, and the record would be read and processed again.
+            throw new IllegalStateException((postgresSink ? "basis.message-store.sink=postgres"
+                    : "basis.message-store.step-outcome-store=postgres") + " requires a JDBC DataSource");
         }
 
         SQLException lastFailure = null;
         for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-            try {
-                queryAndCheck(resolved);
+            try (Connection connection = resolved.getConnection()) {
+                if (postgresSink) {
+                    checkContract(connection);
+                }
+                schema.verify(connection);
                 return;
             } catch (SQLException e) {
-                if (POSTGRES_UNDEFINED_TABLE_SQL_STATE.equals(e.getSQLState())) {
-                    warnAssumingMajorOne("table " + CONTRACT_TABLE + " does not exist");
-                    return;
-                }
                 lastFailure = e;
                 if (attempt < maxAttempts) {
                     LOG.info("Contract check attempt {}/{} failed ({}); retrying in {} ms",
@@ -130,15 +191,14 @@ public class ContractVersionStartupGate {
         // rolling updates (previous pods keep serving) and an adapter that
         // cannot reach its journal must not consume anyway.
         throw new IllegalStateException("Message-store contract gate could not read " + CONTRACT_TABLE
-                + " after " + maxAttempts + " attempts ("
+                + " or the store's tables after " + maxAttempts + " attempts ("
                 + (lastFailure == null ? "interrupted" : lastFailure.getMessage())
                 + "). Refusing to start: fix grants/connectivity (the runtime role needs select on "
                 + CONTRACT_TABLE + ").", lastFailure);
     }
 
-    private void queryAndCheck(DataSource resolved) throws SQLException {
-        try (Connection connection = resolved.getConnection();
-             PreparedStatement statement = connection.prepareStatement(SELECT_CONTRACT_MAJOR_SQL);
+    private void checkContract(Connection connection) throws SQLException {
+        try (PreparedStatement statement = connection.prepareStatement(SELECT_CONTRACT_MAJOR_SQL);
              ResultSet resultSet = statement.executeQuery()) {
             if (!resultSet.next()) {
                 warnAssumingMajorOne("table " + CONTRACT_TABLE + " is empty");
@@ -156,6 +216,14 @@ public class ContractVersionStartupGate {
                         + " different contract major.");
             }
             LOG.info("Message-store contract check passed: {} reports major {}", CONTRACT_TABLE, contractMajor);
+        } catch (SQLException e) {
+            if (!POSTGRES_UNDEFINED_TABLE_SQL_STATE.equals(e.getSQLState())) {
+                throw e;
+            }
+            if (!connection.getAutoCommit()) {
+                connection.rollback();
+            }
+            warnAssumingMajorOne("table " + CONTRACT_TABLE + " does not exist");
         }
     }
 

@@ -1,6 +1,8 @@
 package no.basis.integrationplatform.camel.keyvalue;
 
 import io.quarkus.arc.DefaultBean;
+import io.quarkus.arc.InactiveBeanException;
+import io.quarkus.arc.InjectableInstance;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Disposes;
 import jakarta.enterprise.inject.Instance;
@@ -18,6 +20,10 @@ import java.util.Optional;
  * <p>The bean is created on its first use, so an application that does not use
  * the Key-Value Store never touches {@code bip_key_value} and runs
  * unchanged against a Message Store without that table.</p>
+ *
+ * <p>Without an {@code app.name}, without a Message Store datasource, or with an
+ * inactive one ({@code quarkus.datasource.active=false}), the store cannot be
+ * created and its first call fails with {@link KeyValueStoreNotConfiguredException}.</p>
  */
 @ApplicationScoped
 public class KeyValueStoreProducer {
@@ -38,7 +44,7 @@ public class KeyValueStoreProducer {
             Instance<DataSource> dataSource) {
         // The message log falls back to a placeholder name; shared state under one would mix integrations.
         String integration = integrationName.filter(name -> !name.isBlank())
-                .orElseThrow(() -> new IllegalStateException(
+                .orElseThrow(() -> new KeyValueStoreNotConfiguredException(
                         "Key-Value Store requires app.name, the integration identity its keys belong to"));
         if (sweepIntervalSeconds < 1 || sweepIntervalSeconds > MAX_SWEEP_INTERVAL_SECONDS) {
             throw new IllegalStateException("basis.message-store.key-value.sweep-interval-seconds must be 1 to "
@@ -48,9 +54,23 @@ public class KeyValueStoreProducer {
             throw MessageStoreDataSource.ambiguous("Key-Value Store");
         }
         if (!dataSource.isResolvable()) {
-            throw new IllegalStateException("Key-Value Store requires a JDBC DataSource for the Message Store");
+            throw new KeyValueStoreNotConfiguredException("Key-Value Store requires a JDBC DataSource for the Message Store");
         }
-        PostgresKeyValueStore state = new PostgresKeyValueStore(dataSource.get(), integration);
+        // The datasource is a client proxy: a switched-off one (quarkus.datasource.active=false) resolves
+        // here and fails only on its first connection, so ask whether its bean is active first.
+        if (dataSource instanceof InjectableInstance<DataSource> injectable
+                && !injectable.getHandle().getBean().isActive()) {
+            throw new KeyValueStoreNotConfiguredException("Key-Value Store requires an active JDBC DataSource for"
+                    + " the Message Store: " + injectable.getHandle().getBean().checkActive().inactiveReason());
+        }
+        DataSource resolved;
+        try {
+            resolved = dataSource.get();
+        } catch (InactiveBeanException e) {
+            throw new KeyValueStoreNotConfiguredException(
+                    "Key-Value Store requires an active JDBC DataSource for the Message Store", e);
+        }
+        PostgresKeyValueStore state = new PostgresKeyValueStore(resolved, integration);
         state.startSweep(Duration.ofSeconds(sweepIntervalSeconds));
         return state;
     }
