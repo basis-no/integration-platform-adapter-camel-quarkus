@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.model;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import java.time.Instant;
 import java.util.List;
 
@@ -27,6 +28,11 @@ public record MessageAttemptResult(
         MessageStatus status,
         List<StepResult> steps,
         String error) {
+    /** Masks the URIs in an error text however the result was built. */
+    public MessageAttemptResult {
+        error = ErrorTextMasking.mask(error);
+    }
+
 
     public MessageAttemptResult(
             int schemaVersion,

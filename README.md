@@ -444,16 +444,24 @@ From 0.3.7 the failure text in `x-bip-error`, in the Message Store's error
 columns, in the attempt's steps and in the adapter's log lines has every URI in
 it masked by the stored-endpoint rule (see [Step Tracking](#step-tracking)): a
 receiver URL that a failed send's exception names keeps no user info, key or
-signature. A URI is a scheme followed by `://`, up to the next white space,
-quote or angle bracket; after 20 URIs in one text, each further one is replaced
-by `xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
-needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`) whose text
-names each original class, with the stack traces kept and the messages of the
-failure and its causes masked the same way. Other text
-in an exception message is stored as it is, so do not put credentials in
-exception messages of your own. Up to 0.3.6 these texts were stored, parked and
-logged as they were: rotate any credential that has appeared in the URL of a
-failed send.
+signature. A URI is a scheme (a letter, then letters, digits, `+`, `-` or
+`.`) followed by `://`, up to the next white space, `<` or `>`; a quote that
+ends it is not part of it. One deadline of about a second covers the whole
+text, and at most 20 URIs are masked; any URI past either is replaced by
+`xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
+needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`, which a
+structured log shows as the exception class) whose text names each original
+class, with the stack traces kept and the messages of the failure, its causes
+and its suppressed failures masked the same way. The lines of Camel's error
+handlers that the adapter installs are masked too. Not covered: Camel's
+`FatalFallbackErrorHandler` line for an input that is not a managed Kafka
+input, the Kafka client's own log lines, other text in an exception message,
+and credentials that are not in a `scheme://` URI, such as Camel's
+`scheme:path?query` form, a fragment (`#access_token=…`), `;` parameters, a
+`user:pass@host` without a scheme or a URI nested in a query value. Do not put
+credentials in exception messages of your own. Up to 0.3.6 these texts were stored,
+parked and logged as they were: rotate any credential that has appeared in the
+URL of a failed send.
 
 An HTTP intake that publishes to Kafka must remove the caller's headers first,
 for example with `removeHeaders("*")` and then setting only the headers the

@@ -132,4 +132,94 @@ class CredentialsInErrorTextsTest {
             }
         }
     }
+
+    @Test
+    void camelsOwnDeadLetterLinesAreMaskedForAnInputThatIsNotAManagedKafkaInput() throws Exception {
+        assertNoCredentialInWarningsOrErrors(new PlatformRouteConfiguration(), false);
+    }
+
+    /**
+     * Runs a failing send to the URL with credentials and checks every line at WARN or above,
+     * except Camel's FatalFallbackErrorHandler, which uses its own logger the adapter cannot set
+     * (documented).
+     */
+    private void assertNoCredentialInWarningsOrErrors(PlatformRouteConfiguration configuration, boolean kafkaInput)
+            throws Exception {
+        List<LogRecord> logs = Collections.synchronizedList(new ArrayList<>());
+        Handler capture = new Handler() {
+            @Override public void publish(LogRecord record) { logs.add(record); }
+            @Override public void flush() { }
+            @Override public void close() { }
+        };
+        capture.setLevel(Level.ALL);
+        Logger root = Logger.getLogger("");
+        root.addHandler(capture);
+        HttpServer receiver = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+        receiver.createContext("/", x -> {
+            x.getRequestBody().readAllBytes();
+            x.sendResponseHeaders(500, -1);
+            x.close();
+        });
+        receiver.start();
+        StepOutcomeStore store = new StepOutcomeStore() {
+            public boolean wasDelivered(String key) { return false; }
+            public void recordDelivered(StepResult step) { }
+            public void recordFailed(StepResult step) { }
+        };
+        try (var context = new DefaultCamelContext()) {
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(
+                    new DefaultStepTracker(store)));
+            context.addRoutes(configuration);
+            context.addRoutes(new PlatformDeadLetterRoute());
+            String url = "http://127.0.0.1:" + receiver.getAddress().getPort()
+                    + "/hook?code=fn-secret-1&sig=sas-secret-2&x-functions-key=key-secret-3&page=2";
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("direct:parking").routeId("parking").errorHandler(noErrorHandler()).log("parked");
+                    from("direct:input").routeId("input")
+                            .setHeader(Exchange.HTTP_METHOD, constant("POST"))
+                            .to(url).id("post-hook");
+                }
+            });
+            context.start();
+            context.createProducerTemplate().send("direct:input", e -> {
+                if (kafkaInput) {
+                    e.getMessage().setHeader(KafkaConstants.TOPIC, "bip.order-pipeline.in");
+                    e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> { });
+                }
+                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-1");
+                e.getMessage().setBody("order");
+            });
+        } finally {
+            receiver.stop(0);
+            root.removeHandler(capture);
+        }
+        boolean sawCamelLine = false;
+        for (LogRecord record : logs) {
+            if (record.getLevel().intValue() < Level.WARNING.intValue()
+                    || "org.apache.camel.processor.FatalFallbackErrorHandler".equals(record.getLoggerName())) {
+                continue;
+            }
+            sawCamelLine |= record.getLoggerName() != null && record.getLoggerName().startsWith("org.apache.camel.processor.errorhandler");
+            List<String> texts = new ArrayList<>();
+            texts.add(record.getMessage());
+            if (record.getParameters() != null) {
+                for (Object parameter : record.getParameters()) {
+                    texts.add(String.valueOf(parameter));
+                }
+            }
+            for (Throwable thrown = record.getThrown(); thrown != null && thrown.getCause() != thrown; thrown = thrown.getCause()) {
+                texts.add(thrown.toString());
+            }
+            for (String text : texts) {
+                for (String secret : SECRETS) {
+                    assertFalse(String.valueOf(text).contains(secret), record.getLoggerName() + ": " + text);
+                }
+            }
+        }
+        assertTrue(sawCamelLine, "Camel's error handler logged its line");
+    }
 }

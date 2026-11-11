@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 class ErrorTextMaskingTest {
     @Test
@@ -56,6 +57,51 @@ class ErrorTextMaskingTest {
         assertArrayEquals(cause.getStackTrace(), logged.getCause().getStackTrace());
         assertEquals("Send to https://receiver.example/hook?sig=s-1 failed", failure.getMessage(), "The original is unchanged");
         assertNull(ErrorTextMasking.forLog(null));
+    }
+
+    @Test
+    void takesLinearTimeOnALongRunOfSchemeCharacters() {
+        String text = "For input string: \"" + "a1".repeat(150_000) + "\" at http://h/a?sig=s-1";
+        long started = System.nanoTime();
+        String masked = ErrorTextMasking.mask(text);
+        assertTrue(System.nanoTime() - started < java.util.concurrent.TimeUnit.SECONDS.toNanos(2), "Took too long");
+        assertTrue(masked.endsWith("http://h/a?sig=xxxxxx"), masked.substring(masked.length() - 40));
+    }
+
+    @Test
+    void oneDeadlineCoversTheWholeText() {
+        String slow = "https://r.example/a?" + "&token".repeat(20_000) + " ";
+        long started = System.nanoTime();
+        String masked = ErrorTextMasking.mask(slow.repeat(5));
+        assertTrue(System.nanoTime() - started < java.util.concurrent.TimeUnit.SECONDS.toNanos(3), "Took too long");
+        assertEquals("xxxxxx xxxxxx xxxxxx xxxxxx xxxxxx ", masked);
+    }
+
+    @Test
+    void aQuoteInsideAUriIsPartOfItAndOneThatEndsItIsNot() {
+        assertEquals("Cannot log in to ftp://xxxxxx@files.example/in",
+                ErrorTextMasking.mask("Cannot log in to ftp://user:pa'ss@files.example/in"));
+        assertEquals("invoking \"https://r.example/a?sig=xxxxxx\" failed",
+                ErrorTextMasking.mask("invoking \"https://r.example/a?sig=s-1\" failed"));
+        assertEquals("not a uri: ://x and 1https://r.example/?code=xxxxxx",
+                ErrorTextMasking.mask("not a uri: ://x and 1https://r.example/?code=c-1"));
+    }
+
+    @Test
+    void aSuppressedFailureOrADeepCauseIsMaskedToo() {
+        var failure = new IllegalStateException("send failed");
+        failure.addSuppressed(new RuntimeException("closing https://r.example/a?sig=s-1"));
+        Throwable logged = ErrorTextMasking.forLog(failure);
+        assertEquals("java.lang.RuntimeException: closing https://r.example/a?sig=xxxxxx",
+                logged.getSuppressed()[0].toString());
+
+        Throwable deep = new RuntimeException("https://r.example/a?sig=s-2");
+        for (int i = 0; i < 25; i++) {
+            deep = new RuntimeException("level " + i, deep);
+        }
+        Throwable top = deep;
+        org.junit.jupiter.api.Assertions.assertNotSame(top, ErrorTextMasking.forLog(top),
+                "A chain deeper than the bound is copied, not logged as it is");
     }
 
     @Test

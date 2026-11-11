@@ -4,6 +4,7 @@ import no.basis.integrationplatform.camel.ErrorTextMasking;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
@@ -325,7 +326,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             return;
         }
         for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
+            // A credential-like name stays bytes, so that an HTTP send withholds it like any
+            // other credential header of the consumed record.
             if (name.regionMatches(true, 0, ENVELOPE_PREFIX, 0, ENVELOPE_PREFIX.length())
+                    && !PlatformRouteConfiguration.isCredentialHeader(name)
                     && exchange.getMessage().getHeader(name) instanceof byte[] bytes) {
                 exchange.getMessage().setHeader(name, new String(bytes, StandardCharsets.UTF_8));
             }

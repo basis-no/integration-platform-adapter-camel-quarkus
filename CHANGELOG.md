@@ -13,12 +13,18 @@ No Message Store schema change.
   the DLQ topic, and logged it. Every URI in such a text is now masked by the
   stored-endpoint rule (user info, and parameters such as `code`, `sig`, `key`
   or a credential-like name), also in the failures the adapter logs, whose class
-  names and stack traces stay. See
+  names and stack traces stay, and in the lines of Camel's error handlers the
+  adapter installs. Not covered: Camel's `FatalFallbackErrorHandler` line for an
+  input that is not a managed Kafka input, the Kafka client's own logs, and
+  credentials that are not in a `scheme://` URI. See
   [Retry and DLQ](README.md#retry-and-dlq).
   Upgrade: error texts show `xxxxxx` where they showed credentials; a DLQ reader
   or alert that matched an unmasked value in `x-bip-error` must match the
-  masked form. Rows and DLQ records written before keep their text: rotate any
-  credential that has appeared in the URL of a failed send.
+  masked form. A text with a URI that cannot be masked within about a second,
+  or with more than 20 URIs, shows `xxxxxx` for the rest. A structured log shows
+  a masked failure's class as `ErrorTextMasking$MaskedFailure`, with the
+  original class in its text. Rows and DLQ records written before keep their
+  text: rotate any credential that has appeared in the URL of a failed send.
 - The credential-name rule masks `X-JWT-Assertion`, `PrivateKey` and
   other names containing `assertion`, `privatekey`, `jwt` or `bearer`, and no
   longer exempts every `x-bip-*` name: only the adapter's own envelope headers
@@ -28,7 +34,10 @@ No Message Store schema change.
   names, and which query parameters a stored endpoint masks.
   Upgrade: a consumed record's `X-JWT-Assertion` or `PrivateKey` header no
   longer reaches HTTP receivers; an application's own `x-bip-…-key` or
-  `x-bip-…-token` header is masked in the parked copy; stored endpoints mask
+  `x-bip-…-token` header is masked in the parked copy, stays bytes at the Kafka
+  boundary instead of turning into text, and so is withheld from HTTP sends
+  like any other consumed credential header; the Kafka-publish warning names
+  these headers too; stored endpoints mask
   `?jwt=`, `?assertion=` and `?bearer=` values. The .NET adapter needs the same
   names for its stored endpoints to stay identical.
 - A Key-Value Store write that the database refuses no longer copies
@@ -36,7 +45,6 @@ No Message Store schema change.
   the failing row, the stored value included, and the adapter stored, parked and
   logged it as the message's failure. The error now names the key's operation,
   the limit and the SQLSTATE only.
-
 
 ### Changed
 
