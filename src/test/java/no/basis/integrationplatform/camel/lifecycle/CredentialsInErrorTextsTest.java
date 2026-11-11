@@ -37,8 +37,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
 class CredentialsInErrorTextsTest {
     private static final List<String> SECRETS = List.of("fn-secret-1", "sas-secret-2", "key-secret-3");
 
-    @Test
-    void aFailedSendsReceiverUrlKeepsItsCredentialsOutOfStoredParkedAndLoggedTexts() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest(name = "parking fails: {0}")
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void aFailedSendsReceiverUrlKeepsItsCredentialsOutOfStoredParkedAndLoggedTexts(boolean parkingFails) throws Exception {
         List<MessageAttemptResult> rows = Collections.synchronizedList(new ArrayList<>());
         List<StepResult> failedSteps = Collections.synchronizedList(new ArrayList<>());
         List<Exchange> parked = Collections.synchronizedList(new ArrayList<>());
@@ -75,7 +76,12 @@ class CredentialsInErrorTextsTest {
             context.addRoutes(new RouteBuilder() {
                 public void configure() {
                     from("direct:parking").routeId("parking").errorHandler(noErrorHandler())
-                            .process(e -> parked.add(e.copy()));
+                            .process(e -> {
+                                if (parkingFails) {
+                                    throw new IllegalStateException("DLQ unavailable");
+                                }
+                                parked.add(e.copy());
+                            });
                     from("direct:input").routeId("input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
                             .routePolicy(new MessageStoreRoutePolicy(rows::add, "order-pipeline"))
                             .setHeader(Exchange.HTTP_METHOD, constant("POST"))
@@ -94,15 +100,19 @@ class CredentialsInErrorTextsTest {
             root.removeHandler(capture);
         }
 
-        assertEquals(1, parked.size());
-        String error = parked.getFirst().getMessage().getHeader(PlatformHeaders.ERROR, String.class);
-        // Camel's exception names the URI with its query sorted.
-        for (String masked : List.of("code=xxxxxx", "sig=xxxxxx", "x-functions-key=xxxxxx", "page=2")) {
-            assertTrue(error.contains(masked), error);
+        List<String> texts = new ArrayList<>();
+        if (parkingFails) {
+            assertEquals(0, parked.size());
+        } else {
+            assertEquals(1, parked.size());
+            String error = parked.getFirst().getMessage().getHeader(PlatformHeaders.ERROR, String.class);
+            // Camel's exception names the URI with its query sorted.
+            for (String masked : List.of("code=xxxxxx", "sig=xxxxxx", "x-functions-key=xxxxxx", "page=2")) {
+                assertTrue(error.contains(masked), error);
+            }
+            texts.add(error);
         }
         assertEquals(1, rows.size());
-        List<String> texts = new ArrayList<>();
-        texts.add(error);
         texts.add(rows.getFirst().error());
         rows.getFirst().steps().forEach(step -> { texts.add(step.error()); texts.add(step.endpointUri()); });
         failedSteps.forEach(step -> { texts.add(step.error()); texts.add(step.endpointUri()); });

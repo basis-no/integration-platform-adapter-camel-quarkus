@@ -30,10 +30,14 @@ public final class ErrorTextMasking {
      * @return the masked text, or {@code null} for {@code null}
      */
     public static String mask(String text) {
+        return mask(text, System.nanoTime() + TEXT_TIMEOUT_NANOS);
+    }
+
+    // The deadline is shared by every text of one call, such as the messages of a failure's chain.
+    private static String mask(String text, long deadline) {
         if (text == null || text.indexOf("://") < 0) {
             return text;
         }
-        long deadline = System.nanoTime() + TEXT_TIMEOUT_NANOS;
         StringBuilder masked = new StringBuilder(text.length());
         int copied = 0;
         int count = 0;
@@ -59,7 +63,7 @@ public final class ErrorTextMasking {
             while (uriEnd > separator + 3 && (text.charAt(uriEnd - 1) == '"' || text.charAt(uriEnd - 1) == '\'')) {
                 uriEnd--;
             }
-            String replacement = ++count <= MAX_URIS && System.nanoTime() < deadline
+            String replacement = ++count <= MAX_URIS && System.nanoTime() - deadline < 0
                     ? EndpointUriMasking.mask(text.substring(start, uriEnd), deadline) : PlatformRouteConfiguration.MASKED;
             masked.append(text, copied, start).append(replacement);
             copied = uriEnd;
@@ -103,18 +107,20 @@ public final class ErrorTextMasking {
      * @return the failure or its masked copy, or {@code null} for {@code null}
      */
     public static Throwable forLog(Throwable failure) {
-        if (failure == null || !masksAnything(failure)) {
+        if (failure == null) {
+            return null;
+        }
+        // One deadline for the check and the copy of the whole chain.
+        long deadline = System.nanoTime() + TEXT_TIMEOUT_NANOS;
+        if (!masksAnything(failure, new IdentityHashMap<>(), 0, deadline)) {
             return failure;
         }
-        return copy(failure, new IdentityHashMap<>(), 0);
+        return copy(failure, new IdentityHashMap<>(), 0, deadline);
     }
 
-    private static boolean masksAnything(Throwable failure) {
-        return masksAnything(failure, new IdentityHashMap<>(), 0);
-    }
-
-    // A chain deeper than the bound counts as masking something, so that it is copied, not logged as it is.
-    private static boolean masksAnything(Throwable failure, Map<Throwable, Boolean> seen, int depth) {
+    // A chain deeper than the bound counts as masking something, so that it is copied, not logged
+    // as it is. A logger prints toString(), which an exception may override with more text.
+    private static boolean masksAnything(Throwable failure, Map<Throwable, Boolean> seen, int depth, long deadline) {
         if (failure == null || seen.put(failure, true) != null) {
             return false;
         }
@@ -122,34 +128,37 @@ public final class ErrorTextMasking {
             return true;
         }
         String message = failure.getMessage();
-        if (message != null && !message.equals(mask(message))) {
+        if (message != null && !message.equals(mask(message, deadline))) {
+            return true;
+        }
+        String text = failure.toString();
+        if (text != null && !text.equals(mask(text, deadline))) {
             return true;
         }
         for (Throwable suppressed : failure.getSuppressed()) {
-            if (masksAnything(suppressed, seen, depth + 1)) {
+            if (masksAnything(suppressed, seen, depth + 1, deadline)) {
                 return true;
             }
         }
         Throwable cause = failure.getCause();
-        return cause != failure && masksAnything(cause, seen, depth + 1);
+        return cause != failure && masksAnything(cause, seen, depth + 1, deadline);
     }
 
-    private static Throwable copy(Throwable failure, Map<Throwable, Throwable> copies, int depth) {
+    private static Throwable copy(Throwable failure, Map<Throwable, Throwable> copies, int depth, long deadline) {
         Throwable known = copies.get(failure);
         if (known != null) {
             return known;
         }
-        String message = failure.getMessage();
-        MaskedFailure copy = new MaskedFailure(failure.getClass().getName()
-                + (message == null ? "" : ": " + mask(message)), failure.getStackTrace());
+        // toString() names the class, then the message or whatever the exception adds to it.
+        MaskedFailure copy = new MaskedFailure(mask(String.valueOf(failure), deadline), failure.getStackTrace());
         copies.put(failure, copy);
         Throwable cause = failure.getCause();
         if (cause != null && cause != failure && depth < MAX_CAUSES) {
-            copy.initCause(copy(cause, copies, depth + 1));
+            copy.initCause(copy(cause, copies, depth + 1, deadline));
         }
         if (depth < MAX_CAUSES) {
             for (Throwable suppressed : failure.getSuppressed()) {
-                copy.addSuppressed(copy(suppressed, copies, depth + 1));
+                copy.addSuppressed(copy(suppressed, copies, depth + 1, deadline));
             }
         }
         return copy;

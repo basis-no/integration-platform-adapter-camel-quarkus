@@ -386,7 +386,7 @@ public final class EndpointUriMasking {
 
         @Override
         public char charAt(int index) {
-            if ((++reads & 0xFFF) == 0 && System.nanoTime() > deadline) {
+            if ((++reads & 0xFFF) == 0 && System.nanoTime() - deadline > 0) {
                 throw new MaskTimeout();
             }
             return text.charAt(index);

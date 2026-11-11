@@ -453,9 +453,13 @@ needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`, which a
 structured log shows as the exception class) whose text names each original
 class, with the stack traces kept and the messages of the failure, its causes
 and its suppressed failures masked the same way. The lines of Camel's error
-handlers that the adapter installs are masked too. Not covered: Camel's
-`FatalFallbackErrorHandler` line for an input that is not a managed Kafka
-input, the Kafka client's own log lines, other text in an exception message,
+handlers that the adapter installs are masked too, and so is the failure that
+Camel's `FatalFallbackErrorHandler` logs when parking a managed Kafka input
+fails. Not covered: for an input that is not a managed Kafka input, which gets
+its original failure back, Camel's `FatalFallbackErrorHandler` line and the
+consumer's own failure line (for example a timer's or file consumer's
+`LoggingExceptionHandler`, or camel-kafka's line for an exchange that ends
+failed); the Kafka client's own log lines; other text in an exception message,
 and credentials that are not in a `scheme://` URI, such as Camel's
 `scheme:path?query` form, a fragment (`#access_token=…`), `;` parameters, a
 `user:pass@host` without a scheme or a URI nested in a query value. Do not put

@@ -10,12 +10,19 @@ import org.apache.camel.model.ToDynamicDefinition;
 /** Confirms parking only after the configured dead-letter endpoint succeeds. */
 @ApplicationScoped
 public class PlatformDeadLetterRoute extends RouteBuilder {
+    private static final String CAUGHT_BEFORE_MASKING = "basis.messageStore.caughtBeforeMasking";
+
     @Override
     public void configure() {
         var route = from(PlatformRouteConfiguration.DLQ_URI).routeId("bip-confirmed-dead-letter")
                 .errorHandler(noErrorHandler())
                 .process(exchange -> {
-                    PlatformRouteConfiguration.prepareDlq(exchange);
+                    try {
+                        PlatformRouteConfiguration.prepareDlq(exchange);
+                    } catch (RuntimeException e) {
+                        maskCaughtUntilParked(exchange);
+                        throw e;
+                    }
                     // A handler that restored the original message also restored a replay's redo list.
                     exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS);
                     if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) == null
@@ -29,6 +36,9 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                                 + "internal request failure must propagate to its caller",
                                 failure);
                     }
+                    // From here a failure leaves the input unparked, and Camel's fallback error
+                    // handler logs the failure the route caught.
+                    maskCaughtUntilParked(exchange);
                     Throwable unrecorded = StepOutcomeFailure.of(exchange);
                     if (unrecorded != null) {
                         // The input is consumed again once step outcomes can be recorded; a parked copy would repeat it.
@@ -40,6 +50,31 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
         // no Kafka input does not need a broker merely to start this route.
         route.addOutput(new ToDynamicDefinition("{{basis.message-store.dlq-uri:kafka:bip.message.dlq}}")
                 .allowOptimisedComponents(false));
-        route.process(exchange -> exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, true));
+        route.process(exchange -> {
+            restoreCaught(exchange);
+            exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, true);
+        });
+    }
+
+    /**
+     * When parking fails, Camel's fallback error handler logs the failure the route caught,
+     * whose text may name a receiver's URI with credentials: it gets the masked copy until the
+     * message is parked, after which the original is put back.
+     */
+    private static void maskCaughtUntilParked(Exchange exchange) {
+        Throwable caught = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
+        Throwable masked = ErrorTextMasking.forLog(caught);
+        if (masked != caught) {
+            exchange.setProperty(CAUGHT_BEFORE_MASKING, caught);
+            exchange.setProperty(Exchange.EXCEPTION_CAUGHT, masked);
+        }
+    }
+
+    private static void restoreCaught(Exchange exchange) {
+        Throwable original = exchange.getProperty(CAUGHT_BEFORE_MASKING, Throwable.class);
+        if (original != null) {
+            exchange.removeProperty(CAUGHT_BEFORE_MASKING);
+            exchange.setProperty(Exchange.EXCEPTION_CAUGHT, original);
+        }
     }
 }
