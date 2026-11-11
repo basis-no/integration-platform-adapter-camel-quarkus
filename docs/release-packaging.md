@@ -79,10 +79,11 @@ is already tagged. Finish such a release on the release workstation with the
 [offline path](#offline-release-signing), from the
 `unsigned-central-candidate-X.Y.Z` artifact that this run's `build` retained:
 skip the runbook's inspect step, use the release run's ID as `RUN` from the
-download step on, and do not create the tag again. Fetch the tag into
-`$TOOLS` (`git -C "$TOOLS" fetch origin tag "v$VERSION"`) before the readback. If no
-attempt of `build` produced a candidate, this tag cannot be released; release
-the next patch version instead.
+download step on, and do not create the tag again. Fetch the tag into `$TOOLS`
+(`git -C "$TOOLS" fetch origin tag "v$VERSION"`) before the readback. Do not
+re-run that run again after the download: `release-page.yml` reads its newest
+candidate, and a rebuilt one has other bytes. If `build` cannot produce a
+candidate, also after another re-run, release the next patch version instead.
 
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
@@ -100,15 +101,16 @@ secret.
 ## Offline release signing
 
 Use this path while the repository is private, whenever the protected
-environments are not configured, or to finish a tag whose CI run was re-run
-(see [protected-tag release](#protected-tag-release-in-ci)). The signing key and
-the Central portal token this path uses **never exist in GitHub**: not as repository, organization or environment
-secrets, not in CI runners, and not on agent or development hosts. GitHub holds
-only the public key, in the `RELEASE_SIGNING_PUBLIC_KEY` repository variable,
-for post-publication readback. Signing and Central upload are performed by a
-human release manager on a trusted release workstation, using GnuPG and the
-trusted release tools from a checkout of reviewed `main`. That human step is
-also the release gate.
+environments are not configured, or to finish a tag whose CI run was re-run (see
+[protected-tag release](#protected-tag-release-in-ci)). The signing key and the
+Central portal token this path uses **never exist in GitHub**: not as
+repository, organization or environment secrets, not in CI runners, and not on
+agent or development hosts. Of this path's credentials, GitHub holds only the
+public key, in the `RELEASE_SIGNING_PUBLIC_KEY` repository variable, for
+post-publication readback. Signing and Central upload are performed by a human
+release manager on a trusted release workstation, using GnuPG and the trusted
+release tools from a checkout of reviewed `main`. That human step is also the
+release gate.
 
 The reason is structural. A source commit, Maven wrapper, plugin, test or
 dependency can execute arbitrary code, and no step cleanup or log masking protects
