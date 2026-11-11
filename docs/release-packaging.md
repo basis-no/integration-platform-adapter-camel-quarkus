@@ -74,11 +74,14 @@ portal, and publish or drop the deployment there under the same approvals.
 
 Any re-run counts, also one of a failed `build` or `attest`: from the second
 attempt on, `sign-upload` and `publish` refuse, even when nothing was uploaded.
-The tag cannot be pushed again, so finish such a release on the release
-workstation with the [offline path](#offline-release-signing), from that run's
-own `unsigned-central-candidate-X.Y.Z` artifact: use the run's ID as `RUN` and
-skip the runbook's inspect and tag steps (inspection refuses a version that is
-already tagged).
+The tag cannot be pushed again, and unsigned inspection refuses a version that
+is already tagged. Finish such a release on the release workstation with the
+[offline path](#offline-release-signing), from the
+`unsigned-central-candidate-X.Y.Z` artifact that this run's `build` retained:
+skip the runbook's inspect step, use the release run's ID as `RUN` from the
+download step on, and do not create the tag again. If no
+attempt of `build` produced a candidate, this tag cannot be released; release
+the next patch version instead.
 
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
@@ -95,9 +98,10 @@ secret.
 
 ## Offline release signing
 
-Use this path while the repository is private, or whenever the protected
-environments are not configured. Here the signing key and the Central portal
-token **never exist in GitHub**: not as repository, organization or environment
+Use this path while the repository is private, whenever the protected
+environments are not configured, or to finish a tag whose CI run was re-run
+(see [protected-tag release](#protected-tag-release-in-ci)). The signing key and
+the Central portal token this path uses **never exist in GitHub**: not as repository, organization or environment
 secrets, not in CI runners, and not on agent or development hosts. GitHub holds
 only the public key, in the `RELEASE_SIGNING_PUBLIC_KEY` repository variable,
 for post-publication readback. Signing and Central upload are performed by a
@@ -301,9 +305,11 @@ mkdir -p "$RELEASE" && cd "$RELEASE"
     git -C "$TOOLS" push origin "v$VERSION"
     ```
 
-    Pushing the tag also starts `release.yml`. Its `sign-upload` job waits for
-    approval in `release`: reject that deployment, since this release is
-    already published.
+    Pushing the tag also starts `release.yml`. When the `release` environment
+    is configured, its `sign-upload` job waits for approval: cancel that run,
+    or have a reviewer reject the deployment, since this release is already
+    published. Without the environment, the run fails by itself before
+    signing.
 
 11. **Run the release-page workflow**, which repeats the readback on a fresh
     runner and then creates or compares the GitHub Release:

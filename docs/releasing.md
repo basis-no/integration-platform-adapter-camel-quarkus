@@ -149,9 +149,9 @@ Follow the [release-manager runbook](release-packaging.md#release-manager-runboo
    git push origin v0.4.0
    ```
 
-   Pushing the tag also starts `release.yml`. Its `sign-upload` job waits for
-   approval in `release`: reject that deployment, since this release is already
-   published.
+   Pushing the tag also starts `release.yml`. If `release` is configured,
+   cancel that run, or have a reviewer reject its `sign-upload`, since this
+   release is already published.
 
 6. Run `release-page.yml` from the same tool branch with the tag, candidate
    run, signer and `entries_sha256` to repeat the readback and create the GitHub
