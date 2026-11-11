@@ -26,6 +26,12 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
             "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth");
     /** Named profile for slow external backends. */
     public static final String SLOW_BACKEND = "ip-slow-backend";
+    // The slow-backend waits run on the Kafka consumer thread: 5, 10, 20, 20, 20 and 20 seconds,
+    // 95 seconds in all, leave most of the 300-second max.poll.interval.ms to the attempts themselves.
+    // Camel's default 60-second cap gave 195 seconds of waiting.
+    static final int SLOW_BACKEND_REDELIVERIES = 6;
+    static final long SLOW_BACKEND_FIRST_DELAY_MS = 5_000;
+    static final long SLOW_BACKEND_MAX_DELAY_MS = 20_000;
     /** Named profile disabling automatic redelivery. */
     public static final String NO_RETRY = "ip-no-retry";
     /** Named source-to-Kafka profile that propagates exhausted failure. */
@@ -58,6 +64,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
     @Override
     public void configuration() {
+        HttpClientRetries.disableByDefault(getContext());
         if (failureMode == MessageFailureMode.RECORD_FAILED) {
             recordFailedConfigurations();
             return;
@@ -66,7 +73,9 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration()
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
-                        .onRedelivery(this::captureRedeliveryDiagnostics)
+                        .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null)))
+                        .onRedelivery(this::timedRedelivery)
+                        .onPrepareFailure(HttpRetryAfter::clearDelay)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
                         .useExponentialBackOff()
@@ -75,11 +84,15 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration(SLOW_BACKEND)
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
-                        .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .maximumRedeliveries(6)
-                        .redeliveryDelay(5000)
+                        .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(
+                                SLOW_BACKEND_REDELIVERIES, SLOW_BACKEND_FIRST_DELAY_MS, SLOW_BACKEND_MAX_DELAY_MS)))
+                        .onRedelivery(this::timedRedelivery)
+                        .onPrepareFailure(HttpRetryAfter::clearDelay)
+                        .maximumRedeliveries(SLOW_BACKEND_REDELIVERIES)
+                        .redeliveryDelay(SLOW_BACKEND_FIRST_DELAY_MS)
                         .useExponentialBackOff()
-                        .backOffMultiplier(2));
+                        .backOffMultiplier(2)
+                        .maximumRedeliveryDelay(SLOW_BACKEND_MAX_DELAY_MS));
 
         routeConfiguration(NO_RETRY)
                 .errorHandler(deadLetterChannel(DLQ_URI)
@@ -102,10 +115,11 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration(SLOW_BACKEND)
                 .errorHandler(defaultErrorHandler()
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .maximumRedeliveries(6)
-                        .redeliveryDelay(5000)
+                        .maximumRedeliveries(SLOW_BACKEND_REDELIVERIES)
+                        .redeliveryDelay(SLOW_BACKEND_FIRST_DELAY_MS)
                         .useExponentialBackOff()
-                        .backOffMultiplier(2));
+                        .backOffMultiplier(2)
+                        .maximumRedeliveryDelay(SLOW_BACKEND_MAX_DELAY_MS));
 
         routeConfiguration(NO_RETRY)
                 .errorHandler(defaultErrorHandler()
@@ -148,6 +162,12 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (max != null) {
             exchange.setProperty(PlatformExchangeProperties.AUTO_REDELIVERY_MAX, max);
         }
+    }
+
+    /** Runs before a redelivery whose delay the adapter may have timed by {@code Retry-After}. */
+    void timedRedelivery(Exchange exchange) {
+        HttpRetryAfter.afterTiming(exchange);
+        captureRedeliveryDiagnostics(exchange);
     }
 
     /**

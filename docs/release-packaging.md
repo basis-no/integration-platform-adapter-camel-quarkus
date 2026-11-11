@@ -72,6 +72,14 @@ what the portal shows (for example `VALIDATED` state for a deployment the portal
 shows as publishing or published), do not resume from it: reconcile with the
 portal, and publish or drop the deployment there under the same approvals.
 
+Any re-run counts, also one of a failed `build` or `attest`: from the second
+attempt on, `sign-upload` and `publish` refuse, even when nothing was uploaded.
+The tag cannot be pushed again, so finish such a release on the release
+workstation with the [offline path](#offline-release-signing), from that run's
+own `unsigned-central-candidate-X.Y.Z` artifact: use the run's ID as `RUN` and
+skip the runbook's inspect and tag steps (inspection refuses a version that is
+already tagged).
+
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
 whose `.github/scripts` are the tools to trust, and change it only through a
@@ -239,6 +247,10 @@ mkdir -p "$RELEASE" && cd "$RELEASE"
    git -C "$TOOLS" tag -s "v$VERSION" "$SOURCE" -m "Release $VERSION"
    git -C "$TOOLS" push origin "v$VERSION"
    ```
+
+   Pushing the tag also starts `release.yml`. Its `sign-upload` job waits for
+   approval in `release`: reject that deployment, so that only this offline
+   upload reaches Central.
 
 6. **Upload to `VALIDATED`.** Generate a fresh Central user token for this
    release window and enter it only into the current shell session, without

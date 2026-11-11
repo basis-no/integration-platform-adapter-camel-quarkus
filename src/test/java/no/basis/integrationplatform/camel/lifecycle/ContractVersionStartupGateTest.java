@@ -12,8 +12,12 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.sql.Connection;
 import java.sql.Statement;
+import java.util.List;
+import java.util.Map;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -29,6 +33,158 @@ class ContractVersionStartupGateTest {
         dataSource = dataSource();
         no.basis.integrationplatform.camel.TestJdbc.awaitReachable(dataSource);
         execute("drop table if exists " + ContractVersionStartupGate.CONTRACT_TABLE);
+        execute("drop table if exists bip_message_replay_audit, bip_message_attempt, bip_message_log, bip_step_outcome");
+        execute(resource(MessageStoreSchema.MESSAGE_STORE_RESOURCE));
+        execute(resource(MessageStoreSchema.STEP_OUTCOME_RESOURCE));
+    }
+
+    @Test
+    void refusesAStoreProvisionedForAnEarlierAdapterAndNamesTheMissingColumns() throws Exception {
+        createContractTable();
+        execute("insert into bip_contract (contract_major, contract_version) values (1, '1.0.0')");
+        // The columns an earlier adapter's schema does not have.
+        for (String table : List.of("bip_message_log", "bip_message_attempt")) {
+            execute("alter table " + table + " drop column payload_ref, drop column payload_sha256");
+        }
+        execute("alter table bip_step_outcome drop column checkpoint_storage, drop column checkpoint_properties_json");
+        ContractVersionStartupGate gate = new ContractVersionStartupGate("postgres", "postgres", true, () -> dataSource, 1, 0L);
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, gate::verify);
+
+        String message = thrown.getMessage();
+        for (String missing : List.of("bip_message_log.payload_ref", "bip_message_log.payload_sha256",
+                "bip_message_attempt.payload_ref", "bip_message_attempt.payload_sha256",
+                "bip_step_outcome.checkpoint_storage", "bip_step_outcome.checkpoint_properties_json")) {
+            assertTrue(message.contains(missing), "Must name " + missing + ": " + message);
+        }
+        assertTrue(message.contains("Refusing to start"), message);
+        // The statements it names bring the store to the adapter's schema.
+        String statements = message.substring(message.indexOf("before starting: ") + "before starting: ".length());
+        for (String statement : statements.substring(0, statements.length() - 1).split("; ")) {
+            assertTrue(statement.startsWith("alter table "), statement);
+            execute(statement);
+        }
+        assertDoesNotThrow(gate::verify);
+    }
+
+    @Test
+    void saysHowToAddARequiredColumnToATableWithRows() throws Exception {
+        execute("alter table bip_message_attempt drop column route_id");
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("postgres", "noop", true, () -> dataSource, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("alter table bip_message_attempt add column if not exists route_id text,"
+                + " then give existing rows a value and run alter table bip_message_attempt alter column route_id"
+                + " set not null"), thrown.getMessage());
+    }
+
+    @Test
+    void saysHowToAddAMissingPrimaryKeyColumn() throws Exception {
+        execute("alter table bip_step_outcome drop column idempotency_key");
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("log", "postgres", true, () -> dataSource, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("alter table bip_step_outcome add column if not exists idempotency_key text,"
+                + " then give existing rows unique values and run alter table bip_step_outcome add primary key"
+                + " (idempotency_key)"), thrown.getMessage());
+    }
+
+    @Test
+    void recordsTheOutcomeOfTheCheckForWorkThatWaitsForIt() throws Exception {
+        ContractVersionStartupGate nothingToCheck =
+                new ContractVersionStartupGate("log", "noop", true, () -> null, 1, 0L);
+        assertEquals(ContractVersionStartupGate.Outcome.PENDING, nothingToCheck.outcome(), "unknown until the check ran");
+        assertDoesNotThrow(nothingToCheck::verify);
+        assertEquals(ContractVersionStartupGate.Outcome.PASSED, nothingToCheck.outcome(), "nothing to check counts as passed");
+
+        ContractVersionStartupGate refused = new ContractVersionStartupGate("log", "postgres", true, () -> null, 1, 0L);
+        assertThrows(IllegalStateException.class, refused::verify);
+        assertEquals(ContractVersionStartupGate.Outcome.FAILED, refused.outcome(), "a failure is recorded for the process");
+    }
+
+    @Test
+    void refusesThePostgresStepStoreWithoutADataSource() {
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("log", "postgres", true, () -> null, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("requires a JDBC DataSource"), thrown.getMessage());
+    }
+
+    @Test
+    void refusesAStoreWithoutTheStepOutcomeTableOnlyWhenStepsAreStoredThere() throws Exception {
+        execute("drop table bip_step_outcome");
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("postgres", "postgres", true, () -> dataSource, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("table bip_step_outcome"), thrown.getMessage());
+        assertTrue(thrown.getMessage().contains("create bip_step_outcome with db/message-store/bip_step_outcome.sql"),
+                thrown.getMessage());
+        assertDoesNotThrow(new ContractVersionStartupGate("postgres", "noop", true, () -> dataSource, 1, 0L)::verify);
+    }
+
+    @Test
+    void checksTheStepOutcomeTableAlsoWithoutThePostgresSink() throws Exception {
+        execute("drop table bip_message_log, bip_message_attempt, bip_message_replay_audit");
+        execute("alter table bip_step_outcome drop column checkpoint_body_ref");
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("log", "postgres", true, () -> dataSource, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("bip_step_outcome.checkpoint_body_ref"), thrown.getMessage());
+        assertFalse(thrown.getMessage().contains("bip_message_log"), "The log sink writes no message tables");
+    }
+
+    @Test
+    void requiresTheReplayAuditTableOnlyWhenReplayIsEnabled() throws Exception {
+        execute("drop table bip_message_replay_audit");
+
+        IllegalStateException thrown = assertThrows(IllegalStateException.class,
+                new ContractVersionStartupGate("postgres", "noop", true, () -> dataSource, 1, 0L)::verify);
+
+        assertTrue(thrown.getMessage().contains("table bip_message_replay_audit"), thrown.getMessage());
+        assertDoesNotThrow(new ContractVersionStartupGate("postgres", "noop", false, () -> dataSource, 1, 0L)::verify);
+    }
+
+    @Test
+    void theShippedSchemaHasEveryColumnTheWritersName() throws Exception {
+        var schema = MessageStoreSchema.required(true, true, true).tables();
+        Map<String, String> inserts = Map.of(
+                "bip_message_log", sql(no.basis.integrationplatform.camel.store.PostgresMessageStoreSink.class, "UPSERT_MESSAGE_LOG_SQL"),
+                "bip_message_attempt", sql(no.basis.integrationplatform.camel.store.PostgresMessageStoreSink.class, "UPSERT_MESSAGE_ATTEMPT_SQL"),
+                "bip_message_replay_audit", sql(no.basis.integrationplatform.camel.replay.PostgresKafkaMessageReplayService.class, "INSERT_REPLAY_AUDIT_SQL"),
+                "bip_step_outcome", sql(no.basis.integrationplatform.camel.step.PostgresStepOutcomeStore.class, "RECORD_DELIVERED_SQL")
+                        + sql(no.basis.integrationplatform.camel.step.PostgresStepOutcomeStore.class, "RECORD_FAILED_SQL"));
+        inserts.forEach((table, sql) -> {
+            var matcher = java.util.regex.Pattern.compile("insert into " + table + " \\(([^)]*)\\)").matcher(sql);
+            assertTrue(matcher.find(), "No insert into " + table);
+            do {
+                for (String column : matcher.group(1).split(",")) {
+                    assertTrue(schema.get(table).containsKey(column.trim()), table + "." + column.trim());
+                }
+            } while (matcher.find());
+        });
+        assertFalse(schema.get("bip_message_attempt").containsKey("primary"), "A table constraint is not a column");
+        assertEquals("checkpoint_headers_json jsonb not null default '{}'::jsonb",
+                schema.get("bip_step_outcome").get("checkpoint_headers_json"));
+    }
+
+    private static String sql(Class<?> owner, String field) {
+        try {
+            var declared = owner.getDeclaredField(field);
+            declared.setAccessible(true);
+            return (String) declared.get(null);
+        } catch (ReflectiveOperationException e) {
+            throw new AssertionError("Missing SQL constant " + owner.getSimpleName() + "." + field, e);
+        }
+    }
+
+    private String resource(String name) throws Exception {
+        try (InputStream input = getClass().getResourceAsStream(name)) {
+            return new String(input.readAllBytes(), StandardCharsets.UTF_8);
+        }
     }
 
     @Test
@@ -41,10 +197,13 @@ class ContractVersionStartupGateTest {
     }
 
     @Test
-    void continuesWhenNoDataSourceIsResolvable() {
+    void refusesThePostgresSinkWithoutADataSource() {
         ContractVersionStartupGate gate = new ContractVersionStartupGate("postgres", () -> null);
 
-        assertDoesNotThrow(gate::verify);
+        IllegalStateException thrown = assertThrows(IllegalStateException.class, gate::verify);
+
+        assertTrue(thrown.getMessage().contains("basis.message-store.sink=postgres requires a JDBC DataSource"),
+                thrown.getMessage());
     }
 
     @Test

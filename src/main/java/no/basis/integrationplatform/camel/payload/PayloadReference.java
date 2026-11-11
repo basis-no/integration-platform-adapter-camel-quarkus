@@ -98,7 +98,10 @@ public record PayloadReference(
         } catch (PayloadStorageException e) {
             throw e;
         } catch (Exception e) {
-            throw new PayloadStorageException("Invalid payload-reference document", e);
+            // Not the parser's message or the exception itself: they can quote the body, which may
+            // be an ordinary payload sent with reference headers.
+            throw new PayloadStorageException("Invalid payload-reference document ("
+                    + e.getClass().getSimpleName() + ")");
         }
     }
 }

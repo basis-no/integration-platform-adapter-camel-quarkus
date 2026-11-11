@@ -117,7 +117,10 @@ A failed or timed-out portal step is never re-run and never repeated by pushing
 another tag: a re-run refuses. Recover on the release workstation after checking
 the deployment in the Central portal, from the retained state when it matches the
 portal, otherwise by reconciling in the portal; see
-[release packaging](release-packaging.md#protected-tag-release-in-ci).
+[release packaging](release-packaging.md#protected-tag-release-in-ci). Any
+re-run, also of a failed `build`, disables signing and publication for that
+run; finish such a release offline from that run's unsigned candidate and the
+existing tag.
 
 ## Final release offline
 
@@ -137,6 +140,9 @@ Follow the [release-manager runbook](release-packaging.md#release-manager-runboo
    git tag -s v0.4.0 <source-commit> -m "Release 0.4.0"
    git push origin v0.4.0
    ```
+
+   Pushing the tag also starts `release.yml`: reject its `sign-upload`
+   deployment in `release`, so that only the offline upload reaches Central.
 
 5. Upload the same bundle with `central-recovery.py --allow-upload`, review the
    `VALIDATED` deployment in the Central portal, then publish it with

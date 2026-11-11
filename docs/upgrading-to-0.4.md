@@ -1,0 +1,424 @@
+# Upgrading from 0.3.x to 0.4.0
+
+Status: **for the unreleased 0.4.0.** This page describes the development
+branch. It grows with each change until 0.4.0 is released; a change with an
+upgrade action adds it here and in the [changelog](../CHANGELOG.md).
+
+0.3.x stays a maintained series, so upgrading is a choice, not a requirement.
+Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
+
+## Before You Upgrade
+
+- **Bring the Message Store to the shipped schema.** With the Postgres sink or
+  the Postgres step store, the adapter refuses to start against a store that
+  lacks a table or column it writes, and its error lists the statements that
+  add them: `bip_message_log` and `bip_message_attempt` with the Postgres sink,
+  `bip_message_replay_audit` as well when replay is enabled, and
+  `bip_step_outcome` with the Postgres step store. The schema ships in
+  `src/main/resources/db/message-store/`; the database operator applies it.
+- **No in-memory holds on a Kafka boundary.** A Kafka boundary route, or a
+  `direct:` route it sends to, that holds records in memory after its input
+  completes refuses to start, naming the route and node: Camel's `resequence`,
+  or an `aggregate` on Camel's in-memory repository. A restart would lose the
+  held records, whose offsets are already committed. Give such an `aggregate`
+  a persistent `aggregationRepository`. A `resequence` on a Kafka boundary has
+  no replacement yet; a durable resequencer is planned (#36). See
+  [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
+- **Kafka header names on the newer Quarkus line.** This branch builds against
+  Quarkus 3.33.4 (Camel 4.18.4), whose camel-kafka exchange headers are named
+  `CamelKafka*` instead of `kafka.*`. An integration that moves to this line
+  and reads a header by its old literal name, such as `kafka.KEY` in a YAML
+  route, must use the new name, such as `CamelKafkaKey`. A Java route that uses
+  `KafkaConstants` gets the new names when it is compiled.
+- **Keep the required Kafka consumer settings**, in particular
+  `camel.component.kafka.break-on-first-error=true`; see the
+  [configuration reference](configuration.md).
+- **Classify sends.** 0.3.6 tracked every send to a non-internal endpoint as a
+  side effect. On this branch the default classifier classifies internal
+  schemes as internal (not a step), write-only producers (`kafka`, `jms`,
+  `sjms`, `sjms2`, `amqp`, `amqp10`, `file`, `ftp`, `ftps`, `sftp`) as side
+  effects, which are tracked, and HTTP sends with a safe method (`GET`,
+  `HEAD`, `OPTIONS`, `TRACE`) as repeatable. Every other send is ambiguous: every POST, PUT, PATCH or DELETE, an HTTP send with
+  Camel's default method, and sends such as `sql:`, `jdbc:`, `aws2-s3:` or
+  `smtp:`. An ambiguous send runs on every redelivery, resend and replay and is
+  not protected by the step ledger. The adapter logs a warning for it when the
+  first message reaches the send, once per node and scheme, not at startup.
+  Give each such send a stable node id and a role with the
+  `basis.message-store.step.*-ids` properties; see
+  [Steps and idempotency](steps-and-idempotency.md). That 0.4.0 will require a
+  role for every such send, set in the application's own code, is decided but
+  not implemented yet
+  ([#68](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/68)).
+- **Remove the delivery-audit and input-audit settings.** 0.3.5 and 0.3.6
+  record `direct:` request routes named in `basis.delivery-audit.routes` and
+  non-Kafka inputs named in `basis.input-audit.routes`. This version implements
+  neither, and the application refuses to start when either setting, or any
+  other name under `basis.delivery-audit.` or `basis.input-audit.` (also in
+  its environment form), has a value, naming each one and what to use instead; an empty value only logs a
+  warning. Remove `basis.delivery-audit.routes`: delivery audit is not
+  available in this version yet
+  ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93)).
+  Replace `basis.input-audit.routes` with the
+  [HTTP audit-only preview](ingress-and-scaling.md#http-audit-only-preview)
+  for an HTTP input, or ingress normalization to Kafka for a file, timer or
+  poller input. `boundary-routes` does not replace them. See
+  [Settings Removed Since 0.3.x](configuration.md#settings-removed-since-03x).
+- **Use `earliest` and a stable `groupId` on every Kafka boundary.** A Kafka
+  boundary's consumer resets to `earliest`, and a boundary route whose consumer
+  uses any other `auto.offset.reset` refuses to start, naming the route and
+  its endpoint. With 0.3.6's `latest`, a record that was not committed on a
+  partition without a committed offset could be skipped after a reconnect.
+  Remove an `autoOffsetReset=latest` or `none` override from the endpoint, its
+  `additionalProperties.auto.offset.reset` and
+  `camel.component.kafka.auto-offset-reset`. A consumer group with committed
+  offsets continues from them. A new group, a changed `groupId`, or a group
+  whose committed offsets expired on the broker now starts at the beginning of
+  each partition's retained records instead of at the end; to start one at the
+  end, set its offsets with the Kafka tools before its first start. A boundary
+  without a `groupId` gets a new group from Camel on every start, so it now
+  reprocesses every retained record on each start: give it a stable `groupId`.
+
+- **Check the Message Store login and JDBC URL.** Set `loginTimeout` in the
+  JDBC URL (for example `?loginTimeout=10`), keep
+  `quarkus.datasource.jdbc.acquisition-timeout` at a few seconds, and keep the
+  login's `client_min_messages` at `warning` or lower (the default is
+  `notice`). See [Message Store calls are bounded](#message-store-calls-are-bounded).
+
+## Behaviour That Changed on Purpose
+
+### Stricter `dlq-uri`
+
+`basis.message-store.dlq-uri` must name one fixed `kafka:` endpoint whose
+producer waits for the broker and is not transactional, or the application's
+own `direct:` route. Startup fails for an expression such as `${header.name}`,
+for Kafka with `acks=0` or a transactional producer (`transacted`,
+`transactionalId` or `transactional.id`), for `direct:` with
+`failIfNoConsumers=false` (for example
+`dlq-uri=direct:park?failIfNoConsumers=false`), and for any other endpoint,
+such as `file:`. 0.3.x accepted these, and some of them could count a message
+as parked although no endpoint had accepted it. Point `dlq-uri` at a Kafka
+topic, or at a `direct:` route that the application consumes and that fails
+when it cannot park. See
+[Terminal Kafka Failure](retry-dlq-replay.md#terminal-kafka-failure).
+
+A Kafka DLQ now gets one record per message also when the parked body is a
+collection; 0.3.6 sent one record per element, and none for an empty
+collection.
+
+### Message Store calls are bounded
+
+0.3.x put no timeout on a Message Store call, so an outcome or step-outcome
+write that waited on a held lock or on a database that stopped answering held
+the Kafka consumer thread without limit. Every statement of a Postgres sink or
+Postgres step outcome store call is now bounded, by two new deployment-owned
+properties:
+
+| Property | Default | Bounds |
+| --- | --- | --- |
+| `basis.message-store.statement-timeout` (`BASIS_MESSAGE_STORE_STATEMENT_TIMEOUT`) | `10s` | each statement (`statement_timeout`, and its JDBC query timeout); the call's network timeout is this plus 5 seconds |
+| `basis.message-store.lock-timeout` (`BASIS_MESSAGE_STORE_LOCK_TIMEOUT`) | `5s` | each statement's wait for a lock (`lock_timeout`); at most the statement timeout |
+
+They are set for the call's own transaction only. At the defaults a
+step-outcome call ends within about 10 seconds and the sink's record within
+about 40 seconds. Startup refuses a value under 1 ms or a lock timeout longer
+than the statement timeout. Raise a value only for a store that legitimately
+needs longer, and keep it well under `max.poll.interval.ms`.
+
+Opening a connection is bounded by the deployment's datasource settings, which
+the adapter does not set: keep `quarkus.datasource.jdbc.acquisition-timeout`
+(Quarkus default 5 s) and the driver's `connectTimeout` (10 s), and set
+`loginTimeout` in the JDBC URL, whose driver default is no limit.
+
+With a synchronous standby, `statement_timeout` does not end a commit's wait
+for the standby; the network timeout does. A commit whose wait was cancelled
+returns with only a warning ("committed locally, but might not have been
+replicated"), and the adapter now treats any warning-level message a commit
+reports as a failure. That needs the warning to reach the adapter: the call's
+own transaction sets `client_min_messages` to `warning`, but for the sink's
+commit of an application's transaction it depends on the session, so keep the
+Message Store login's `client_min_messages` at `warning` or lower.
+
+A timed-out call or an unconfirmed commit is a Message Store failure: the
+outcome is not durable, the Kafka offset is not committed, and the record is
+read again; its outcome is written again, which is safe because the writes are
+idempotent. See
+[Message Store call timeouts](configuration.md#message-store-call-timeouts).
+
+### A stopped exchange that fails is read again
+
+A processor that calls `exchange.setRouteStop(true)` and then fails is recorded
+`FAILED`, its offset is not committed, and the record is read again, so its
+partition waits. 0.3.x recorded it `COMPLETED` and committed it, so the
+failure was lost. Camel skips the dead letter channel for a stopped exchange,
+so such a message is not parked either. Do not stop an exchange that is about
+to fail; let the failure reach the adapter.
+
+### Which routes are recorded: `boundary-routes`
+
+0.3.6 made a message boundary of every Kafka input route, and recorded other
+routes only through the separate delivery-audit and input-audit settings,
+which this version refuses (see above). 0.4 selects its message boundaries with
+`basis.message-store.boundary-routes`:
+
+- `auto`, the default, selects Kafka consumer routes, as 0.3.6 did. Nothing
+  changes for an application that does not set it.
+- Explicit route ids, or `all`, select those routes, or every route except the
+  adapter's own parking route. A selected route must be a Kafka input, or a
+  `platform-http:` route for the [HTTP audit-only
+  preview](ingress-and-scaling.md#http-audit-only-preview); any other selected
+  route, such as a nested `direct:` route or a timer, refuses to start, and so
+  does an ingress normalization route. Kafka boundaries and the HTTP preview can
+  run in one application: add the HTTP route id next to `auto`, for example
+  `auto,receive-order`, so that a Kafka route added later is still selected.
+  `all` starts only when every route is a Kafka input or an HTTP preview
+  route.
+
+A selected route that is not a Kafka input is never replayed into the input
+topic
+([#101](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/101)):
+startup refuses every selected route that is neither a Kafka input nor the HTTP
+preview, and an HTTP preview route is never replayable. A replay
+publishes only when the message's last attempt was recorded by a Kafka route of
+this application that consumes the replay topic; a message recorded by a Kafka
+route on another topic is refused before any replay audit row is written.
+
+Leave `boundary-routes` at `auto` unless the application needs the HTTP
+preview.
+
+### Polling routes run on one replica at a time
+
+0.3.x ran a timer, cron or Quartz trigger, and every scheduled poll (file,
+FTP/SFTP, SQL, object stores, polled queues), on every replica. 0.4.0 runs each
+such route only on the replica that holds its lease, the Key-Value Store key
+`lease/<routeId>`; see [Single-Active Routes](single-active.md).
+
+- **List a route that must run on every replica** in
+  `basis.message-store.single-active.excluded-routes`, such as a timer that
+  refreshes a per-replica cache. A polled queue (`aws2-sqs:`,
+  `azure-storage-queue:`) becomes single-active too; list it, or use a broker
+  consumer, where several replicas should share the queue.
+- **A `timer:` with a finite `repeatCount`** (a one-shot initialization timer)
+  is not leased and still runs on every replica, with a startup WARN: under a
+  lease its tick could be dropped for good on the new pod of a rolling update.
+  Make such work idempotent across replicas.
+- **Give polling routes stable ids.** The lease is named after the route id;
+  a generated id can differ between image versions.
+- **A polling endpoint whose consumer the adapter cannot gate** (neither a
+  scheduled-poll consumer nor a timer, Quartz or cron trigger) refuses to
+  start; list it in `basis.message-store.single-active.excluded-routes`.
+- **Without `bip_key_value`**, or without a Key-Value Store (no Message Store
+  datasource or `app.name`), polling routes run on every replica as in 0.3.x,
+  with one warning per route. An ingress normalization route that the replica
+  check accepted only because of its lease (several or no declared replicas)
+  does no work then, and logs an ERROR, instead of duplicating its source.
+- **Expect the first ticks after startup to wait** for the Message Store check
+  and the lease, and a standby replica to start its consumers without polling.
+
+### Object-backed inputs are parked as their claim check
+
+Object storage (`tiered` payload mode) is new in 0.4. A Kafka input whose
+payload is in object storage is parked in the DLQ as its claim-check document
+(`schemaVersion`, `storage`, `ref` such as `s3://bucket/key`, `sizeBytes`,
+`sha256`, `contentType` and `expiresAt`), not as its bytes. A tool that reads
+the DLQ gets the claim check and must fetch the object to see the payload.
+
+Known limitation
+([#99](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/99)):
+the DLQ record is usable only while the object exists and its expiry has not
+passed. The object's expiry is fixed when it is captured, at capture time plus
+`basis.message-store.payload.retention-days` (30 days by default), and a
+replay does not extend it. The adapter refuses an expired or missing object,
+so a DLQ record resent after that fails processing. The adapter does not relate
+this to the DLQ topic's retention. Keep the payload retention, and the bucket's
+lifecycle expiry, at least as long as the DLQ topic's retention.
+
+When such a claim check is read again, on a resend or a replay, the adapter
+checks the whole object, its size and SHA-256, before the route reads any of
+it; see [Object-stored inputs are checked in full first](#object-stored-inputs-are-checked-in-full-first).
+
+### Object-stored inputs are checked in full first
+
+An input whose payload is in object storage is copied to a local file and
+checked in full against its reference before its route reads any of it, on a
+replay or resend of a claim check and on the first attempt after the adapter
+stored a streamed input. The route then reads the checked copy, which is
+closed when the boundary exchange is done: a route that hands the stream to
+work that reads it later, such as a `wireTap` without stream caching, must read
+it first. The check holds one 64 KiB buffer in memory; Camel's stream caching,
+on by default, still reads the whole stream into memory at the route's first
+node unless its spooling to disk is turned on. Two new deployment settings:
+
+- `basis.message-store.payload.spool-directory`, by default
+  `<java.io.tmpdir>/basis-payload-spool` (a per-host subdirectory is used
+  inside it, owner-only where the file system supports POSIX permissions);
+- `basis.message-store.payload.spool-max-bytes`, by default `10737418240`
+  (10 GiB, as `object-max-bytes`): the checked copies one process holds at
+  once. In `tiered` mode startup refuses a value below `object-max-bytes`, so
+  raise both together.
+
+Mount a dedicated, size-limited volume at the spool directory with room for
+`spool-max-bytes`: on Linux a copy has no directory entry while it is read, and may not
+count toward a pod's ephemeral-storage accounting.
+
+A payload that cannot be captured or checked (a changed, truncated, missing or
+expired object, an object store failure, a full or unwritable spool) fails the
+input before its route runs: no processor runs, nothing is parked, the outcome
+is `FAILED` with the claim check kept, and the Kafka offset is not committed,
+so the record is read again. A changed, missing or expired object does not heal
+by itself and blocks its partition until the object is restored or the group's
+offset is moved past the record; see
+[Troubleshooting](troubleshooting.md#s3-replay-fails). On 0.3.6 and 0.4.0-rc1,
+a failure while a payload was captured or resolved was only logged by Camel and
+the route ran anyway.
+
+## Not in This Build Yet
+
+The 0.3.6 notes say that 0.4 gives each split part, loop iteration and branch
+its own step key, and each integration its own message id. Neither is on this
+branch yet; both must land before 0.4.0
+([#31](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/31),
+[#30](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/30)).
+Until then the 0.3.x limitations for splits and shared message ids apply; see
+[Steps and idempotency](steps-and-idempotency.md).
+
+Also not on this branch yet:
+
+- **Delivery audit** (`basis.delivery-audit.*`)
+  ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93));
+  startup refuses the setting, see [Before You Upgrade](#before-you-upgrade).
+
+## Other Upgrade Actions from 0.3.6
+
+The changelog's Unreleased section has the details; in short:
+
+- **The failure handling follows the input type.** A Kafka boundary parks a
+  failed message in the DLQ and commits after it; an HTTP audit-only boundary
+  records `FAILED`, answers its caller with the error and is never replayable,
+  whatever `basis.message-store.failure-mode` and
+  `basis.message-store.replay.enabled` say; a normalized file, poll or queue
+  input hands the failure back to its source. An HTTP preview no longer needs
+  `failure-mode=record-failed` or `replay.enabled=false`. `record-failed` is
+  still accepted, and still refused in an application with a Kafka boundary.
+  See [Failure and Replay per Input Type](retry-dlq-replay.md#failure-and-replay-per-input-type).
+- **A JMS queue input needs `CLIENT_ACKNOWLEDGE`.** Set
+  `acknowledgementModeName=CLIENT_ACKNOWLEDGE` on a `jms:queue:` normalization
+  input; with camel-jms's default `AUTO_ACKNOWLEDGE`, a message whose route
+  failed is not delivered again
+  ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
+  See [JMS Queues](ingress-and-scaling.md#jms-queues).
+
+- **Shorter `ip-slow-backend` waits.** The `ip-slow-backend` route
+  configuration caps each redelivery delay at 20 seconds: 5, 10, 20, 20, 20
+  and 20 seconds, 95 seconds in all, instead of 0.3.6's 195 seconds (Camel's
+  default 60-second cap). `max.poll.interval.ms` covers every record of one
+  poll, so for a route on `ip-slow-backend` set `maxPollRecords=1` on its Kafka
+  input or raise `maxPollIntervalMs`. See
+  [Automatic Retry](retry-dlq-replay.md#automatic-retry).
+- **The HTTP client's own retries are off.** On every instance of Camel's
+  `http` component (`http`, `https` or the application's own name) the adapter
+  sets `automaticRetriesDisabled`, so the client no longer repeats a request
+  answered with 503 or 429 by itself, POST included, outside the step ledger;
+  every repeat is a recorded Camel redelivery. After a 429 or 503, in the
+  default and `ip-slow-backend` configurations, the next redelivery waits for
+  the longer of the receiver's `Retry-After` and the configured delay when it
+  fits the budget (for a Kafka input, its poll interval less the time the
+  exchange has run and a 20 % margin; otherwise the configuration's maximum
+  delay); a longer `Retry-After` gets the configured delays. A receiver that
+  answered 503 once and then succeeded now records one more redelivery. To
+  keep the client's own retries, set
+  `camel.component.<name>.automatic-retries-disabled=false` for the component's
+  name; it is the only way, so an application that turns them on in code, in a
+  `ComponentCustomizer` or with a retry strategy through `httpClientConfigurer`
+  must set it too, or the adapter turns them off. A non-Kafka input, such as an
+  HTTP request a route answers, can hold its caller for up to each
+  redelivery's maximum delay (3 × 60 s with the default configuration) when the
+  receiver asks for it; give such a route `ip-no-retry` or short delays. See
+  [Automatic Retry](retry-dlq-replay.md#automatic-retry).
+- **Spaced re-reads of a record whose outcome is not durable.** 0.3.6 read
+  such a record again at once, several times a second. Now the first read
+  again is at once, then each further read of the same record waits 1 s,
+  doubling, at most 30 s and at most half of `max.poll.interval.ms` less the
+  time its poll has already taken; a committed outcome resets the wait. The
+  consumer's other partitions wait with it. The outcome is still not committed.
+  Without `break-on-first-error=true` there is no wait.
+- **History first, as in 0.3.6.** The `postgres` sink writes the attempt row
+  and then the summary row, so 0.3.6 and 0.4 pods can write the same message
+  during a rolling upgrade without deadlocking each other. Released .NET adapter
+  versions still write the summary first: a Camel 0.4 writer and a released .NET
+  writer on the same message id and attempt can deadlock (PostgreSQL aborts one
+  write and its record is read again) until the .NET adapter is upgraded to a
+  version that writes history first. See
+  [Message lifecycle](message-lifecycle.md#read-model).
+- **The shared message-id warning**, as in 0.3.6: the adapter warns, once per
+  pair of integrations and then at most every ten minutes with a count, when it
+  journals a message id that another integration already journaled. Give each
+  integration its own `x-bip-message-id`. See
+  [Troubleshooting](troubleshooting.md#message-id-is-also-journaled-by-another-integration).
+- **Requests on exchanges of their own fail back to their caller**, as in
+  0.3.6: only a managed Kafka input is parked. Unlike 0.3.6, such a failure no
+  longer logs the parking ERROR. A route that sends requests on exchanges of its
+  own must handle their failures, or let them fail the input; a timer or poller
+  route sees its failure instead of a DLQ record.
+- **Activity counters on by default.** An application with a Kafka boundary
+  that did not set `basis.traffic.signals`, or set it empty, now exports the
+  admission counter; on 0.3.6 an empty value turned counting off. Set
+  `basis.traffic.signals=none` to keep 0.3.6's default. See
+  [Kafka activity metrics](activity-metrics.md).
+- **Sub-route sends recorded once.** A message that 0.3.x parked after a failed
+  send in a `direct:` sub-route keeps its `DELIVERED` step; resend it with the
+  step in `redoSteps`. See
+  [Sends in a sub-route](steps-and-idempotency.md#sends-in-a-sub-route).
+- **Redo needs a recording step store.** A replay whose `redoSteps` names a
+  step is refused with `409 Conflict` when the step outcome store is `noop`,
+  the default; 0.3.x had no such check. Resend without `redoSteps`, or use the
+  `postgres` step store. An application's own `StepOutcomeStore` that records
+  nothing should override `recordsDeliveredSteps()` to return `false`;
+  otherwise redo is still accepted. See
+  [Retry, DLQ, and replay](retry-dlq-replay.md).
+- **Credential headers are withheld on every HTTP send.** A consumed record's
+  credential headers and the consumer's `kafka.*` and `CamelKafka*` headers are
+  left out of every send to an `http`, `https`, `netty-http` or `vertx-http`
+  endpoint, also through `enrich`, `wireTap`, `recipientList`, `routingSlip`
+  and a `ProducerTemplate`; 0.3.6 withheld them only on a tracked `to` or `toD`
+  to `http:` or `https:`. A receiver that got a credential forwarded from the
+  record may now answer 401. To forward one deliberately, set the header in the
+  route as text, for example
+  `setHeader("Authorization", header("Authorization").convertToString())`. A
+  receiver that read `kafka.*` request headers must get the values from
+  headers the route sets itself.
+- **`rest:` sends withhold them too.** A `rest:` send through `http`,
+  `vertx-http` or `netty-http` now also leaves the record's credential headers
+  and the `kafka.*` / `CamelKafka*` headers out of its request; its path and
+  query bind as before, also through a `rest:` endpoint a route consumes from.
+  A REST DSL service (a `rest:` route input) is unchanged. A `rest:` send
+  through a producer component other than these three fails when its producer
+  is created, or at its first request, instead of sending the headers. A
+  `rest-openapi:` send is not covered yet
+  ([#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158));
+  remove the headers before it. See
+  [Kafka Consumers](ingress-and-scaling.md#kafka-consumers).
+- **No credential-like names in the output checkpoint's header list.**
+  Output checkpoints are new in 0.4.0. When you configure one (or already did
+  on a 0.4 development build), startup refuses a credential-like name in
+  `basis.message-store.step.output-checkpoint.header-names`, by the rule that
+  masks header values in parked DLQ records (`Authorization`, cookies, names
+  containing `token`, `secret`, `session`, `auth` and the like, names ending in
+  `-key` or `_key`; not `x-bip-*` or `Idempotency-Key`). Do not list such names,
+  and obtain a fresh credential on each attempt. The rule goes by the name, so
+  harmless headers such as `X-Partition-Key` or `X-Session-Count` are refused
+  too: copy the value to an exchange property and list it in `property-names`
+  instead. See
+  [Output-Producing Side Effects](steps-and-idempotency.md#output-producing-side-effects).
+- **Stored endpoints are masked as in the .NET adapter.** A step's stored
+  endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and the endpoints
+  in the adapter's warnings now also mask the whole user info and the values
+  of credential-like query parameters such as `key`, `code`, `sig` and `pwd`.
+  New attempts store the masked value; rows recorded before keep theirs, so a
+  query that matched a stored user name or such a parameter value no longer
+  finds new rows. See [Stored Endpoints](steps-and-idempotency.md#stored-endpoints).
+- **Hand-built test contexts.** A test that adds `PlatformRouteConfiguration`
+  to a hand-built `CamelContext` must also add `PlatformDeadLetterRoute`;
+  Quarkus applications get both.
+- **Health.** Add Camel's health bridge and a 3–5 second readiness probe
+  timeout, as for 0.3.6; see
+  [Health and Readiness](getting-started.md#health-and-readiness).

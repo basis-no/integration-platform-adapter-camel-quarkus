@@ -172,7 +172,7 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
                     .bucket(location.bucket())
                     .key(location.key())
                     .build());
-            return new VerifyingInputStream(input, reference.sizeBytes(), reference.sha256());
+            return new VerifyingInputStream(input, reference.ref(), reference.sizeBytes(), reference.sha256());
         } catch (Exception e) {
             throw new PayloadStorageException("Failed to open payload object " + reference.ref(), e);
         }
@@ -274,14 +274,17 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
 
     private static final class VerifyingInputStream extends FilterInputStream {
         private final MessageDigest digest;
+        private final String ref;
         private final long expectedSize;
         private final String expectedSha256;
         private long count;
         private boolean verified;
 
-        private VerifyingInputStream(InputStream input, long expectedSize, String expectedSha256) throws Exception {
+        private VerifyingInputStream(InputStream input, String ref, long expectedSize, String expectedSha256)
+                throws Exception {
             super(input);
             this.digest = MessageDigest.getInstance("SHA-256");
+            this.ref = ref;
             this.expectedSize = expectedSize;
             this.expectedSha256 = expectedSha256;
         }
@@ -316,9 +319,17 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
             }
             verified = true;
             String actual = HexFormat.of().formatHex(digest.digest());
-            if (count != expectedSize || !actual.equals(expectedSha256)) {
-                throw new IOException("Payload object checksum mismatch: expected " + expectedSha256
-                        + "/" + expectedSize + ", got " + actual + "/" + count);
+            // The cause carries the reason, so a reader that unwraps it can report why.
+            PayloadStorageException mismatch = null;
+            if (count != expectedSize) {
+                mismatch = new PayloadStorageException("Object payload " + ref + " has " + count
+                        + " bytes; its reference has " + expectedSize);
+            } else if (!actual.equals(expectedSha256)) {
+                mismatch = new PayloadStorageException("Object payload " + ref
+                        + " does not match its reference's SHA-256");
+            }
+            if (mismatch != null) {
+                throw new IOException(mismatch.getMessage(), mismatch);
             }
         }
     }

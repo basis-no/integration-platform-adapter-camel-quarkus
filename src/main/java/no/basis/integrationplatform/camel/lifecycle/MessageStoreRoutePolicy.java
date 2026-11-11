@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.KafkaPollInterval;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
@@ -34,12 +35,17 @@ import java.util.HashMap;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.TimeUnit;
 
 /** Records terminal lifecycle outcomes and owns the Kafka acknowledgement boundary. */
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
+    private static final String HTTP_NOT_REPLAYABLE = "a synchronous HTTP boundary is not replayable";
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
+    private static final String CHECKED_COPY = "basis.messageStore.checkedPayloadCopy";
     private static final String ENVELOPE_PREFIX = "x-bip-";
     private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
     private static final List<String> ENVELOPE_HEADERS = List.of(PlatformHeaders.ATTEMPT, PlatformHeaders.SCHEMA_VERSION,
@@ -52,6 +58,29 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
     private TrafficSignals trafficSignals;
+    private VerifiedPayloadSpool payloadSpool = VerifiedPayloadSpool.defaults();
+    // Per topic partition: the offset of the record held back last, and how often in a row.
+    private final Map<String, long[]> heldBack = new ConcurrentHashMap<>();
+    private Sleeper sleeper = MessageStoreRoutePolicy::sleepUnlessStopping;
+
+    static final long FIRST_BACK_OFF_MS = 1_000;
+    static final long MAX_BACK_OFF_MS = 30_000;
+    private static final int MAX_HELD_BACK_PARTITIONS = 1_024;
+    private static final String RECORD_POSITION = "basis.messageStore.recordPosition";
+    private static final String POLL_STARTED = "basis.messageStore.pollStarted";
+    private static final String POLL_THREAD = "basis.messageStore.pollThread";
+    private static final String LAST_POLL_RECORD = "basis.messageStore.lastPollRecord";
+    // Per consumer thread: when its current poll's records began, and whether the next record
+    // starts a new poll. A failed record ends its poll: with breakOnFirstError the consumer
+    // stops the batch and reconnects.
+    private final Map<Long, Long> pollStarted = new ConcurrentHashMap<>();
+    private final Set<Long> newPollNext = ConcurrentHashMap.newKeySet();
+
+    /** Waits before a record is handed back to its consumer to be read again. */
+    @FunctionalInterface
+    interface Sleeper {
+        void sleep(Route route, long millis);
+    }
 
     /**
      * Creates a Kafka policy using the default payload policy.
@@ -107,8 +136,16 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         this.objectStore = objectStore;
     }
 
+    void setPayloadSpool(VerifiedPayloadSpool payloadSpool) {
+        this.payloadSpool = payloadSpool;
+    }
+
     void setTrafficSignals(TrafficSignals trafficSignals) {
         this.trafficSignals = trafficSignals;
+    }
+
+    void setSleeper(Sleeper sleeper) {
+        this.sleeper = sleeper;
     }
 
     @Override
@@ -121,19 +158,104 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         captureInputEnvelope(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             captureKafkaManualCommit(exchange);
+            captureRecordPosition(exchange);
+            capturePollStart(exchange);
         }
         if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null) {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
             StepOutcomeFailure.begin(exchange);
         }
-        capturePayloadMetadata(exchange);
+        try {
+            capturePayloadMetadata(exchange);
+        } catch (PayloadStorageException e) {
+            failBeforeTheRoute(exchange, e);
+        } catch (RuntimeException e) {
+            // An application's own PayloadObjectStore, or a malformed reference, may throw anything.
+            failBeforeTheRoute(exchange, new PayloadStorageException(
+                    "The payload could not be captured or checked: " + e.getClass().getSimpleName(), e));
+        }
         if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
             trafficSignals.recordAdmitted(exchange);
         }
     }
 
+    /**
+     * Camel ignores an exception thrown from {@code onExchangeBegin}, and runs the route. A
+     * payload that could not be captured or checked must not reach it: the exchange fails and
+     * stops, so no processor runs and nothing is parked, and its outcome is recorded FAILED
+     * without a commit, so the record is read again.
+     */
+    private void failBeforeTheRoute(Exchange exchange, PayloadStorageException failure) {
+        // One line: the message id and a reference's ref come from the producer.
+        LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
+                + " did not reach its route: " + failure.getMessage() + rootCause(failure)));
+        closeCheckedCopy(exchange);
+        exchange.getMessage().setBody(null);
+        exchange.setException(failure);
+        exchange.setRouteStop(true);
+    }
+
+    /**
+     * The innermost cause, so that a full disk, a refused or missing object and a timeout can be
+     * told apart. Its message is shown only for a failure while the object was copied or opened:
+     * an I/O or file system error, or the object store client's own error. Any other cause, such
+     * as a parser's or an application's, may quote payload content, so only its class is shown.
+     * The text is one line. This covers the adapter's own log line only: the failure stays the
+     * exchange's exception, with its causes, for Camel and the sink to report.
+     */
+    static String rootCause(Throwable failure) {
+        Throwable root = failure;
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        while (root.getCause() != null && seen.add(root)) {
+            root = root.getCause();
+        }
+        if (root == failure) {
+            return "";
+        }
+        String message = root.getMessage();
+        boolean safe = message != null && !root.getClass().getName().startsWith("com.fasterxml.")
+                && (root instanceof java.io.IOException || isObjectStoreClientError(root));
+        return oneLine(" (cause: " + root.getClass().getName() + (safe ? ": " + message : "") + ")");
+    }
+
+    /** The text with every control character and line separator replaced, so that it is one log line. */
+    static String oneLine(String text) {
+        return text.replaceAll("[\\p{Cc}\\u2028\\u2029]+", " ");
+    }
+
+    private static boolean isObjectStoreClientError(Throwable failure) {
+        for (Class<?> type = failure.getClass(); type != null; type = type.getSuperclass()) {
+            if (type.getName().equals("software.amazon.awssdk.core.exception.SdkException")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void closeCheckedCopy(Exchange exchange) {
+        InputStream copy = exchange.getProperty(CHECKED_COPY, InputStream.class);
+        if (copy == null) {
+            return;
+        }
+        exchange.removeProperty(CHECKED_COPY);
+        try {
+            copy.close();
+        } catch (Exception e) {
+            LOG.warn("{}", oneLine("Could not close the checked payload copy of message "
+                    + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID) + ": " + e));
+        }
+    }
+
+    private InputStream checkedCopy(Exchange exchange, PayloadReference reference) {
+        InputStream copy = payloadSpool.checkedCopy(reference, () -> objectStore.open(reference));
+        exchange.setProperty(CHECKED_COPY, copy);
+        return copy;
+    }
+
     @Override
     public void onExchangeDone(Route route, Exchange exchange) {
+        // The route is done with its payload; the checked copy and its file go now.
+        closeCheckedCopy(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA && parkingDidNotPublish(exchange)) {
             // Neither completed nor parked: keep the exchange failed, so that it is recorded
             // FAILED, not committed, and read again.
@@ -142,7 +264,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         if (recordingSuppressed(exchange)) {
             LOG.debug("Skipped message-store recording for an ineligible exchange on route {}", route.getRouteId());
-            acknowledge(exchange);
+            acknowledge(route, exchange);
             return;
         }
 
@@ -166,10 +288,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 exchange.getMessage().setHeader(Exchange.CONTENT_TYPE, "text/plain");
                 exchange.getMessage().setBody("Message outcome could not be recorded");
             }
+            if (boundaryKind == MessageBoundaryKind.KAFKA) {
+                backOffBeforeReadingAgain(route, exchange);
+            }
             throw failure;
         }
         try {
-            acknowledge(exchange);
+            acknowledge(route, exchange);
         } catch (Exception e) {
             IllegalStateException failure = new IllegalStateException(
                     "Message outcome was recorded but Kafka offset commit failed", e);
@@ -235,7 +360,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
      * outcome must be consumed again: its offset is not committed, and its exchange stays
      * failed, so the Kafka consumer reads the record again.
      */
-    private void acknowledge(Exchange exchange) {
+    private void acknowledge(Route route, Exchange exchange) {
         Throwable unrecorded = StepOutcomeFailure.of(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA && unrecorded != null) {
             LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed again",
@@ -245,14 +370,23 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 exchange.setException(new IllegalStateException(
                         "A step outcome was not checked or recorded; Kafka offset was not committed", unrecorded));
             }
+            backOffBeforeReadingAgain(route, exchange);
             return;
         }
         if (boundaryKind == MessageBoundaryKind.KAFKA && exchange.getException() != null && !dlqParked(exchange)) {
             LOG.error("Message {} failed without confirmed DLQ parking; its Kafka offset was not committed",
                     exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+            backOffBeforeReadingAgain(route, exchange);
             return;
         }
         commitKafkaOffsetIfPresent(exchange);
+        String position = exchange.getProperty(RECORD_POSITION, String.class);
+        if (position != null) {
+            heldBack.remove(partition(position));
+        }
+        if (Boolean.TRUE.equals(exchange.getProperty(LAST_POLL_RECORD, Boolean.class))) {
+            endOfPoll(exchange);
+        }
     }
 
     private void commitKafkaOffsetIfPresent(Exchange exchange) {
@@ -273,6 +407,117 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         LOG.debug("Committed Kafka offset for message {}", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
     }
 
+    /**
+     * A Kafka record whose outcome was not made durable is read again, and its partition
+     * waits. The first time it is read again at once, so a passing glitch costs nothing; after
+     * that each read waits 1 s, doubling, at most 30 s, so that a Message Store outage or a DLQ
+     * that refuses the record does not run the route, and its sends, several times a second.
+     * The wait is also kept to half the consumer's {@code max.poll.interval.ms} less the time
+     * since the poll that returned this record began to be processed, so the records before it
+     * in that poll count. Without {@code breakOnFirstError}, where a failed record does not end
+     * its poll, there is no wait. The consumer waits for it, also when the policy runs on a
+     * completion thread, and the wait ends early when the context stops. A committed outcome on
+     * the partition resets it. A record without its position is read again at once, as before.
+     */
+    private void backOffBeforeReadingAgain(Route route, Exchange exchange) {
+        String position = exchange.getProperty(RECORD_POSITION, String.class);
+        // The failed record ends its poll, so the next record on this thread starts a new one.
+        endOfPoll(exchange);
+        if (position == null || !breaksOnFirstError(route)) {
+            return;
+        }
+        long offset = Long.parseLong(position.substring(position.lastIndexOf('@') + 1));
+        if (heldBack.size() >= MAX_HELD_BACK_PARTITIONS && !heldBack.containsKey(partition(position))) {
+            // Partitions that moved away or whose topic went keep no state for ever.
+            heldBack.keySet().stream().findFirst().ifPresent(heldBack::remove);
+        }
+        long[] state = heldBack.compute(partition(position),
+                (key, previous) -> previous != null && previous[0] == offset
+                        ? new long[]{offset, previous[1] + 1} : new long[]{offset, 1});
+        if (state[1] < 2) {
+            return;
+        }
+        // The poll interval runs from the poll, so the records before this one in the poll count.
+        Long started = exchange.getProperty(POLL_STARTED, Long.class);
+        long elapsed = Math.max(0, System.currentTimeMillis()
+                - (started != null ? started : exchange.getClock().getCreated()));
+        long wait = Math.min(Math.min(MAX_BACK_OFF_MS, FIRST_BACK_OFF_MS << Math.min(state[1] - 2, 16)),
+                maxPollIntervalMs(route) / 2 - elapsed);
+        if (wait <= 0) {
+            return;
+        }
+        LOG.info("Message {} at {} could not be made durable {} times in a row; reading it again in {} ms",
+                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), position, state[1], wait);
+        sleeper.sleep(route, wait);
+    }
+
+    private void capturePollStart(Exchange exchange) {
+        long thread = Thread.currentThread().getId();
+        long now = System.currentTimeMillis();
+        if (newPollNext.remove(thread) || !pollStarted.containsKey(thread)) {
+            pollStarted.put(thread, now);
+        }
+        exchange.setProperty(POLL_STARTED, pollStarted.getOrDefault(thread, now));
+        exchange.setProperty(POLL_THREAD, thread);
+        Object last = exchange.getMessage().getHeader("CamelKafkaLastPollRecord");
+        if (last == null) {
+            last = exchange.getMessage().getHeader("kafka.LAST_POLL_RECORD");
+        }
+        exchange.setProperty(LAST_POLL_RECORD, Boolean.TRUE.equals(last) || "true".equals(String.valueOf(last)));
+    }
+
+    private void endOfPoll(Exchange exchange) {
+        Long thread = exchange.getProperty(POLL_THREAD, Long.class);
+        if (thread != null) {
+            newPollNext.add(thread);
+        }
+    }
+
+    private static boolean breaksOnFirstError(Route route) {
+        try {
+            if (route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka) {
+                return kafka.getConfiguration().isBreakOnFirstError();
+            }
+        } catch (RuntimeException unavailable) {
+            // Not a Kafka route the policy can inspect: the adapter's default applies.
+        }
+        return true;
+    }
+
+    private static String partition(String position) {
+        return position.substring(0, position.lastIndexOf('@'));
+    }
+
+    /** The consumer's effective poll interval: an additional property overrides the named option. */
+    static long maxPollIntervalMs(Route route) {
+        return route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka
+                ? KafkaPollInterval.of(kafka.getConfiguration())
+                : KafkaPollInterval.DEFAULT_MS;
+    }
+
+    static void sleepUnlessStopping(Route route, long millis) {
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(millis);
+        try {
+            for (long left = millis; left > 0; left = TimeUnit.NANOSECONDS.toMillis(deadline - System.nanoTime())) {
+                if (route.getCamelContext() != null && route.getCamelContext().isStopping()) {
+                    return;
+                }
+                Thread.sleep(Math.min(100, left));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+        }
+    }
+
+    private void captureRecordPosition(Exchange exchange) {
+        Object topic = KafkaRecordHeaders.topic(exchange.getMessage());
+        Object partition = KafkaRecordHeaders.partition(exchange.getMessage());
+        Object offset = KafkaRecordHeaders.offset(exchange.getMessage());
+        if (topic instanceof String name && partition instanceof Number p && offset instanceof Number o) {
+            exchange.setProperty(RECORD_POSITION, name + "/" + p.intValue() + "@" + o.longValue());
+        }
+    }
+
     private void captureKafkaManualCommit(Exchange exchange) {
         KafkaManualCommit manualCommit = exchange.getMessage().getHeader(KafkaConstants.MANUAL_COMMIT, KafkaManualCommit.class);
         if (manualCommit != null) {
@@ -283,7 +528,16 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void capturePayloadMetadata(Exchange exchange) {
         Object body = exchange.getMessage().getBody();
         if (isPayloadReference(exchange)) {
-            resolvePayloadReference(exchange, body);
+            try {
+                resolvePayloadReference(exchange, body);
+            } finally {
+                if (boundaryKind == MessageBoundaryKind.HTTP) {
+                    // The route still reads the referenced object, but the row keeps no reference,
+                    // also when the object fails its check: nothing could replay it, and the
+                    // object belongs to the caller.
+                    metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+                }
+            }
             return;
         }
 
@@ -293,6 +547,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, sizeBytes);
         }
 
+        if (boundaryKind == MessageBoundaryKind.HTTP) {
+            // A replay cannot answer the original caller, so a synchronous HTTP boundary is
+            // never replayable, also when basis.message-store.replay.enabled is true.
+            metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+            keepForParking(exchange, body);
+            return;
+        }
         if (!payloadPolicy.replayEnabled()) {
             metadataOnly(exchange, "replay disabled by policy");
             keepForParking(exchange, body);
@@ -377,7 +638,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             }
             InputStream completePayload = new SequenceInputStream(new ByteArrayInputStream(probe), input);
             PayloadReference reference = captureObject(exchange, completePayload, null);
-            exchange.getMessage().setBody(objectStore.open(reference));
+            exchange.getMessage().setBody(checkedCopy(exchange, reference));
         } catch (PayloadStorageException e) {
             throw e;
         } catch (Exception e) {
@@ -402,14 +663,16 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void resolvePayloadReference(Exchange exchange, Object body) {
         PayloadReference reference = PayloadReference.fromJson(body);
         validateReferenceHeaders(exchange, reference);
-        if (reference.expiryInstant().isBefore(Instant.now())) {
-            throw new PayloadStorageException("Payload reference has expired: " + reference.ref());
-        }
-        objectStore.verify(reference);
+        // Before any check that can fail: a FAILED outcome must keep the message's claim check,
+        // not overwrite it with a metadata-only row.
         applyPayloadReference(exchange, reference);
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK, reference.toJsonBytes());
         exchange.getMessage().setHeader(PlatformHeaders.CONTENT_TYPE, reference.contentType());
-        exchange.getMessage().setBody(objectStore.open(reference));
+        if (reference.expiryInstant().isBefore(Instant.now())) {
+            throw new PayloadStorageException("Payload reference has expired: " + reference.ref());
+        }
+        // Opening the object checks its existence and size first, so no separate verify call.
+        exchange.getMessage().setBody(checkedCopy(exchange, reference));
     }
 
     private void applyPayloadReference(Exchange exchange, PayloadReference reference) {
