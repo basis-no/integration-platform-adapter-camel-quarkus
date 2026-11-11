@@ -45,7 +45,8 @@ public final class StepOutcomeFailure {
     public static boolean onlyRecordData(Exchange exchange) {
         java.util.concurrent.atomic.AtomicBoolean only = exchange.getProperty(ONLY_RECORD_DATA,
                 java.util.concurrent.atomic.AtomicBoolean.class);
-        return of(exchange) != null && only != null && only.get();
+        Throwable first = of(exchange);
+        return first != null && StoreErrorClass.of(first) == StoreErrorClass.RECORD_DATA && only != null && only.get();
     }
 
     /**
