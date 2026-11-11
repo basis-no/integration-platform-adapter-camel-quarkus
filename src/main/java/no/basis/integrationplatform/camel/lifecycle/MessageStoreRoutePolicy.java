@@ -98,7 +98,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     }
 
     private void fail(Exchange exchange, String message, Throwable cause) {
-        var failure = new IllegalStateException(message, cause);
+        // Camel logs the failure a route policy throws; a store's text may name a URI.
+        var failure = new IllegalStateException(message, ErrorTextMasking.forLog(cause));
         // Camel logs/ignores exceptions thrown by route-policy completion. Keep
         // the exchange failed as well, so the Kafka consumer can seek/retry.
         exchange.setException(failure);

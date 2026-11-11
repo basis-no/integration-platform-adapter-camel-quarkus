@@ -43,7 +43,8 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                     if (unrecorded != null) {
                         // The input is consumed again once step outcomes can be recorded; a parked copy would repeat it.
                         throw new IllegalStateException("Not parked: a step outcome was not checked or recorded, "
-                                + "so the Kafka offset is not committed and the input is consumed again", unrecorded);
+                                + "so the Kafka offset is not committed and the input is consumed again",
+                                ErrorTextMasking.forLog(unrecorded));
                     }
                 });
         // Resolve the producer when parking is needed, so an application with

@@ -455,7 +455,10 @@ class, with the stack traces kept and the messages of the failure, its causes
 and its suppressed failures masked the same way. The lines of Camel's error
 handlers that the adapter installs are masked too, and so is the failure that
 Camel's `FatalFallbackErrorHandler` logs when parking a managed Kafka input
-fails. Not covered: for an input that is not a managed Kafka input, which gets
+fails, as are the causes of the adapter's own not-parked and not-committed
+failures. Not covered: a failure of the parking endpoint or route itself, whose
+text Camel logs as it is (keep credentials out of a `direct:` parking route's
+exceptions and out of `basis.message-store.dlq-uri`); for an input that is not a managed Kafka input, which gets
 its original failure back, Camel's `FatalFallbackErrorHandler` line and the
 consumer's own failure line (for example a timer's or file consumer's
 `LoggingExceptionHandler`, or camel-kafka's line for an exchange that ends
@@ -463,7 +466,11 @@ failed); the Kafka client's own log lines; other text in an exception message,
 and credentials that are not in a `scheme://` URI, such as Camel's
 `scheme:path?query` form, a fragment (`#access_token=…`), `;` parameters, a
 `user:pass@host` without a scheme or a URI nested in a query value. Do not put
-credentials in exception messages of your own. Up to 0.3.6 these texts were stored,
+credentials in exception messages of your own. From 0.3.7 an application's own `direct:` parking
+route sees the caught failure (`Exchange.EXCEPTION_CAUGHT`) as
+`ErrorTextMasking.MaskedFailure`, whose text keeps the original class name and
+the masked message: a parking route that checks the exception's type or status
+code must read its text instead. Up to 0.3.6 these texts were stored,
 parked and logged as they were: rotate any credential that has appeared in the
 URL of a failed send.
 

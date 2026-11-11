@@ -15,14 +15,19 @@ No Message Store schema change.
   or a credential-like name), also in the failures the adapter logs, whose class
   names and stack traces stay, and in the lines of Camel's error handlers the
   adapter installs, including the failure logged when parking fails. Not
-  covered: for an input that is not a managed Kafka input, Camel's
+  covered: a failure of the parking endpoint or route itself; for an input that
+  is not a managed Kafka input, Camel's
   `FatalFallbackErrorHandler` line and the consumer's own failure line; the
   Kafka client's own logs; and credentials that are not in a `scheme://` URI.
   See [Retry and DLQ](README.md#retry-and-dlq).
   Upgrade: error texts show `xxxxxx` where they showed credentials; a DLQ reader
   or alert that matched an unmasked value in `x-bip-error` must match the
   masked form. A text with a URI that cannot be masked within about a second,
-  or with more than 20 URIs, shows `xxxxxx` for the rest. A structured log shows
+  or with more than 20 URIs, shows `xxxxxx` for the rest. An application's own `direct:` parking route
+  (`basis.message-store.dlq-uri=direct:…`) now sees the caught failure as
+  `ErrorTextMasking.MaskedFailure`, whose text keeps the original class name
+  and the masked message, instead of the original exception: a parking route
+  that checks the exception's type or status code must read the text instead. A structured log shows
   a masked failure's class as `ErrorTextMasking$MaskedFailure`, with the
   original class in its text. Rows and DLQ records written before keep their
   text: rotate any credential that has appeared in the URL of a failed send.
