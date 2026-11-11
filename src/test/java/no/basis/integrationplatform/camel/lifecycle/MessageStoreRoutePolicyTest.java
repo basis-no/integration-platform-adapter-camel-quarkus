@@ -826,7 +826,7 @@ class MessageStoreRoutePolicyTest {
         var reference = new PayloadReference(1, PayloadReference.STORAGE, "s3://b/k\n2026-01-01 ERROR forged",
                 5, "0".repeat(64), "application/xml", Instant.now().minus(Duration.ofDays(1)).toString());
         Exchange exchange = exchange();
-        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "m-1\r\nforged\u2028line");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "m-1\r\nforged\u2028line\u2029\u0085\tend");
         exchange.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
         exchange.getMessage().setBody(reference.toJsonBytes());
 
@@ -836,7 +836,7 @@ class MessageStoreRoutePolicyTest {
             var errors = log.at(java.util.logging.Level.SEVERE);
             assertEquals(1, errors.size());
             String logged = no.basis.integrationplatform.camel.LogCapture.text(errors.getFirst());
-            assertFalse(logged.matches("(?s).*[\\r\\n\\u2028].*"), "one line: " + logged);
+            assertFalse(logged.matches("(?s).*[\\r\\n\\t\\u0085\\u2028\\u2029].*"), "one line: " + logged);
             assertTrue(logged.contains("Payload reference has expired: s3://b/k 2026-01-01 ERROR forged"), logged);
         }
         assertTrue(exchange.isRouteStop());

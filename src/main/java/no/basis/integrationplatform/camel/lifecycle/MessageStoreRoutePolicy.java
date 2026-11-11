@@ -241,8 +241,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         try {
             copy.close();
         } catch (Exception e) {
-            LOG.warn("Could not close the checked payload copy of message {}: {}",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), e.toString());
+            LOG.warn("{}", oneLine("Could not close the checked payload copy of message "
+                    + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID) + ": " + e));
         }
     }
 

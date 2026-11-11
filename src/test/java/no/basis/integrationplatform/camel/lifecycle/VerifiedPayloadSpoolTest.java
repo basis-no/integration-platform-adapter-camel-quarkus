@@ -109,6 +109,21 @@ class VerifiedPayloadSpoolTest {
     }
 
     @Test
+    void anErrorWhileCopyingLeavesNothingBehind() {
+        var spool = new VerifiedPayloadSpool(directory, 1024);
+        InputStream failing = new FilterInputStream(new ByteArrayInputStream(PAYLOAD)) {
+            @Override
+            public int read(byte[] bytes, int offset, int length) {
+                throw new OutOfMemoryError("synthetic");
+            }
+        };
+
+        assertThrows(OutOfMemoryError.class, () -> spool.checkedCopy(reference(PAYLOAD), () -> failing));
+
+        assertNothingLeft(spool);
+    }
+
+    @Test
     void copiesInUseBoundTheSpoolWithoutReadingTheObject() throws Exception {
         var spool = new VerifiedPayloadSpool(directory, PAYLOAD.length + 10);
         InputStream first = spool.checkedCopy(reference(PAYLOAD), () -> new ByteArrayInputStream(PAYLOAD));
@@ -176,6 +191,12 @@ class VerifiedPayloadSpoolTest {
         assertEquals(" (cause: java.nio.file.FileSystemException: /spool: No space left on device)",
                 MessageStoreRoutePolicy.rootCause(failure));
         assertEquals("", MessageStoreRoutePolicy.rootCause(new PayloadStorageException("no cause")));
+        // A cause cycle ends the walk.
+        var first = new IOException("first");
+        var second = new IOException("second", first);
+        first.initCause(second);
+        assertEquals(" (cause: java.io.IOException: first)",
+                MessageStoreRoutePolicy.rootCause(new PayloadStorageException("cycle", first)));
     }
 
     @Test
