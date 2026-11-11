@@ -51,7 +51,7 @@ recorded:
 ```sql
 select o.step_id,
        regexp_replace(regexp_replace(o.endpoint_uri, '//[^/@]*@', '//xxxxxx@'),
-         '(?i)((password|passphrase|secret[a-z_]*|[a-z_]*token|authpassword)=)[^&]*',
+         '(?i)([?&](code|sig|key|pwd|[^=&]*(password|passphrase|passcode|secret|token|signature|credential|auth|apikey|api-key|api_key|[-_]key|accesskey|accountkey|privatekey|connectionstring|passwd|session|cookie)[^=&]*)=)[^&]*',
          '\1xxxxxx', 'g') as endpoint,
        count(*) as steps, max(o.occurred_at) as last_occurred_at
 from bip_step_outcome o
@@ -62,7 +62,12 @@ order by o.step_id, last_occurred_at desc;
 ```
 
 The query masks credentials again because rows recorded before adapter 0.4.0
-kept more of the endpoint; see [Stored Endpoints](#stored-endpoints).
+(or 0.3.7 on the 0.3 line) kept more of the endpoint, such as a function key
+`?code=…`, a signature `?sig=…` or the user name of `sftp://user:pass@host`; see
+[Stored Endpoints](#stored-endpoints). It masks the user info and the common
+credential parameters: not every name the adapter's rule covers, and a few
+names that rule leaves readable, such as `x-key-id`, `Idempotency-Key` and
+`x-bip-*` parameters. A masked last parameter also hides a `#` fragment after it.
 
 Renaming a generated id changes that step's key: replaying, redoing or resending
 a message recorded before the change sends it once more. Rename only once no

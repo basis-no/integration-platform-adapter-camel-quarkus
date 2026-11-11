@@ -13,10 +13,9 @@
   the send. A record without `x-bip-message-id` keeps its generated id while it
   is read again. A store failure also ends the attempt: no later send of it
   through `to` or `toD`, tracked or not, nor a redelivery of the failed one, is
-  made. The ERROR lines for a record
-  that is not committed name the store error's class (`storeError=read-only`,
-  `privilege`, `schema`, `record-data`, `checkpoint` or `unavailable`) and its
-  SQLSTATE. See
+  made. The ERROR lines for a record that is not committed name the store
+  error's class (`storeError=read-only`, `privilege`, `schema`, `record-data`,
+  `checkpoint` or `unavailable`) and its SQLSTATE. See
   [Steps and idempotency](docs/steps-and-idempotency.md#a-send-whose-delivered-outcome-could-not-be-written).
   Upgrade: a restart or a rebalance still loses the kept outcomes, so the next
   read in another process can send once more. While the store refuses writes, a
@@ -38,6 +37,11 @@
   See [A record whose own values the store cannot hold](docs/retry-dlq-replay.md#a-record-whose-own-values-the-store-cannot-hold).
   Upgrade: an envelope value over 1,024 bytes, which the store accepted
   before, is now refused and its record parked.
+- Documentation: the query in `docs/steps-and-idempotency.md` (Replay Roles)
+  that lists an integration's step ids now also masks `code`, `sig`, `key`,
+  `pwd` and other credential parameters, such as `passwd`, `session` and
+  `cookie`, that rows recorded before the stored-endpoint masking rule kept in
+  clear. Before, it printed them.
 - A Kafka input that arrives as a claim check, on a replay or a DLQ resend, and
   whose object can never pass its check is parked in the DLQ as its claim check
   and committed after the DLQ accepted it, instead of being read again forever
