@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Documentation: the query in "Upgrading from generated step ids" that lists an
+  integration's step ids now also masks `code`, `sig`, `key`, `pwd` and other
+  credential parameters that rows recorded before the stored-endpoint masking
+  rule kept in clear. Before, it printed them.
+
 - An input whose payload is in object storage is checked in full, its size and
   SHA-256 against its reference, before its route reads any of it: on a replay
   of a claim-checked input and on the first attempt after the adapter stored a
