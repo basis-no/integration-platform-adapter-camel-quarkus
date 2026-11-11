@@ -60,10 +60,12 @@ manual Kafka commit boundary: a consumed offset is committed only after the
 required durable outcome and DLQ work succeeds.
 
 Do not apply Kafka recovery semantics to non-Kafka sources. Automatic boundary
-selection is Kafka-only. The HTTP audit-only preview requires an explicit route
-id, `basis.message-store.failure-mode=record-failed`, and replay disabled. It
-records terminal failures and propagates them to the source; it never commits a
-Kafka offset or claims a Kafka DLQ/replay path. Keep this preview clearly
+selection is Kafka-only. The failure handling follows the input type: a Kafka
+boundary parks in the DLQ, every other input hands its failure back to its
+source. The HTTP audit-only preview requires an explicit route id and is never
+replayable, whatever the global replay setting says. It records terminal
+failures and propagates them to the source; it never commits a Kafka offset or
+claims a Kafka DLQ/replay path. Keep this preview clearly
 separate from the supported Kafka lifecycle.
 
 Classify endpoint sends by replay semantics, not by customer terminology or

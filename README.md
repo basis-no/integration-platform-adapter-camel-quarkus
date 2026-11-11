@@ -7,7 +7,8 @@ commit, replay, and replay-aware side-effect tracking out of business routes.
 The adapter is self-contained: the documentation in [`docs/`](docs/index.md)
 describes the tables, topics and headers it uses, and the schema it expects
 ships in `src/main/resources/db/message-store/`. With the Postgres sink it
-checks at startup that `bip_contract` records store schema version 1.
+checks at startup that `bip_contract` records store schema version 1, and it
+refuses to start against a store that lacks a table or column it writes.
 
 ## Installation
 
@@ -56,6 +57,7 @@ Start with the [documentation index](docs/index.md).
 | Classify endpoint sends and prevent duplicate effects | [Steps and idempotency](docs/steps-and-idempotency.md) |
 | Understand retry, DLQ, resend, and redo | [Retry, DLQ, and replay](docs/retry-dlq-replay.md) |
 | Use Kafka, files, polls, JMS, HTTP, or multiple replicas | [Ingress and scaling](docs/ingress-and-scaling.md) |
+| Run timers and polling routes on one replica at a time | [Single-active routes](docs/single-active.md) |
 | Configure Postgres-inline and S3 payload storage | [Payload storage](docs/payload-storage.md) |
 | Run local tests or deliberately suppress commits | [Testing](docs/testing.md) |
 | Count Kafka admissions and publications for activity alerts | [Kafka activity metrics](docs/activity-metrics.md) |
@@ -63,6 +65,7 @@ Start with the [documentation index](docs/index.md).
 | Publish a snapshot for remote acceptance or make a final release | [Releasing](docs/releasing.md) |
 | Find every property, default, environment variable, and safety note | [Configuration reference](docs/configuration.md) |
 | Diagnose startup, replay, persistence, or consumer problems | [Troubleshooting](docs/troubleshooting.md) |
+| Upgrade an integration from 0.3.x to the unreleased 0.4.0 | [Upgrading from 0.3.x to 0.4.0](docs/upgrading-to-0.4.md) |
 
 ## Current Status
 
@@ -85,26 +88,69 @@ Start with the [documentation index](docs/index.md).
   replay topic named by its row, and does not check that the route that
   recorded it still consumes that topic. The 0.3.x releases refuse both.
   Fixed for 0.4.0; see [Manual Replay](docs/retry-dlq-replay.md#manual-replay).
+- 0.3.x and 0.4.0-rc1 put no timeout on a Message Store call: an outcome or
+  step-outcome write that waits on a lock or on a database that stopped
+  answering holds the Kafka consumer thread without limit. Fixed for 0.4.0
+  with statement, lock and network timeouts; see
+  [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts).
 - 0.3.x and 0.4.0-rc1 let Camel warn at route start that the adapter's
   intercept strategy "does not return an AsyncProcessor instance", once per
   untracked processor such as `validate`. Harmless; fixed for 0.4.0. See
   [Troubleshooting](docs/troubleshooting.md#route-fails-at-startup).
+- On `main`, as on 0.3.6, the adapter warns when another integration already
+  journaled the same message id; see
+  [Troubleshooting](docs/troubleshooting.md#message-id-is-also-journaled-by-another-integration).
+- On `main`, a replay request with `redoSteps` is refused unless delivered
+  steps are recorded (the `postgres` step store); see
+  [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
 - 0.4.0-rc1 gives an application's own `onException` handler the consumed
   input instead of the message the route left, and logs that a handled message
   is being parked. 0.3.6 fixed it, and so does 0.4.0; see
   [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- On `main`, a Kafka record whose outcome could not be made durable is read
+  again with a growing wait instead of several times a second; see
+  [Reading a record again](docs/retry-dlq-replay.md#reading-a-record-again).
+- 0.3.x and 0.4.0-rc1 leave a Kafka boundary's consumer on Camel's default
+  `auto.offset.reset=latest`. A record whose outcome was not durable, on a
+  partition where the consumer group has no committed offset yet, is skipped
+  after Camel's reconnect instead of read again. Workaround: set
+  `camel.component.kafka.auto-offset-reset=earliest`. Fixed for 0.4.0, which
+  ships `earliest` and refuses to start a Kafka boundary with another value;
+  see [Configuration](docs/configuration.md#required-runtime-configuration).
+- On `main`, only a managed Kafka input is parked in the DLQ, as in 0.3.6; a
+  request on an exchange of its own, or a timer or poller input, fails back to
+  its caller. See [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+- On `main`, the failure handling follows the input type: a Kafka boundary
+  parks in the DLQ, an HTTP audit-only boundary records `FAILED`, answers its
+  caller and is never replayable, and the two can run in one application; see
+  [Failure and Replay per Input Type](docs/retry-dlq-replay.md#failure-and-replay-per-input-type).
+  A `jms:queue:` input needs `acknowledgementModeName=CLIENT_ACKNOWLEDGE`.
 - `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
+- The 0.3 line continues as a maintained series, with its current scope (one
+  input topic per integration); further 0.3.x patch releases may follow, also
+  after 0.4.0. 0.3.x documents its own known
+  limitations, among them what happens during a Message Store outage, on its
+  [`release/0.3` branch](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/blob/release/0.3/README.md#retry-and-dlq).
 - Known limitation of 0.3.x: a failed send in a `direct:` sub-route is
   recorded `DELIVERED` when the sub-route's dead-letter channel parks the
   message, so a resend skips it. Resend with the step in `redoSteps`; see
   [Sends in a sub-route](docs/steps-and-idempotency.md#sends-in-a-sub-route).
   Fixed for 0.4.0.
+- Camel's `resequence`, and an `aggregate` on its in-memory repository, lose
+  held records on a restart under the adapter's commit rule, on every version.
+  From 0.4.0 a Kafka boundary route with one refuses to start; see
+  [Holding Records in Memory](docs/message-lifecycle.md#holding-records-in-memory).
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3
   payload storage, output-side-effect checkpoints, non-Kafka ingress
   normalization, replica-safety validation, Kafka activity counters with
   admission counting on by default (opt-in in 0.3.6), and the 0.3.6 Key-Value
   Store.
+- Delivery audit and non-Kafka input inspection from 0.3.5 and 0.3.6
+  (`basis.delivery-audit.routes`, `basis.input-audit.routes`) are not in this
+  development line yet; an application with either set refuses to start and
+  names what to use instead. See
+  [Settings Removed Since 0.3.x](docs/configuration.md#settings-removed-since-03x).
 - The `0.4` features have extensive local unit and Testcontainers coverage but
   are not released until the stacked changes are merged, released, and the
   remote acceptance campaign is complete.

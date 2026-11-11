@@ -14,12 +14,15 @@ import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.CamelContext;
+import org.apache.camel.Endpoint;
 import org.apache.camel.NamedNode;
+import org.apache.camel.component.kafka.KafkaEndpoint;
 import org.apache.camel.spi.RoutePolicy;
 import org.apache.camel.spi.RoutePolicyFactory;
 import org.apache.camel.model.RouteDefinition;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -31,7 +34,6 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
     private final String integrationName;
     private final PayloadCapturePolicy payloadPolicy;
     private final MessageBoundarySelector boundarySelector;
-    private final boolean replayEnabled;
     private final MessageFailureMode failureMode;
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
@@ -83,7 +85,6 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         this.payloadPolicy = PayloadCapturePolicy.fromConfig(
                 payloadMode, inlineThreshold, payloadObjectMaxBytes, payloadRetentionDays, replayEnabled);
         this.boundarySelector = MessageBoundarySelector.fromConfig(boundaryRoutes);
-        this.replayEnabled = replayEnabled;
         this.failureMode = MessageFailureMode.fromConfig(failureMode);
         this.kafkaCommitEnabled = testProfile.kafkaCommitEnabled();
         this.objectStore = objectStore;
@@ -155,7 +156,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             return null;
         }
         if (ingressNormalizationConfig.includes(routeId)) {
-            validateIngressNormalizationRoute(routeId, route);
+            validateIngressNormalizationRoute(camelContext, routeId, route);
             seenNormalizationRoutes.add(routeId);
         }
         if (!boundarySelector.includes(routeId, route)) {
@@ -164,6 +165,12 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         }
         MessageBoundaryKind boundaryKind = boundarySelector.kind(route);
         validateBoundary(routeId, boundaryKind);
+        if (boundaryKind == MessageBoundaryKind.KAFKA && camelContext != null) {
+            validateKafkaOffsetReset(routeId, camelContext, route);
+        }
+        if (boundaryKind == MessageBoundaryKind.KAFKA) {
+            InMemoryHoldGuard.check(camelContext, routeId, route);
+        }
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
                 sink, integrationName, payloadPolicy, boundaryKind, kafkaCommitEnabled, objectStore);
         if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
@@ -182,7 +189,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         }
     }
 
-    private void validateIngressNormalizationRoute(String routeId, NamedNode route) {
+    private void validateIngressNormalizationRoute(CamelContext camelContext, String routeId, NamedNode route) {
         if (boundarySelector.includes(routeId, route)) {
             throw new IllegalArgumentException(
                     "Ingress normalization route '" + routeId
@@ -196,7 +203,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
                             + PlatformRouteConfiguration.INGRESS_NORMALIZATION
                             + " so source failures propagate without adapter DLQ parking");
         }
-        ingressReplicaSafety.validate(routeId, definition);
+        ingressReplicaSafety.validate(camelContext, routeId, definition);
         if (boundarySelector.kind(route) == MessageBoundaryKind.HTTP) {
             throw new IllegalArgumentException(
                     "Synchronous HTTP route '" + routeId + "' cannot use the ingress normalization profile; "
@@ -221,11 +228,48 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         return false;
     }
 
+    /**
+     * A record that is not committed is read again after Camel's reconnect, which resumes from
+     * the committed offset. On a partition without one, the consumer resumes from its
+     * {@code auto.offset.reset}; anything but {@code earliest} skips the record ({@code latest})
+     * or stops the consumer ({@code none}).
+     */
+    static void validateKafkaOffsetReset(String routeId, CamelContext camelContext, NamedNode route) {
+        if (!(route instanceof RouteDefinition definition) || definition.getInput() == null) {
+            return;
+        }
+        String uri = definition.getInput().getEndpointUri();
+        Endpoint endpoint = camelContext.getEndpoint(uri);
+        if (!(endpoint instanceof KafkaEndpoint kafka)) {
+            return;
+        }
+        // The consumer's effective value: the endpoint option, the component default, or an
+        // additionalProperties entry, which Camel applies last.
+        Object effective = kafka.getConfiguration().createConsumerProperties().get("auto.offset.reset");
+        String value = effective == null ? null : effective.toString().trim();
+        if (value == null || !"earliest".equals(value.toLowerCase(Locale.ROOT))) {
+            throw new IllegalArgumentException("Kafka boundary route '" + routeId + "' (" + endpoint.getEndpointBaseUri()
+                    + ") requires autoOffsetReset=earliest, but its consumer uses auto.offset.reset=" + value
+                    + ". A record that is not committed is read again from the committed offset; on a partition "
+                    + "without one, any other value skips the record or stops the consumer. Remove the "
+                    + "autoOffsetReset or additionalProperties.auto.offset.reset override from the endpoint and "
+                    + "from camel.component.kafka.auto-offset-reset, or set it to earliest");
+        }
+    }
+
     private void validateBoundary(String routeId, MessageBoundaryKind boundaryKind) {
+        // The failure mode follows the input type. A Kafka boundary parks a message that
+        // exhausted its retries in the DLQ and commits only after that; an HTTP boundary records
+        // FAILED and hands the failure back to its caller, and is never replayable. The global
+        // setting is checked only where it contradicts a boundary: record-failed would leave a
+        // Kafka boundary without its recovery path.
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             if (failureMode != MessageFailureMode.DLQ) {
                 throw new IllegalArgumentException(
-                        "Kafka boundary route '" + routeId + "' requires basis.message-store.failure-mode=dlq");
+                        "Kafka boundary route '" + routeId + "' parks a failed message in the DLQ, but "
+                                + "basis.message-store.failure-mode=record-failed turns parking off for the "
+                                + "whole application. Remove the setting (the default is dlq): an HTTP "
+                                + "audit-only boundary records FAILED and answers its caller with any setting");
             }
             return;
         }
@@ -234,17 +278,6 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             throw new IllegalArgumentException(
                     "Non-Kafka boundary route '" + routeId
                             + "' uses a source that has no supported message-store profile");
-        }
-
-        if (replayEnabled) {
-            throw new IllegalArgumentException(
-                    "Non-Kafka boundary route '" + routeId
-                            + "' requires basis.message-store.replay.enabled=false until a replay target is configured");
-        }
-        if (failureMode != MessageFailureMode.RECORD_FAILED) {
-            throw new IllegalArgumentException(
-                    "Non-Kafka boundary route '" + routeId
-                            + "' requires basis.message-store.failure-mode=record-failed");
         }
     }
 }
