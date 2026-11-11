@@ -19,6 +19,9 @@ import java.util.List;
 public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     private static final Logger LOG = LoggerFactory.getLogger(PlatformRouteConfiguration.class);
     static final String MASKED = "xxxxxx";
+    // Camel's own logger names for its error handlers, kept so that log settings still apply.
+    private static final String DEAD_LETTER_LOG = "org.apache.camel.processor.errorhandler.DeadLetterChannel";
+    private static final String DEFAULT_ERROR_LOG = "org.apache.camel.processor.errorhandler.DefaultErrorHandler";
     private static final Set<String> CREDENTIAL_HEADERS = Set.of(
             "authorization", "proxy-authorization", "cookie", "set-cookie", "www-authenticate", "proxy-authenticate");
     private static final List<String> CREDENTIAL_PARTS = List.of(
@@ -72,6 +75,13 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         this.failureMode = failureMode;
     }
 
+    /** An error handler whose own log lines are masked, as the adapter's are. */
+    private static <T extends org.apache.camel.model.errorhandler.DefaultErrorHandlerDefinition> T masked(T handler,
+            String logName) {
+        handler.setLoggerBean(new MaskingCamelLogger(logName));
+        return handler;
+    }
+
     @Override
     public void configuration() {
         HttpClientRetries.disableByDefault(getContext());
@@ -81,7 +91,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
 
         routeConfiguration()
-                .errorHandler(deadLetterChannel(DLQ_URI)
+                .errorHandler(masked(deadLetterChannel(DLQ_URI), DEAD_LETTER_LOG)
                         .deadLetterHandleNewException(false)
                         .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null)))
                         .onRedelivery(this::timedRedelivery)
@@ -92,7 +102,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .backOffMultiplier(2));
 
         routeConfiguration(SLOW_BACKEND)
-                .errorHandler(deadLetterChannel(DLQ_URI)
+                .errorHandler(masked(deadLetterChannel(DLQ_URI), DEAD_LETTER_LOG)
                         .deadLetterHandleNewException(false)
                         .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(
                                 SLOW_BACKEND_REDELIVERIES, SLOW_BACKEND_FIRST_DELAY_MS, SLOW_BACKEND_MAX_DELAY_MS)))
@@ -105,7 +115,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .maximumRedeliveryDelay(SLOW_BACKEND_MAX_DELAY_MS));
 
         routeConfiguration(NO_RETRY)
-                .errorHandler(deadLetterChannel(DLQ_URI)
+                .errorHandler(masked(deadLetterChannel(DLQ_URI), DEAD_LETTER_LOG)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(0));
@@ -115,7 +125,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
     private void recordFailedConfigurations() {
         routeConfiguration()
-                .errorHandler(defaultErrorHandler()
+                .errorHandler(masked(defaultErrorHandler(), DEFAULT_ERROR_LOG)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
@@ -123,7 +133,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .backOffMultiplier(2));
 
         routeConfiguration(SLOW_BACKEND)
-                .errorHandler(defaultErrorHandler()
+                .errorHandler(masked(defaultErrorHandler(), DEFAULT_ERROR_LOG)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(SLOW_BACKEND_REDELIVERIES)
                         .redeliveryDelay(SLOW_BACKEND_FIRST_DELAY_MS)
@@ -132,7 +142,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .maximumRedeliveryDelay(SLOW_BACKEND_MAX_DELAY_MS));
 
         routeConfiguration(NO_RETRY)
-                .errorHandler(defaultErrorHandler()
+                .errorHandler(masked(defaultErrorHandler(), DEFAULT_ERROR_LOG)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(0));
 
@@ -144,7 +154,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         // source consumer so that files are not moved and queue messages are
         // not acknowledged before the durable Kafka boundary is reached.
         routeConfiguration(INGRESS_NORMALIZATION)
-                .errorHandler(defaultErrorHandler()
+                .errorHandler(masked(defaultErrorHandler(), DEFAULT_ERROR_LOG)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
@@ -251,7 +261,14 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
     }
 
-    static boolean isCredentialHeader(String name) {
+    /**
+     * Whether a header name is credential-like, by the rule that masks parked headers and
+     * withholds a consumed record's credential headers from HTTP sends.
+     *
+     * @param name a header name
+     * @return whether its value is treated as a credential
+     */
+    public static boolean isCredentialHeader(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
         if (ENVELOPE_HEADERS.contains(lower)) {
             return false;

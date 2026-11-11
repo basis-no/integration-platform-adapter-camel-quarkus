@@ -22,6 +22,11 @@ public record StepResult(
         String targetRef,
         String error,
         Instant occurredAt) {
+    /** Masks the URIs in an error text however the result was built. */
+    public StepResult {
+        error = ErrorTextMasking.mask(error);
+    }
+
 
     /**
      * Creates a delivered step result at the current time.

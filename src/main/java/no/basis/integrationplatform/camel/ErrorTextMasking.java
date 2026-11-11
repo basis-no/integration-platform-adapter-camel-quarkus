@@ -2,22 +2,22 @@ package no.basis.integrationplatform.camel;
 
 import java.util.IdentityHashMap;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 /**
  * Masks credentials in error texts before the adapter stores, parks or logs them. An exception
  * from a failed send names the receiver's URI, query included, so a key or signature in that
  * URI would otherwise reach the Message Store, the shared DLQ topic and the log.
  *
- * <p>Every URI in the text, a scheme followed by {@code ://} up to the next white space, quote
- * or angle bracket, is masked by {@link EndpointUriMasking#mask(String)}: the rule the adapter
- * and the .NET adapter apply to stored endpoints. At most {@value #MAX_URIS} URIs are masked
- * that way; any further URI in the same text is replaced by {@code xxxxxx}.</p>
+ * <p>Every URI in the text is masked by {@link EndpointUriMasking#mask(String)}: the rule the
+ * adapter and the .NET adapter apply to stored endpoints. A URI is a scheme (a letter, then
+ * letters, digits, {@code +}, {@code -} or {@code .}) followed by {@code ://}, up to the next
+ * white space, {@code <} or {@code >}; quotes that end it are not part of it. One deadline of
+ * about a second covers the whole text, and at most {@value #MAX_URIS} URIs are masked; any URI
+ * past either is replaced by {@code xxxxxx}. The scan is linear in the length of the text.</p>
  */
 public final class ErrorTextMasking {
     static final int MAX_URIS = 20;
-    private static final Pattern URI = Pattern.compile("[A-Za-z][A-Za-z0-9+.-]*://[^\\s\"'<>]+");
+    private static final long TEXT_TIMEOUT_NANOS = 1_000_000_000L;
     private static final int MAX_CAUSES = 20;
 
     private ErrorTextMasking() {
@@ -33,15 +33,51 @@ public final class ErrorTextMasking {
         if (text == null || text.indexOf("://") < 0) {
             return text;
         }
-        Matcher uris = URI.matcher(text);
+        long deadline = System.nanoTime() + TEXT_TIMEOUT_NANOS;
         StringBuilder masked = new StringBuilder(text.length());
+        int copied = 0;
         int count = 0;
-        while (uris.find()) {
-            String replacement = ++count <= MAX_URIS ? EndpointUriMasking.mask(uris.group()) : PlatformRouteConfiguration.MASKED;
-            uris.appendReplacement(masked, Matcher.quoteReplacement(replacement));
+        for (int separator = text.indexOf("://"); separator >= 0; separator = text.indexOf("://", separator + 3)) {
+            if (separator < copied) {
+                continue;
+            }
+            int start = separator;
+            while (start > copied && schemeCharacter(text.charAt(start - 1))) {
+                start--;
+            }
+            while (start < separator && !asciiLetter(text.charAt(start))) {
+                start++;
+            }
+            if (start == separator) {
+                continue;
+            }
+            int end = separator + 3;
+            while (end < text.length() && !endsUri(text.charAt(end))) {
+                end++;
+            }
+            int uriEnd = end;
+            while (uriEnd > separator + 3 && (text.charAt(uriEnd - 1) == '"' || text.charAt(uriEnd - 1) == '\'')) {
+                uriEnd--;
+            }
+            String replacement = ++count <= MAX_URIS && System.nanoTime() < deadline
+                    ? EndpointUriMasking.mask(text.substring(start, uriEnd), deadline) : PlatformRouteConfiguration.MASKED;
+            masked.append(text, copied, start).append(replacement);
+            copied = uriEnd;
         }
-        uris.appendTail(masked);
+        masked.append(text, copied, text.length());
         return masked.toString();
+    }
+
+    private static boolean asciiLetter(char c) {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+    }
+
+    private static boolean schemeCharacter(char c) {
+        return asciiLetter(c) || (c >= '0' && c <= '9') || c == '+' || c == '-' || c == '.';
+    }
+
+    private static boolean endsUri(char c) {
+        return Character.isWhitespace(c) || c == '<' || c == '>';
     }
 
     /**
@@ -74,16 +110,28 @@ public final class ErrorTextMasking {
     }
 
     private static boolean masksAnything(Throwable failure) {
-        Map<Throwable, Boolean> seen = new IdentityHashMap<>();
-        Throwable current = failure;
-        for (int depth = 0; current != null && depth <= MAX_CAUSES && seen.put(current, true) == null; depth++) {
-            String message = current.getMessage();
-            if (message != null && !message.equals(mask(message))) {
+        return masksAnything(failure, new IdentityHashMap<>(), 0);
+    }
+
+    // A chain deeper than the bound counts as masking something, so that it is copied, not logged as it is.
+    private static boolean masksAnything(Throwable failure, Map<Throwable, Boolean> seen, int depth) {
+        if (failure == null || seen.put(failure, true) != null) {
+            return false;
+        }
+        if (depth > MAX_CAUSES) {
+            return true;
+        }
+        String message = failure.getMessage();
+        if (message != null && !message.equals(mask(message))) {
+            return true;
+        }
+        for (Throwable suppressed : failure.getSuppressed()) {
+            if (masksAnything(suppressed, seen, depth + 1)) {
                 return true;
             }
-            current = current.getCause();
         }
-        return false;
+        Throwable cause = failure.getCause();
+        return cause != failure && masksAnything(cause, seen, depth + 1);
     }
 
     private static Throwable copy(Throwable failure, Map<Throwable, Throwable> copies, int depth) {
@@ -98,6 +146,11 @@ public final class ErrorTextMasking {
         Throwable cause = failure.getCause();
         if (cause != null && cause != failure && depth < MAX_CAUSES) {
             copy.initCause(copy(cause, copies, depth + 1));
+        }
+        if (depth < MAX_CAUSES) {
+            for (Throwable suppressed : failure.getSuppressed()) {
+                copy.addSuppressed(copy(suppressed, copies, depth + 1));
+            }
         }
         return copy;
     }

@@ -302,6 +302,17 @@ class PostgresKeyValueStoreTest {
     }
 
     @Test
+    void aValueTheDatabaseCannotStoreIsRefusedWithoutItsText() throws Exception {
+        KeyValueLimitException rejected = assertThrows(KeyValueLimitException.class,
+                () -> state.put("cursor/nul", TextNode.valueOf("secret-value\u0000x")));
+        assertTrue(rejected.getMessage().startsWith("Key-Value Store rejected the write (write key cursor/nul): the "
+                + "database cannot store the value"), rejected.getMessage());
+        for (Throwable cause = rejected; cause != null; cause = cause.getCause()) {
+            assertFalse(String.valueOf(cause.getMessage()).contains("secret-value"), "No stored value in " + cause);
+        }
+    }
+
+    @Test
     void rejectsTheKeyBeyondTheLiveKeyLimitWhileUpdatesPass() throws Exception {
         insertKeys(INTEGRATION, "seen/", 10_000, "null");
 

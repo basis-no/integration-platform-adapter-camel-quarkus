@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lease;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.runtime.StartupEvent;
