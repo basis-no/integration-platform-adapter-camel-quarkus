@@ -688,22 +688,29 @@ consumed record's `x-bip-redo-steps` is honoured only when all of these hold:
   `x-bip-attempt`, with the same redo list (compared as JSON), in state
   `REQUESTED` or `PUBLISHED`. Both count, because the record can be consumed
   before the replay service marks its row `PUBLISHED`; `FAILED` does not;
-- `bip_message_attempt` has no row yet for that message id and attempt. Once
-  the replay's attempt has an outcome, its record, or a copy of it, no longer
-  redoes anything.
+- `bip_message_attempt` has no completed or parked row for that message id and
+  attempt. Once the replay's attempt is completed or parked, its record, or a
+  copy of it, no longer redoes anything. An attempt recorded `FAILED` was not
+  committed and is read again, so it may still redo.
 
 On any other record the list is ignored with a warning, and its delivered
 steps are skipped as on any redelivery. The Message Store is asked once per
 attempt, when the list names a delivered step. If it cannot be read, the send
 fails as when a step outcome cannot be checked: the record is not committed and
 is read again. A login that may not read `bip_message_replay_audit` gets no
-redo, with a warning. A record read again before its attempt's outcome was
-recorded, for example after a crash, redoes once more.
+redo, with a warning, and so does a record whose values the store cannot read
+(SQLSTATE class 22). The lists are compared by the adapter, as JSON; the
+database never parses the record's own list, and a list with text after the
+array is malformed. A record read again before its attempt was completed or
+parked, for example after a crash, redoes once more. An application's own
+`StepOutcomeStore` bean must implement `isAuthorisedReplay` for redo to work;
+the default answers no.
 
 An `x-bip-attempt` or `x-bip-schema-version` that is not a whole number in the
 `int` range (ASCII digits with an optional sign; surrounding spaces, tabs and
 line breaks are ignored) is read as 1, with a warning that names the header; an
-attempt below 1 is read as 1 too.
+attempt below 1 is read as 1 too. A readable schema version, also 0 or a
+negative number, is kept as it is, as the .NET adapter keeps it.
 
 From 0.3.6 the list stays inside the integration. When an exchange enters a
 route, the adapter reads `x-bip-redo-steps`, keeps the list for the attempt's

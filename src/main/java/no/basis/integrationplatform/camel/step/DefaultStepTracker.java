@@ -32,7 +32,9 @@ public class DefaultStepTracker implements StepTracker {
             "bean", "controlbus", "dataformat", "direct", "language", "log", "mock",
             "micrometer", "seda", "stub", "timer", "validator", "vm", "xslt", "xslt-saxon");
 
-    private static final ObjectMapper REDO_STEPS_READER = new ObjectMapper();
+    // Text after the array makes the list malformed: it is not the replay service's.
+    private static final ObjectMapper REDO_STEPS_READER = new ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
     private final StepOutcomeStore stepOutcomeStore;
 
@@ -135,6 +137,10 @@ public class DefaultStepTracker implements StepTracker {
     public static void acceptRedoSteps(Exchange exchange, String messageId, String integration, String topic,
             int attempt, boolean replayEnabled) {
         String value = redoStepsHeaderValue(exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS));
+        if (exchange.getProperty(PlatformExchangeProperties.REDO_STEPS) != null) {
+            // Read already, for example by a second policy on the route.
+            return;
+        }
         Set<String> redoSteps = parseRedoSteps(value);
         String ignored = null;
         if (redoSteps.isEmpty()) {
@@ -178,11 +184,18 @@ public class DefaultStepTracker implements StepTracker {
         try {
             authorised = stepOutcomeStore.isAuthorisedReplay(claim);
         } catch (RuntimeException failure) {
-            if (!insufficientPrivilege(failure)) {
+            String sqlState = sqlState(failure);
+            if ("42501".equals(sqlState)) {
+                LOG.warn("Ignoring {} on message {}: the Message Store login may not read the replay audit, so the "
+                        + "replay cannot be confirmed", PlatformHeaders.REDO_STEPS, LogText.escape(claim.messageId()));
+            } else if (sqlState != null && sqlState.startsWith("22")) {
+                // The record's own values, such as its message id, are not valid for the store: it
+                // cannot be the adapter's replay, and reading it again would not change that.
+                LOG.warn("Ignoring {} on message {}: the Message Store cannot read the record's values (SQLSTATE {})",
+                        PlatformHeaders.REDO_STEPS, LogText.escape(claim.messageId()), sqlState);
+            } else {
                 throw failure;
             }
-            LOG.warn("Ignoring {} on message {}: the Message Store login may not read the replay audit, so the replay "
-                    + "cannot be confirmed", PlatformHeaders.REDO_STEPS, LogText.escape(claim.messageId()));
             claim.decide(false);
             return false;
         }
@@ -195,13 +208,14 @@ public class DefaultStepTracker implements StepTracker {
         return authorised;
     }
 
-    private static boolean insufficientPrivilege(Throwable failure) {
-        for (Throwable cause = failure; cause != null; cause = cause.getCause() == cause ? null : cause.getCause()) {
-            if (cause instanceof SQLException sql && "42501".equals(sql.getSQLState())) {
-                return true;
+    private static String sqlState(Throwable failure) {
+        int depth = 0;
+        for (Throwable cause = failure; cause != null && depth++ < 20; cause = cause.getCause() == cause ? null : cause.getCause()) {
+            if (cause instanceof SQLException sql && sql.getSQLState() != null) {
+                return sql.getSQLState();
             }
         }
-        return false;
+        return null;
     }
 
     private static String redoStepsHeaderValue(Object value) {
@@ -272,7 +286,7 @@ public class DefaultStepTracker implements StepTracker {
                                 + PlatformHeaders.MESSAGE_ID + ", so they share one step key. Give each part its own "
                                 + PlatformHeaders.MESSAGE_ID + " before the send, or publish each part with its own id. "
                                 + "See docs/split-step-identity.md",
-                        stepId, part(repeatedIn), exchange.getFromRouteId());
+                        LogText.escape(stepId), part(repeatedIn), exchange.getFromRouteId());
                 return;
             }
             // A replayed message otherwise looks delivered in the logs although nothing was sent.

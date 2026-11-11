@@ -1,5 +1,7 @@
 package no.basis.integrationplatform.camel.step;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
@@ -66,23 +68,25 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
 
     // Only the adapter's own replay carries a redo list: the replay service writes its audit
     // row before it publishes and marks it PUBLISHED after, so both states count. A FAILED row
-    // does not, nor does an attempt that already has an outcome: a redo runs once.
+    // does not, nor does an attempt that is completed or parked: a redo runs once. A FAILED
+    // attempt is read again, so it may still redo. The lists are compared here, not by the
+    // database, which never parses the record's own text.
     private static final String AUTHORISED_REPLAY_SQL = """
-            select exists (
-                       select 1
-                       from bip_message_replay_audit
-                       where message_id = ?
-                         and integration = ?
-                         and target_topic = ?
-                         and replay_attempt = ?
-                         and status in ('REQUESTED', 'PUBLISHED')
-                         and redo_steps = ?::jsonb)
-               and not exists (
-                       select 1
-                       from bip_message_attempt
-                       where message_id = ?
-                         and attempt = ?)
+            select a.redo_steps::text
+            from bip_message_replay_audit a
+            where a.message_id = ?
+              and a.integration = ?
+              and a.target_topic = ?
+              and a.replay_attempt = ?
+              and a.status in ('REQUESTED', 'PUBLISHED')
+              and not exists (
+                      select 1
+                      from bip_message_attempt m
+                      where m.message_id = a.message_id
+                        and m.attempt = a.replay_attempt
+                        and m.status <> 'FAILED')
             """;
+    private static final ObjectMapper JSON = new ObjectMapper();
 
     private final DataSource dataSource;
 
@@ -111,13 +115,16 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             statement.setString(2, claim.integration());
             statement.setString(3, claim.topic());
             statement.setInt(4, claim.attempt());
-            statement.setString(5, claim.redoStepsJson());
-            statement.setString(6, claim.messageId());
-            statement.setInt(7, claim.attempt());
+            JsonNode claimed = JSON.readTree(claim.redoStepsJson());
             try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next() && resultSet.getBoolean(1);
+                while (resultSet.next()) {
+                    if (claimed.equals(JSON.readTree(resultSet.getString(1)))) {
+                        return true;
+                    }
+                }
+                return false;
             }
-        } catch (SQLException e) {
+        } catch (SQLException | java.io.IOException e) {
             throw new StepOutcomeStoreException("Failed to check the replay audit for message "
                     + LogText.escape(claim.messageId()), e);
         }

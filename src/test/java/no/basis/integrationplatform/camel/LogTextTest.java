@@ -16,6 +16,9 @@ class LogTextTest {
         assertEquals("a\\u2028b\\u2029c", LogText.escape("a b c"));
         assertEquals("\\u202eabc\\u2066d\\u200f", LogText.escape("‮abc⁦d‏"));
         assertEquals("tab\\u0009", LogText.escape("tab\t"));
+        // Invisible characters that would let two different ids print alike.
+        assertEquals("a\\u200bb\\u2060c\\ufeffd\\u061ce", LogText.escape("a" + (char) 0x200b + "b" + (char) 0x2060
+                + "c" + (char) 0xfeff + "d" + (char) 0x061c + "e"));
     }
 
     @Test

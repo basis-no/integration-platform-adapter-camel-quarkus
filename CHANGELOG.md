@@ -14,18 +14,21 @@ No Message Store schema change.
   audit and no new attempt. Now the list is honoured only on a managed Kafka
   input, while replay is enabled, on a record marked `x-bip-replay: true` that
   matches a `REQUESTED` or `PUBLISHED` replay audit row for its message id,
-  integration, topic, attempt and redo list, as long as that attempt has no
-  recorded outcome. Any other record's list is dropped with a warning. See
+  integration, topic, attempt and redo list, as long as that attempt is not
+  completed or parked. Any other record's list is dropped with a warning. See
   [Redo behavior](README.md#redo-behavior).
   Upgrade: an operator's resend works as before. A tool that writes
   `x-bip-redo-steps` on records itself, not through the resend endpoint, no
   longer redoes anything. The Message Store login needs read access to
   `bip_message_replay_audit` and `bip_message_attempt` for redo; without it, a
   redo is ignored with a warning. A record with a redo list that names a
-  delivered step costs one more store read.
+  delivered step costs one more store read. An application's own
+  `StepOutcomeStore` must implement `isAuthorisedReplay`, or no redo is
+  honoured.
 - Message ids and the other values the adapter takes from a record
   are written to the log with control characters, line and paragraph
-  separators and bidirectional controls escaped as `\uXXXX` (and a backslash as
+  separators, bidirectional controls and invisible format characters escaped as
+  `\uXXXX` (and a backslash as
   `\\`), so a value with CR/LF can no longer forge or hide log lines. The same
   applies to the adapter's error texts that name a message id or step key.
 

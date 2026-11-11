@@ -128,6 +128,9 @@ class AuditedRedoEndToEndTest {
             produce("message-1", Map.of(PlatformHeaders.REPLAY, "true", PlatformHeaders.ATTEMPT, "3",
                     PlatformHeaders.REDO_STEPS, "[\"post-order\"]"));
             produce("message-1", Map.of(PlatformHeaders.ATTEMPT, "4", PlatformHeaders.REDO_STEPS, "[\"post-order\"]"));
+            // A list the database could not parse: dropped, and the partition goes on.
+            produce("message-1", Map.of(PlatformHeaders.REPLAY, "true", PlatformHeaders.ATTEMPT, "5",
+                    PlatformHeaders.REDO_STEPS, "[\"post-order\",\"a\\u0000\"]"));
             produce("sentinel", Map.of());
             awaitCompleted("sentinel", 1);
 
