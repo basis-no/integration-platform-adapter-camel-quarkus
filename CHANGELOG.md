@@ -6,25 +6,27 @@
   SHA-256 against its reference, before its route reads any of it: on a replay
   of a claim-checked input and on the first attempt after the adapter stored a
   streamed input. The adapter copies the object to a local file while checking
-  it, with memory bounded by one 64 KiB buffer, and hands the route a stream of
-  the checked copy; the copy is deleted when the exchange is done, and a copy
-  left by a crashed process is deleted at the next start. Before, the SHA-256
-  was checked only when the route read the stream to its end, so a route that
-  read part of a changed object used bytes that were never checked. A changed,
-  truncated, missing or expired object, an object store failure, and a spool
-  that is full or not writable now fail the input before its route runs: its
-  outcome is `FAILED`, nothing is parked and its Kafka offset is not committed.
-  Before, such a failure during capture or resolution was only logged by Camel
-  at WARN and the route ran anyway. New deployment settings:
+  it, holding one 64 KiB buffer whatever the object's size, and hands the route
+  a stream of the checked copy; the copy is deleted when the exchange is done,
+  and a copy left by a crashed process is deleted at the next start. Before, the
+  SHA-256 was checked only when the route read the stream to its end, so a route
+  that read part of a changed object used bytes that were never checked. A
+  changed, truncated, missing or expired object, an object store failure, and a
+  spool that is full or not writable now fail the input before its route runs:
+  its outcome is `FAILED`, nothing is parked and its Kafka offset is not
+  committed. Before, such a failure during capture or resolution was only logged
+  by Camel at WARN and the route ran anyway. New deployment settings:
   `basis.message-store.payload.spool-directory` (default
   `<java.io.tmpdir>/basis-payload-spool`) and
-  `basis.message-store.payload.spool-max-bytes` (default `10737418240`, at
-  least `object-max-bytes` in `tiered` mode). See
+  `basis.message-store.payload.spool-max-bytes` (default `10737418240`, at least
+  `object-max-bytes` in `tiered` mode). See
   [Object Metadata and Verification](docs/payload-storage.md#object-metadata-and-verification).
-  Upgrade: in `tiered` mode, give the spool directory room for
-  `spool-max-bytes` (a pod's ephemeral storage, or a mounted volume); startup
-  refuses a `spool-max-bytes` below `object-max-bytes`. A route now gets the
-  checked copy's stream instead of the object store's.
+  Upgrade: in `tiered` mode, give the spool directory room for `spool-max-bytes`
+  (a pod's ephemeral storage, or a mounted volume); startup refuses a
+  `spool-max-bytes` below `object-max-bytes`. A route now gets the checked
+  copy's stream instead of the object store's, and the stream is closed when the
+  boundary exchange is done: a route that hands it to work that reads it later,
+  such as a `wireTap` without stream caching, must read it first.
 - A Kafka boundary route that holds records in memory after its input
   completes refuses to start, naming the route and node: Camel's `resequence`
   (batch or stream), or an `aggregate` on Camel's in-memory repository (the

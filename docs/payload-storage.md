@@ -54,18 +54,24 @@ the bucket, prefix, expiry and the object's size.
 
 An input in object storage is checked in full before its route reads any of it,
 on a replay of a claim-checked input and on the first attempt after the adapter
-stored a streamed input. The adapter copies the object to a local file in
-a subdirectory named after the host in
+stored a streamed input. The adapter copies the object to a local file in a
+subdirectory named after the host in
 `basis.message-store.payload.spool-directory` (the JVM's temporary directory by
-default), so that replicas that share a volume never touch each other's
-copies, while it checks the object's size and SHA-256 against the reference,
-and only then gives the route a stream of that checked copy. Memory stays
-bounded by a 64 KiB copy buffer, whatever the object's size. The copy is
-deleted when the exchange is done, and at once when the check fails; on Linux
-its directory entry is removed as soon as the copy is created, so no other
-process can open it, and the space is freed when the exchange is done. A copy left by a process that stopped
-without cleaning up, such as after a crash, is deleted when the application
-starts again.
+default), so that replicas that share a volume never touch each other's copies,
+while it checks the object's size and SHA-256 against the reference, and only
+then gives the route a stream of that checked copy. The check holds one 64 KiB
+buffer in memory, whatever the object's size. That bound is the check's, not the
+route's: Camel's stream caching, on by default, reads the whole stream into its
+cache at the route's first node, in memory unless its spooling to disk is turned
+on (`camel.main.stream-caching-spool-enabled`). For large objects, turn that on
+or read the stream without stream caching. The copy is closed and deleted when
+the boundary exchange is done, so with stream caching off a route must read the
+stream itself before it hands the exchange to work that reads it later, such as
+a `wireTap` or a `seda:` queue. The copy is also deleted at once when the check
+fails; on Linux its directory entry is removed as soon as the copy is created,
+so no other process can open it, and the space is freed when the exchange is
+done. A copy left by a process that stopped without cleaning up, such as after a
+crash, is deleted when the application starts again.
 
 Where the file system supports POSIX permissions, the adapter creates the
 subdirectory owner-only (`rwx------`) and each copy owner-only (`rw-------`);
@@ -89,7 +95,9 @@ failure while it is read, a spool directory that is full or not writable, and
 checked copies that already fill `spool-max-bytes`, all fail the input before
 its route runs: no processor sees the payload, nothing is parked, its outcome is
 recorded `FAILED` and a consumed Kafka offset is not committed, so the record is
-read again. The `FAILED` outcome keeps the message's claim check.
+read again. The `FAILED` outcome keeps the message's claim check; on an HTTP
+audit-only boundary the row stays metadata-only and not replayable, as it does
+when the check passes.
 
 A changed, truncated, missing or expired object does not heal by itself, so its
 record is read again, with a growing wait, until the object is restored, and

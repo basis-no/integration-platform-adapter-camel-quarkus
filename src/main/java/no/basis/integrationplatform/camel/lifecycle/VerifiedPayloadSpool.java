@@ -178,6 +178,7 @@ class VerifiedPayloadSpool {
         reserve(reference, size);
         Path file = null;
         FileChannel channel = null;
+        boolean checked = false;
         try {
             createDirectory();
             file = directory.resolve(PREFIX + owner + "-" + UUID.randomUUID() + SUFFIX);
@@ -187,18 +188,22 @@ class VerifiedPayloadSpool {
             channel = open(file);
             copyAndCheck(reference, object, channel);
             channel.position(0);
-            return new CheckedCopy(new BufferedInputStream(Channels.newInputStream(channel), BUFFER_BYTES), file, size);
+            InputStream copy = new CheckedCopy(
+                    new BufferedInputStream(Channels.newInputStream(channel), BUFFER_BYTES), file, size);
+            checked = true;
+            return copy;
         } catch (PayloadStorageException e) {
-            closeQuietly(channel);
-            release(size);
-            deleteQuietly(file);
             throw e;
         } catch (IOException | RuntimeException e) {
-            closeQuietly(channel);
-            release(size);
-            deleteQuietly(file);
             throw new PayloadStorageException("Object payload " + reference.ref()
                     + " could not be copied for checking to " + directory + ": " + e.getClass().getSimpleName(), e);
+        } finally {
+            // Also after an Error: the copy and its room go unless the stream was handed out.
+            if (!checked) {
+                closeQuietly(channel);
+                release(size);
+                deleteQuietly(file);
+            }
         }
     }
 

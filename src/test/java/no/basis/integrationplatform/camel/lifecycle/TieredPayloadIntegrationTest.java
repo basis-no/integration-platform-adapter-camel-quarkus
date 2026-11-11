@@ -2,6 +2,7 @@ package no.basis.integrationplatform.camel.lifecycle;
 
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.TestJdbc;
+import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
 import no.basis.integrationplatform.camel.payload.PayloadStorageException;
 import no.basis.integrationplatform.camel.payload.S3PayloadObjectStore;
@@ -19,6 +20,7 @@ import org.apache.kafka.common.serialization.StringDeserializer;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 import org.postgresql.ds.PGSimpleDataSource;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.wait.strategy.Wait;
@@ -42,6 +44,8 @@ import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Proxy;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.sql.Connection;
 import java.sql.ResultSet;
 import java.sql.Statement;
@@ -271,6 +275,7 @@ class TieredPayloadIntegrationTest {
         s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key(key).build(), RequestBody.fromBytes(changed));
 
         var reads = new java.util.concurrent.atomic.AtomicInteger();
+        var parked = new java.util.concurrent.atomic.AtomicInteger();
         var outcomes = new java.util.concurrent.CopyOnWriteArrayList<String>();
         var rows = new java.util.concurrent.CopyOnWriteArrayList<no.basis.integrationplatform.camel.model.MessageAttemptResult>();
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
@@ -287,6 +292,9 @@ class TieredPayloadIntegrationTest {
             context.addRoutes(new RouteBuilder() {
                 @Override
                 public void configure() {
+                    // A dead letter channel would park the exchange if the policy only failed it.
+                    errorHandler(deadLetterChannel("direct:parked"));
+                    from("direct:parked").process(e -> parked.incrementAndGet());
                     from("direct:replayed").routeId("large-payload-validation").routePolicy(policy)
                             .process(e -> {
                                 // Reading even the first byte would be a failure of the check.
@@ -306,6 +314,7 @@ class TieredPayloadIntegrationTest {
             });
 
             assertEquals(0, reads.get(), "the route must not see a byte of an object that does not match");
+            assertEquals(0, parked.get(), "nothing is parked");
             assertTrue(replayed.isFailed());
             assertTrue(replayed.getException().getMessage().contains("does not match its reference's SHA-256"),
                     replayed.getException().getMessage());
@@ -323,6 +332,82 @@ class TieredPayloadIntegrationTest {
         policy.onExchangeBegin(route(), intact);
         assertArrayEquals(original, intact.getMessage().getBody(InputStream.class).readAllBytes());
         policy.onExchangeDone(route(), intact);
+    }
+
+    @Test
+    void aStreamedInputThatReadsBackChangedIsRefusedBeforeTheRouteReadsAnyOfIt(@TempDir Path spoolDirectory)
+            throws Exception {
+        byte[] payload = new byte[4096];
+        for (int index = 0; index < payload.length; index++) {
+            payload[index] = (byte) (index % 197);
+        }
+        // The object changes after the adapter stored it, before it is read back for the route.
+        PayloadObjectStore changedAfterUpload = new PayloadObjectStore() {
+            @Override
+            public PayloadReference store(String integration, String messageId, InputStream input,
+                                          Long declaredSize, String contentType, Instant expiresAt, long maxBytes) {
+                PayloadReference stored = objectStore.store(
+                        integration, messageId, input, declaredSize, contentType, expiresAt, maxBytes);
+                byte[] changed = payload.clone();
+                changed[payload.length - 1] ^= 1;
+                s3.putObject(PutObjectRequest.builder().bucket(BUCKET)
+                        .key(stored.ref().substring(("s3://" + BUCKET + "/").length())).build(),
+                        RequestBody.fromBytes(changed));
+                return stored;
+            }
+
+            @Override
+            public InputStream open(PayloadReference reference) {
+                return objectStore.open(reference);
+            }
+
+            @Override
+            public void verify(PayloadReference reference) {
+                objectStore.verify(reference);
+            }
+        };
+        var reads = new java.util.concurrent.atomic.AtomicInteger();
+        var parked = new java.util.concurrent.atomic.AtomicInteger();
+        var outcomes = new java.util.concurrent.CopyOnWriteArrayList<String>();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                row -> outcomes.add(row.status().name()),
+                "large-payload-validation",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1024, 32L * 1024 * 1024, Duration.ofDays(30), true),
+                MessageBoundaryKind.KAFKA,
+                true,
+                changedAfterUpload);
+        VerifiedPayloadSpool spool = new VerifiedPayloadSpool(spoolDirectory, 1024 * 1024);
+        policy.setPayloadSpool(spool);
+        try (DefaultCamelContext context = new DefaultCamelContext()) {
+            context.addRoutes(new RouteBuilder() {
+                @Override
+                public void configure() {
+                    errorHandler(deadLetterChannel("direct:parked"));
+                    from("direct:parked").process(e -> parked.incrementAndGet());
+                    from("direct:streamed").routeId("large-payload-validation").routePolicy(policy)
+                            .process(e -> {
+                                reads.incrementAndGet();
+                                e.getMessage().getBody(InputStream.class).read();
+                            });
+                }
+            });
+            context.start();
+            Exchange streamed = context.createProducerTemplate().send("direct:streamed", e -> {
+                e.getMessage().setBody(new ByteArrayInputStream(payload));
+                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "changed-after-upload");
+            });
+
+            assertEquals(0, reads.get(), "the route must not see a byte of an object that does not match");
+            assertEquals(0, parked.get(), "nothing is parked");
+            assertTrue(streamed.isFailed());
+            assertTrue(streamed.getException().getMessage().contains("does not match its reference's SHA-256"),
+                    streamed.getException().getMessage());
+            assertEquals(java.util.List.of("FAILED"), outcomes);
+            assertEquals(0, spool.reservedBytes());
+            try (var left = Files.walk(spoolDirectory)) {
+                assertEquals(0, left.filter(Files::isRegularFile).count(), "no copy is left");
+            }
+        }
     }
 
     private static MessageStoreRoutePolicy policy(PostgresMessageStoreSink sink, String integrationName) {

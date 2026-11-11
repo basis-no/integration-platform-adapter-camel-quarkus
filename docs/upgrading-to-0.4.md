@@ -241,8 +241,12 @@ it; see [Object-stored inputs are checked in full first](#object-stored-inputs-a
 An input whose payload is in object storage is copied to a local file and
 checked in full against its reference before its route reads any of it, on a
 replay or resend of a claim check and on the first attempt after the adapter
-stored a streamed input. The route then reads the checked copy. Two new
-deployment settings:
+stored a streamed input. The route then reads the checked copy, which is
+closed when the boundary exchange is done: a route that hands the stream to
+work that reads it later, such as a `wireTap` without stream caching, must read
+it first. The check holds one 64 KiB buffer in memory; Camel's stream caching,
+on by default, still reads the whole stream into memory at the route's first
+node unless its spooling to disk is turned on. Two new deployment settings:
 
 - `basis.message-store.payload.spool-directory`, by default
   `<java.io.tmpdir>/basis-payload-spool` (a per-host subdirectory is used

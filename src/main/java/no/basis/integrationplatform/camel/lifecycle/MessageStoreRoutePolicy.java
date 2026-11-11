@@ -186,8 +186,9 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
      * without a commit, so the record is read again.
      */
     private void failBeforeTheRoute(Exchange exchange, PayloadStorageException failure) {
-        LOG.error("Message {} did not reach its route: {}{}",
-                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure.getMessage(), rootCause(failure));
+        // One line: the message id and a reference's ref come from the producer.
+        LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
+                + " did not reach its route: " + failure.getMessage() + rootCause(failure)));
         closeCheckedCopy(exchange);
         exchange.getMessage().setBody(null);
         exchange.setException(failure);
@@ -199,11 +200,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
      * told apart. Its message is shown only for a failure while the object was copied or opened:
      * an I/O or file system error, or the object store client's own error. Any other cause, such
      * as a parser's or an application's, may quote payload content, so only its class is shown.
-     * The text is one line.
+     * The text is one line. This covers the adapter's own log line only: the failure stays the
+     * exchange's exception, with its causes, for Camel and the sink to report.
      */
     static String rootCause(Throwable failure) {
         Throwable root = failure;
-        while (root.getCause() != null && root.getCause() != root) {
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        while (root.getCause() != null && seen.add(root)) {
             root = root.getCause();
         }
         if (root == failure) {
@@ -212,8 +215,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         String message = root.getMessage();
         boolean safe = message != null && !root.getClass().getName().startsWith("com.fasterxml.")
                 && (root instanceof java.io.IOException || isObjectStoreClientError(root));
-        String text = " (cause: " + root.getClass().getName() + (safe ? ": " + message : "") + ")";
-        return text.replaceAll("[\\r\\n\\t]+", " ");
+        return oneLine(" (cause: " + root.getClass().getName() + (safe ? ": " + message : "") + ")");
+    }
+
+    /** The text with every control character and line separator replaced, so that it is one log line. */
+    static String oneLine(String text) {
+        return text.replaceAll("[\\p{Cc}\\u2028\\u2029]+", " ");
     }
 
     private static boolean isObjectStoreClientError(Throwable failure) {
@@ -521,11 +528,15 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void capturePayloadMetadata(Exchange exchange) {
         Object body = exchange.getMessage().getBody();
         if (isPayloadReference(exchange)) {
-            resolvePayloadReference(exchange, body);
-            if (boundaryKind == MessageBoundaryKind.HTTP) {
-                // The route still reads the referenced object, but the row keeps no reference:
-                // nothing could replay it, and the object belongs to the caller.
-                metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+            try {
+                resolvePayloadReference(exchange, body);
+            } finally {
+                if (boundaryKind == MessageBoundaryKind.HTTP) {
+                    // The route still reads the referenced object, but the row keeps no reference,
+                    // also when the object fails its check: nothing could replay it, and the
+                    // object belongs to the caller.
+                    metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+                }
             }
             return;
         }
