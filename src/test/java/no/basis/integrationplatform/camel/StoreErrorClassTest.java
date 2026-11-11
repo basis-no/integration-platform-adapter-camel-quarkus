@@ -25,6 +25,16 @@ class StoreErrorClassTest {
     }
 
     @Test
+    void aCommitReportedWithAWarningIsUnavailableWhateverTheWarningsSqlState() {
+        // A trigger could raise a warning with a data SQLSTATE; the record is still read again.
+        var failure = org.junit.jupiter.api.Assertions.assertThrows(SQLException.class,
+                () -> MessageStoreTimeouts.requireConfirmedCommit(
+                        new java.sql.SQLWarning("raised by a deferred trigger", "22023")));
+        assertEquals("08007", failure.getSQLState());
+        assertEquals(StoreErrorClass.UNAVAILABLE, StoreErrorClass.of(new RuntimeException(failure)));
+    }
+
+    @Test
     void theOutermostSqlStateWins() {
         var inner = new SQLException("index row too large", "54000");
         var outer = new SQLException("cannot execute INSERT in a read-only transaction", "25006", inner);

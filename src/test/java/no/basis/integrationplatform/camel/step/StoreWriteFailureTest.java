@@ -97,6 +97,38 @@ class StoreWriteFailureTest {
     }
 
     @Test
+    void aWriteThatTimesOutOnAHeldLockIsMarkedAndNotSentAgain() throws Exception {
+        start(new PostgresStepOutcomeStore(app, no.basis.integrationplatform.camel.MessageStoreTimeouts.of(
+                java.time.Duration.ofSeconds(2), java.time.Duration.ofMillis(300))));
+        try (Connection holder = owner.getConnection()) {
+            holder.setAutoCommit(false);
+            try (Statement statement = holder.createStatement()) {
+                // An uncommitted row with the same step key: the DELIVERED upsert waits on it.
+                statement.execute("insert into bip_step_outcome (idempotency_key, message_id, step_id, status, "
+                        + "occurred_at, updated_at) values ('message-1:post-order', 'message-1', 'post-order', "
+                        + "'FAILED', now(), now())");
+            }
+            try (var logs = no.basis.integrationplatform.camel.LogCapture.of(
+                    no.basis.integrationplatform.camel.lifecycle.MessageStoreRoutePolicy.class)) {
+                read("message-1");
+
+                assertEquals(1, receiver.received().size());
+                assertEquals(0, commits.get());
+                assertTrue(logs.at(java.util.logging.Level.SEVERE).stream()
+                        .map(no.basis.integrationplatform.camel.LogCapture::text)
+                        .anyMatch(line -> line.contains("storeError=unavailable sqlState=55P03")));
+            }
+            holder.rollback();
+        }
+
+        read("message-1");
+
+        assertEquals(1, receiver.received().size(), "The outcome is written from the mark, not sent again");
+        assertEquals(1, commits.get());
+        assertEquals("DELIVERED", value("select status from bip_step_outcome where idempotency_key = 'message-1:post-order'"));
+    }
+
+    @Test
     void aLostWriteGrantSendsOnce() throws Exception {
         start(new PostgresStepOutcomeStore(app));
         execute("revoke insert, update on bip_step_outcome from " + APP);

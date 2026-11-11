@@ -455,8 +455,8 @@ What to do:
   `storeError=read-only` or `storeError=privilege`. Scale them back up once
   writes work again. Receivers should deduplicate by `Idempotency-Key`; this helps
   only for records that carry `x-bip-message-id`.
-- From 0.3.7 each Message Store statement on the consumer thread is bounded
-  by `basis.message-store.statement-timeout` (10 s) and
+- From 0.3.7 each statement of the Postgres sink and the Postgres step outcome
+  store is bounded by `basis.message-store.statement-timeout` (10 s) and
   `basis.message-store.lock-timeout` (5 s), and a call by a network timeout, so
   a held lock or a database that stopped answering fails the call instead of
   holding the consumer thread past `max.poll.interval.ms`; see
@@ -627,7 +627,10 @@ not made again only because its outcome was lost:
 1. On the thread that processes the record, and outside an application
    transaction, the adapter writes the same outcome again in place, up to 3
    more times after 0.5, 1 and 2 seconds, starting no try more than 10 seconds
-   after the first failure. A write that succeeds lets the attempt go on.
+   after the first failure. Each try is bounded by the
+   [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts),
+   so when the store stops answering the write takes about 40 seconds in all
+   at the defaults. A write that succeeds lets the attempt go on.
 2. If it still fails, the adapter keeps a mark in memory for the input route,
    the record's topic, partition and offset, and the step key. The attempt
    fails, and the record is not committed and is read again with the growing
