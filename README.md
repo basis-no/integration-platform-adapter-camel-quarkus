@@ -146,7 +146,7 @@ eight requests before the message is parked. Set
 `camel.component.http.automatic-retries-disabled=true` to leave every retry to
 the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
 and for routes on the `ip-slow-backend` configuration, whose own redeliveries
-already use much of the poll interval.
+already use about a third of the poll interval.
 
 - `COMPLETED`: route processing finished and the outcome was safely recorded.
 - `DLQ`: retries were exhausted and the message was parked for operator action.
@@ -217,9 +217,30 @@ within-attempt event-ordering guarantee.
 The global route configuration applies to all routes unless a route opts into a
 named variant:
 
-- default: 3 redeliveries, 1 second initial delay, exponential backoff.
-- `ip-slow-backend`: 6 redeliveries, 5 second initial delay, exponential backoff.
+- default: 3 redeliveries after 1, 2 and 4 seconds, 7 seconds of waiting in
+  all.
+- `ip-slow-backend`: 6 redeliveries after 5, 10, 20, 20, 20 and 20 seconds, 95
+  seconds in all. From 0.3.7 each delay is capped at 20 seconds; before, the
+  delays doubled up to Camel's default cap of 60 seconds and waited 195
+  seconds.
 - `ip-no-retry`: no redelivery before DLQ.
+
+On a Kafka input the waits run on the consumer thread, between attempts that
+take their own time. `max.poll.interval.ms` (300 seconds by default) bounds the
+time between two polls, and the consumer processes every record of a poll
+before it polls again (up to 500 records, Camel's default `maxPollRecords`), so
+the budget covers all records of one poll, not one record. If they take longer,
+Kafka removes the consumer from its group and the uncommitted records are
+delivered again, so a record can run, and be parked, more than once. With
+`ip-slow-backend`, one record that exhausts its retries waits 95 seconds, so
+three such records in one poll already take most of the interval. For a route
+on `ip-slow-backend`, set `maxPollRecords=1` on the Kafka input, or raise
+`maxPollIntervalMs` on it to cover the records of a poll. With one record per
+poll, about 200 seconds remain for its seven attempts: bound each receiver call
+well inside that with `responseTimeout` and `connectTimeout` (see the timeout
+table below for the forms Camel applies), and turn the HTTP client's own retry
+off with `camel.component.http.automatic-retries-disabled=true`, since it can
+double the requests in each attempt.
 
 All variants use `basis.message-store.dlq-uri`, defaulting to
 `kafka:bip.message.dlq`. When the dead letter channel parks a message, the
@@ -250,39 +271,43 @@ once and records `DLQ`. Per-part identity is not part of 0.3.x; 0.4 adds it. See
 [split step identity advisory](docs/split-step-identity.md) for the exact
 conditions under which a part is not sent, and the safe configuration.
 
-Known sub-route limitation in 0.3.x, found after the 0.3.6 release
-([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)):
-a tracked send in a route that another send calls, such as a `direct:`
-sub-route, is recorded twice. The calling send records the sub-route's step
-again when it completes, so a successful call is listed twice as `DELIVERED`.
-When the sub-route's dead letter channel parks the message after the send
-failed, the calling send sees no failure and records the step `DELIVERED` with
-no error. A resend or replay then skips the send, and the receiver never gets
-the message. To recover such a message, either:
+Sends in a sub-route: from 0.3.7, a tracked send in a route that another send
+calls, such as a `direct:` sub-route, records its outcome once per try, like a
+send in the input route. The calling `to("direct:…")` is internal and records
+nothing. When the sub-route's dead letter channel parks the message after the
+send failed, the step stays `FAILED`, so a later read of the record, a resend
+or a replay sends it again. The same holds when the sub-route has no error
+handler of its own and the input route's handler retries the call.
 
-- resend it with the step in `redoSteps`, together with any step whose output
-  it uses (see [Redo behavior](#redo-behavior)); redo repeats the call with the
-  same `Idempotency-Key`; or
-- check at the receiver whether it got the message.
+A later read can still follow a parked message. A commit fails after the DLQ
+publish when a receiver that accepts the connection and never answers kept the
+route busy for longer than the consumer's `max.poll.interval.ms` (5 minutes by
+default; with the `http` component's default timeouts, four tries take about
+12 minutes). The record is then read again, its route runs again and parks one
+more copy, for as long as the receiver hangs. When the receiver answers again,
+that read delivers the message and records it `COMPLETED`; the copies already
+parked stay on the DLQ topic, and a resend of one skips the delivered step. Keep
+a receiver call's timeouts times its tries well under the poll interval, as
+described below for the processing time budget and the `http` component's
+timeout options.
 
-The same loss also happens without a resend. With the `postgres` step store,
-any later read of a parked record that carries `x-bip-message-id` skips the
-send and, when the rest of the route succeeds, records the message
-`COMPLETED`, although the receiver never got it. A record without that header
-gets a new message id on every read, so its send is tried again. Such a read
-comes from:
+Adapter 0.3.5 and 0.3.6 also recorded the sub-route's step when the calling
+send completed
+([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)).
+A successful call was listed twice as `DELIVERED`. When the sub-route's dead
+letter channel parked the message after the send failed, the calling send saw
+no failure and recorded the step `DELIVERED` with no error. A resend or replay
+then skipped the send, and the receiver never got the message. With the
+`postgres` step store, any later read of a parked record that carries
+`x-bip-message-id` skipped it too and, when the rest of the route succeeded,
+recorded the message `COMPLETED`. Such a read came from:
 
-- a commit that fails after the DLQ publish, for example because a receiver
-  that accepts the connection and never answers kept the route busy for longer
-  than the consumer's `max.poll.interval.ms` (5 minutes by default; with the
-  `http` component's default timeouts, four tries take about 12 minutes);
-- a rebalance that takes the partition away before the commit;
+- a commit that failed after the DLQ publish, as above;
+- a rebalance that took the partition away before the commit;
 - a crash between the DLQ publish and the commit.
 
-The Message Store then shows `COMPLETED`, so there is no parked message to
-resend.
-
-To find the messages this happened to:
+A message that 0.3.5 or 0.3.6 recorded this way keeps its `DELIVERED` step
+after the upgrade, so it is still skipped. To find these messages:
 
 1. Read the `x-bip-message-id` header of the records on the DLQ topic
    (`bip.message.dlq` unless `basis.message-store.dlq-uri` names another), as
@@ -307,11 +332,15 @@ To find the messages this happened to:
 3. For each of them, read its attempts in `bip_message_attempt` (see
    [Read Model](#read-model)). A sub-route step listed as `SKIPPED` in
    `steps_json` points to this case. Check at the receiver whether it got the
-   message, and if not, resend it with that step in `redoSteps`, as above.
+   message.
+4. Resend a message the receiver did not get with the step in `redoSteps`,
+   together with any step whose output it uses (see
+   [Redo behavior](#redo-behavior)). Redo repeats the call with the same
+   `Idempotency-Key`.
 
-The 0.4.0 development line, not yet released, records the send once per try.
-A message that 0.3.x parked keeps its `DELIVERED` step after the upgrade, so
-its resend needs the redo too.
+Every message that 0.3.5 or 0.3.6 parked after a failed send in a sub-route
+has that step recorded `DELIVERED`, also when it is still in the DLQ: resend it
+with the step in `redoSteps`.
 
 Known Message Store outage limitation in 0.3.x
 ([#84](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/84),
@@ -478,7 +507,10 @@ no 0.3.x fix. Remove that one header before an HTTP send:
 
 The consumer's other `kafka.*` headers, such as the record key, topic,
 partition, offset and timestamp, still reach the receiver, but they hold no
-other header's value. Do not remove them all with `removeHeaders("kafka.*")`:
+other header's value. To remove every header but the adapter's, see
+[Removing headers before a tracked send](#removing-headers-before-a-tracked-send):
+`removeHeaders("*")` alone also removes `x-bip-message-id`, and with it the
+send's stable step key. Do not remove the `kafka.*` headers with `removeHeaders("kafka.*")`:
 that also removes `kafka.KEY`, which Camel's Kafka producer uses as the key of
 the record that the adapter parks in the DLQ, so a parked record loses its
 key. Alternatively, upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
@@ -839,6 +871,67 @@ rewritten, unless the same step is recorded again; review their access and
 retention separately. A query or tool that matched a stored endpoint's user
 name or one of these parameter values no longer finds it in rows recorded from
 0.3.7.
+
+### Removing headers before a tracked send
+
+A tracked send in a Kafka input route builds its step key
+`<x-bip-message-id>:<step-id>` and its `Idempotency-Key` from the exchange's
+`x-bip-message-id` header at the moment it sends. A route that removes every
+header first, for example
+`removeHeaders("*").to("https://receiver.example/orders").id("send-order")`,
+also removes that header. The send then generates a new random id and logs a
+warning (`Message missing x-bip-message-id; generated <id>`)
+([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)):
+
+- The step key and the `Idempotency-Key` change on every delivery. A
+  redelivery, a read again, a resend or a replay sends again under another key,
+  so the step store never skips the send, and even a receiver that
+  deduplicates by `Idempotency-Key` applies it twice.
+- A message whose send completes is journaled under the random id, so the
+  consumed message cannot be found or resent by its own id. The fallback to
+  the consumed input's id that 0.3.6 added applies only when no tracked send
+  follows the removal: the send sets the generated id as the header, and that
+  value is journaled. A message that fails and is parked is still parked and
+  journaled under the consumed input's id.
+
+Keep the adapter's headers when you remove the others:
+
+```java
+.removeHeaders("*", "x-bip-.*")
+.to("https://receiver.example/orders").id("send-order")
+```
+
+`x-bip-message-id` is the header a tracked send needs. The other `x-bip-*`
+headers are the message's envelope; the adapter reads them when the input
+arrives and journals the values it read then, but keeping the whole prefix is
+the simplest rule. The adapter sets `x-bip-idempotency-key` and
+`Idempotency-Key` itself at each tracked send, and reads a replay's
+`x-bip-redo-steps` when the input arrives, so removing those does not change
+the send.
+
+Removing every header also removes Camel's Kafka record key header:
+`kafka.KEY` on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0, such as
+4.18.0, and `CamelKafkaKey` from those versions, which rename the `kafka.*`
+headers. Camel's Kafka producer uses it as the key of a record the adapter
+parks in the DLQ, so keep it too if a parked record should keep its key:
+
+```java
+.removeHeaders("*", "x-bip-.*", "kafka.KEY", "CamelKafkaKey")
+```
+
+Both forms still remove the record's credential headers, such as
+`Authorization`, and `kafka.HEADERS` (see [Retry and DLQ](#retry-and-dlq)). A
+record parked after the removal carries only the headers that were kept, so
+also keep any application header a parked record must carry.
+
+Inside a `split`, do not rely on removed headers to give each part its own
+step key: the generated ids change on every delivery, so every part is sent
+again on each redelivery and resend. Use one of the safe forms in
+[Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
+
+Keeping the consumed record's id when a route removes it is tracked in
+[#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143);
+0.3.7 does not change the send.
 
 ### Splitting before a tracked send in 0.3.x
 
