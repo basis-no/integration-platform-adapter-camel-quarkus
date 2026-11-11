@@ -342,15 +342,35 @@ Every message that 0.3.5 or 0.3.6 parked after a failed send in a sub-route
 has that step recorded `DELIVERED`, also when it is still in the DLQ: resend it
 with the step in `redoSteps`.
 
-Known Message Store outage limitation in 0.3.x
+Message Store outages in 0.3.x
 ([#84](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/84),
 [#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66)):
 while the Message Store cannot be written, a Kafka record's outcome cannot be
-recorded, so its offset is not committed and the consumer reads the record again
-at once, without waiting, for as long as the outage lasts. Every read runs the
-route with its redeliveries (by default 3, after 1, 2 and 4 seconds) and logs
-the failure at ERROR with its stack trace, so the log grows quickly. The
-partition waits; no record is committed early.
+recorded, so its offset is not committed and the consumer reads the record
+again, for as long as the outage lasts. Every read runs the route with its
+redeliveries (by default 3, after 1, 2 and 4 seconds) and logs the failure at
+ERROR with its stack trace. The partition waits; no record is committed early.
+
+From 0.3.7 the record is read again with a growing wait. This applies to every
+record whose outcome could not be made durable, because the outcome write, a
+step outcome check or write, or the DLQ publish failed. The first time, it is
+read again at once. If the same record comes back with its outcome still not
+durable, the adapter waits before handing it back: 1 second, doubling on each
+further read, at most 30 seconds. The wait is also kept to half the consumer's
+effective `max.poll.interval.ms` (an `additionalProperties` value overrides the
+named option) less the time since the records of the poll that returned it
+began to be processed, including the records before it, so that the consumer
+polls again within its interval. This relies on `break-on-first-error=true`,
+the adapter's default, under which a record that is read again ends its poll;
+without it there is no wait. A committed outcome on the partition, or a later
+record, starts again at once. The consumer waits for it, also when the route
+completes on another thread, so the consumer's other partitions wait too, as
+they do after any record that is read again. The wait ends early when the
+application stops. A record whose topic, partition and offset the adapter did
+not see at the start, or one without the adapter's manual commit, is read again
+at once. Up to 0.3.6 every record was read
+again at once, about twice a second, for as long as the failure lasted, and
+each read ran the route again, so the log grew quickly.
 
 - With `basis.message-store.step-outcome-store=postgres`, a tracked send
   checks the store before it runs. While the store cannot be read, that check
@@ -368,7 +388,9 @@ partition waits; no record is committed early.
   - the next read sends again. The route's redeliveries can also repeat the
     send within one read.
 
-  One message can be sent dozens of times a minute. Readiness stays `UP`. The
+  From 0.3.7 the reads are spaced out as described above, with waits of up to
+  30 seconds between reads, but each read still sends; up to 0.3.6 one message
+  could be sent dozens of times a minute. Readiness stays `UP`. The
   ERROR log says that the message was not parked because a step outcome was
   not checked or recorded, with the database's error. For a record that
   carries `x-bip-message-id`, every repeat has the same `Idempotency-Key`, so
@@ -384,8 +406,9 @@ partition waits; no record is committed early.
   is parked in the DLQ on each read, before its outcome write fails again, so
   the DLQ can hold several copies of it. Copies of a record that carries
   `x-bip-message-id` have that id; a record without it gets a new id on every
-  read, so its copies have different ids. After the store is back, its last
-  read may complete or park it once more.
+  read, so its copies have different ids. From 0.3.7 the copies come at most at
+  the pace of the growing wait above. After the store is back, its last read
+  may complete or park it once more.
 
 What to do:
 
