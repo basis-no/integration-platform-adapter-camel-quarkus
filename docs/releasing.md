@@ -14,8 +14,9 @@ Final releases take one of two paths with the same tools:
   environments `release` and `release-publish`. See
   [protected-tag release](release-packaging.md#protected-tag-release-in-ci).
 - **Offline signing** (while the repository is private or the environments are
-  not configured): the release manager signs and uploads on a trusted release
-  workstation; the key and Central token never exist in GitHub. See
+  not configured): the release manager signs with the offline signer and
+  uploads on a trusted release workstation; the primary key and the release
+  manager's Central token never exist in GitHub. See
   [offline release signing](release-packaging.md#offline-release-signing) and the
   [release-manager runbook](release-packaging.md#release-manager-runbook).
 
@@ -27,7 +28,7 @@ never rebuilt or replaced.
 ## Acceptance with locally built artifacts
 
 1. Keep the POM on the next intended version, for example `0.4.0-SNAPSHOT`.
-2. Finish local unit, Testcontainers, documentation, and contract checks.
+2. Finish local unit, Testcontainers, documentation, and schema compatibility checks.
 3. Install the adapter into the local Maven repository of the machine that
    builds the validation integration:
 
@@ -117,7 +118,9 @@ A failed or timed-out portal step is never re-run and never repeated by pushing
 another tag: a re-run refuses. Recover on the release workstation after checking
 the deployment in the Central portal, from the retained state when it matches the
 portal, otherwise by reconciling in the portal; see
-[release packaging](release-packaging.md#protected-tag-release-in-ci).
+[release packaging](release-packaging.md#protected-tag-release-in-ci). Any
+re-run, also of a failed `build`, disables signing and publication for that
+run; finish such a release offline from the existing tag.
 
 ## Final release offline
 
@@ -126,43 +129,50 @@ Follow the [release-manager runbook](release-packaging.md#release-manager-runboo
 1. Dispatch unsigned inspection of the exact approved source commit and
    explicitly selected version, then download its
    `unsigned-central-candidate-X.Y.Z` artifact with `gh run download`. The
-   inspection workflow runs only from `main`. For a maintenance release, pass
-   the `release/0.3` commit as `source_commit`; the tools treat it as data.
+   inspection workflow and the trusted tools come from `main`. For a 0.3.x
+   release they come from `release/0.3` (`--ref release/0.3`) until `main`
+   carries the same tools; the source commit is treated as data.
 2. Verify the artifact offline with `sign-candidate.py verify` and review its
    provenance, effective POM and release notes.
 3. Sign and bundle it on the release workstation with `sign-candidate.py sign`,
    then review `signing.json`, including the bundle hash, entries digest and
    trusted checkout commit.
-4. After immutable-release approval, create the final tag on the source commit:
+4. Upload the same bundle with `central-recovery.py --allow-upload`, review the
+   `VALIDATED` deployment in the Central portal, then publish it with
+   `--publish`.
+5. Read back the public bytes locally, then create the final tag on the source
+   commit:
 
    ```sh
    git tag -s v0.4.0 <source-commit> -m "Release 0.4.0"
    git push origin v0.4.0
    ```
 
-5. Upload the same bundle with `central-recovery.py --allow-upload`, review the
-   `VALIDATED` deployment in the Central portal, then publish it with
-   `--publish`. Revoke the per-release Central token afterward.
-6. Read back the public bytes locally, then run `release-page.yml` with the
-   tag, candidate run, signer and `entries_sha256` to repeat the readback and
-   create the GitHub Release.
+   Pushing the tag also starts `release.yml`. Its `sign-upload` job waits for
+   approval in `release`: reject that deployment, since this release is already
+   published.
+
+6. Run `release-page.yml` from the same tool branch with the tag, candidate
+   run, signer and `entries_sha256` to repeat the readback and create the GitHub
+   Release.
 
 Resume by the saved deployment state; never rebuild, re-sign or start a second
 upload to repair a failed publication stage. The tools reject release-candidate,
-milestone, snapshot and malformed versions. Afterward, update integration
-templates and contract certification pins to the final version. A later defect
-is fixed in a new patch release such as `0.4.1`; published Central artifacts are
-never replaced.
+milestone, snapshot and malformed versions. Afterward, integrations can pin the
+final version. A later defect is fixed in a new patch release such as `0.4.1`;
+published Central artifacts are never replaced.
 
 ## Release checklist
 
 - Adapter tests and strict Javadocs pass.
 - `signing.json` names the expected signer and a clean trusted tool commit: the
-  reviewed `main` checkout on the release workstation, or `TRUSTED_TOOLING_SHA`
-  in CI.
-- Contract certification and schema upgrade regression pass.
+  reviewed tool checkout on the release workstation (`main`, or `release/0.3`
+  for a 0.3.x release), or `TRUSTED_TOOLING_SHA` in CI.
+- Schema upgrade regression passes, and shared message-store changes are
+  compatible with the .NET adapter.
 - Validation integration passes the documented acceptance campaign.
-- Required platform schema and configuration changes are deployed first.
+- Required message-store schema and deployment configuration changes are
+  deployed first.
 - Documentation and changelog describe the shipped behavior.
 - The final tag points to the accepted commit and has not been used before.
 
@@ -172,14 +182,15 @@ Before a final tag, finish a `## X.Y.Z — YYYY-MM-DD` section in `CHANGELOG.md`
 Include changes, compatibility, upgrade steps, known limitations and artifact identity.
 The tag must match the source POM version. The manual release-page workflow
 verifies actual public bytes against the reviewed unsigned candidate and the
-signing receipt (offline or from the protected job), and validates the section before creating a GitHub Release. Relative documentation links are
-pinned to the released tag.
+signing receipt (offline or from the protected job), and validates the section
+before creating a GitHub Release. Relative documentation links are pinned to
+the released tag.
 
 Verify the actual Central artifacts and GitHub Release body before marking the
 release complete. A failed release-page step does not authorize another Maven
 upload: repair the page from the existing tag and its reviewed notes. Existing
 release bodies are compared, never overwritten automatically. Creating a release
-page does not establish platform certification or customer deployment.
+page does not establish acceptance or any deployment.
 
 Historical backfills must use an existing tag (`gh release create --verify-tag`),
 reviewed historical notes and `--latest=false`; never create a replacement tag,

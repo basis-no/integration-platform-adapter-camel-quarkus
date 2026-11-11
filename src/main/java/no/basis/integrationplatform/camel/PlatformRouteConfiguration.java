@@ -1,6 +1,7 @@
 package no.basis.integrationplatform.camel;
 
 import jakarta.enterprise.context.ApplicationScoped;
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import org.apache.camel.Exchange;
 import org.apache.camel.builder.RouteConfigurationBuilder;
 import org.slf4j.Logger;
@@ -15,6 +16,12 @@ import java.util.Set;
 public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     private static final Logger LOG = LoggerFactory.getLogger(PlatformRouteConfiguration.class);
     public static final String SLOW_BACKEND = "ip-slow-backend";
+    // The slow-backend waits run on the Kafka consumer thread: 5, 10, 20, 20, 20 and 20 seconds,
+    // 95 seconds in all, leave most of the 300-second max.poll.interval.ms to the attempts themselves.
+    // Camel's default 60-second cap gave 195 seconds of waiting.
+    static final int SLOW_BACKEND_REDELIVERIES = 6;
+    static final long SLOW_BACKEND_FIRST_DELAY_MS = 5_000;
+    static final long SLOW_BACKEND_MAX_DELAY_MS = 20_000;
     public static final String NO_RETRY = "ip-no-retry";
     static final String DLQ_URI = "direct:bip-confirmed-dead-letter";
     static final String MASKED = "xxxxxx";
@@ -30,7 +37,6 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
                         .useExponentialBackOff()
@@ -40,22 +46,21 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
-                        .maximumRedeliveries(6)
-                        .redeliveryDelay(5000)
+                        .maximumRedeliveries(SLOW_BACKEND_REDELIVERIES)
+                        .redeliveryDelay(SLOW_BACKEND_FIRST_DELAY_MS)
                         .useExponentialBackOff()
-                        .backOffMultiplier(2));
+                        .backOffMultiplier(2)
+                        .maximumRedeliveryDelay(SLOW_BACKEND_MAX_DELAY_MS));
 
         routeConfiguration(NO_RETRY)
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
-                        .onPrepareFailure(this::prepareDlq)
                         .maximumRedeliveries(0));
     }
 
     /**
-     * Contract §5: in-process retry diagnostics are reported via
+     * In-process retry diagnostics are reported via
      * auto_redelivered / auto_redelivery_count / auto_redelivery_max. Camel's
      * RedeliveryErrorHandler removes the redelivery headers from the message
      * before delivering an exhausted exchange to the dead letter channel, so
@@ -76,7 +81,12 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
     }
 
-    void prepareDlq(Exchange exchange) {
+    /**
+     * Prepares the exchange the dead letter channel sends to the parking route. The parking
+     * route runs it, not onPrepareFailure: Camel runs that also before an application's own
+     * onException handler, which must see and send the message as the route left it.
+     */
+    static void prepareDlq(Exchange exchange) {
         exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, false);
 
         // The parked record is the consumed input. A route may have set another id for a
@@ -89,17 +99,27 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
         // The DLQ header keeps only the message; operators need the stack trace to diagnose it.
         Throwable failure = failure(exchange);
-        if (failure != null) {
+        if (failure != null && StepOutcomeFailure.of(exchange) != null) {
+            LOG.error("Message {} failed after its configured retries and is not parked: a step outcome was not "
+                            + "checked or recorded, so it is consumed again",
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+        } else if (failure != null) {
             LOG.error("Message {} failed after its configured retries and is being sent to the dead letter queue",
                     exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
         }
 
-        // Contract §8: the DLQ record must carry the ORIGINAL consumed payload,
-        // not a mid-transformation body. Restore it from the capture made at
-        // route start when the payload was capturable; metadata_only /
-        // uncapturable bodies are parked as-is.
-        byte[] originalPayload = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
-        if (originalPayload != null) {
+        // The DLQ record must carry the ORIGINAL consumed payload, not a body the route
+        // transformed or changed in place. Restore it from the capture made at route start:
+        // the replay copy, or the parking copy when replay storage does not keep the payload.
+        // A body type that cannot be captured is parked as the route left it.
+        Object originalPayload = exchange.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
+        if (originalPayload == null) {
+            originalPayload = exchange.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD);
+        }
+        if (originalPayload instanceof byte[] bytes) {
+            // The parking endpoint gets its own array, so the capture stays the input for replay storage.
+            exchange.getMessage().setBody(bytes.clone());
+        } else if (originalPayload != null) {
             exchange.getMessage().setBody(originalPayload);
         }
 
@@ -131,7 +151,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                 || lower.endsWith("-key") || lower.endsWith("_key");
     }
 
-    private String failureMessage(Exchange exchange) {
+    private static String failureMessage(Exchange exchange) {
         Throwable failure = failure(exchange);
         if (failure == null) {
             return "unknown failure";
@@ -139,7 +159,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
     }
 
-    private Throwable failure(Exchange exchange) {
+    private static Throwable failure(Exchange exchange) {
         Throwable failure = exchange.getException();
         return failure != null ? failure : exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
     }

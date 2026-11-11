@@ -72,6 +72,12 @@ what the portal shows (for example `VALIDATED` state for a deployment the portal
 shows as publishing or published), do not resume from it: reconcile with the
 portal, and publish or drop the deployment there under the same approvals.
 
+Any re-run counts, also one of a failed `build` or `attest`: from the second
+attempt on, `sign-upload` and `publish` refuse, even when nothing was uploaded.
+The tag cannot be pushed again, so finish such a release on the release
+workstation with the [offline path](#offline-release-signing), from an unsigned
+inspection of the tag's commit, and skip the runbook's tag step.
+
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
 whose `.github/scripts` are the tools to trust, and change it only through a
@@ -94,8 +100,9 @@ secrets, not in CI runners, and not on agent or development hosts. GitHub holds
 only the public key, in the `RELEASE_SIGNING_PUBLIC_KEY` repository variable,
 for post-publication readback. Signing and Central upload are performed by a
 human release manager on a trusted release workstation, using GnuPG and the
-trusted release tools from a checkout of reviewed `main`. That human step is
-also the release gate.
+trusted release tools from a clean checkout of the reviewed tool branch: `main`,
+or for a 0.3.x release `release/0.3`, until `main` carries the same tools. That
+human step is also the release gate.
 
 The reason is structural. A source commit, Maven wrapper, plugin, test or
 dependency can execute arbitrary code, and no step cleanup or log masking protects
@@ -108,8 +115,8 @@ them.
 | Stage | Where | Credentials | Executes |
 | --- | --- | --- | --- |
 | Unsigned inspection | `release-candidate.yml`, fresh runner | none (read-only runner token) | candidate source, wrapper, plugins, tests |
-| Offline signing | release workstation | release key via gpg-agent | `gpg`, `sign-candidate.py`, `central-bundle.py` from reviewed `main` |
-| Upload and publication | release workstation | per-release Central token | `central-recovery.py` from reviewed `main` |
+| Offline signing | release workstation | signing subkey via gpg-agent | `gpg`, `sign-candidate.py`, `central-bundle.py` from the reviewed tool checkout |
+| Upload and publication | release workstation | the release manager's Central token | `central-recovery.py` from the reviewed tool checkout |
 | Public readback and notes | `release-page.yml`, fresh runner | public key only | `verify-public-release.py`, `release-notes.py` |
 
 The signer treats the downloaded candidate as **data**. It never checks out the
@@ -138,8 +145,9 @@ tag ruleset limits who can push a tag at all.
 
 ## Unsigned candidate before a tag
 
-Dispatch unsigned inspection from `main` with an exact source commit, version and
-expected signer fingerprint. The fingerprint does not cause signing. The job uses
+Dispatch unsigned inspection from the tool branch (`main`, or `release/0.3` for
+a 0.3.x release) with an exact source commit, version and expected signer
+fingerprint. The fingerprint does not cause signing. The job uses
 Java 21 and the source Maven wrapper with `-Prelease -Dgpg.skip=true clean
 verify`. It records wrapper/Java versions, effective plugins and source hashes,
 then retains four opaque payloads (release POM, runtime JAR, sources JAR and
@@ -163,29 +171,41 @@ inspection alone.
 
 Prerequisites on the release workstation:
 
-- a clean checkout of reviewed `main` (`git status` empty, `HEAD` equal to the
-  reviewed commit), used only as trusted tooling;
-- GnuPG with the release key, a pinentry program and the public key imported;
+- a clean checkout of the reviewed tool branch (`git status` empty, `HEAD` equal
+  to the reviewed commit), used only as trusted tooling. For a 0.3.x release this
+  is `release/0.3` at the source commit itself;
+- GnuPG with the release key's signing subkey (see [key custody](#key-custody)),
+  a pinentry program and the public key imported;
 - the GitHub CLI, used only to dispatch workflows and download artifacts;
+- the `RELEASE_SIGNING_PUBLIC_KEY` repository variable holding the release key's
+  armored public key;
 - a dated `## X.Y.Z — YYYY-MM-DD` section in `CHANGELOG.md` and the POM at
   `X.Y.Z-SNAPSHOT` on the approved source commit.
 
-The examples use `TOOLS` for the trusted checkout and a new, empty `RELEASE`
-directory outside it for this release's evidence:
+The examples use `TOOLS` for the trusted checkout, `TOOLS_REF` for its branch and
+a new, empty `RELEASE` directory outside it for this release's evidence. `SIGNER`
+is the release key's primary fingerprint; GnuPG signs with its signing subkey:
 
 ```sh
-TOOLS=/path/to/reviewed-main-checkout
+TOOLS=/path/to/reviewed-tool-checkout
+TOOLS_REF=main                     # release/0.3 for a 0.3.x release
 RELEASE=/path/to/releases/X.Y.Z    # new, empty, outside $TOOLS
 VERSION=X.Y.Z SOURCE=<40-character source commit> SIGNER=<40-character fingerprint>
+export GH_REPO=basis-no/integration-platform-adapter-camel-quarkus
 mkdir -p "$RELEASE" && cd "$RELEASE"
 ```
 
-1. **Inspect.** Dispatch unsigned inspection and wait for it to succeed. Record
-   the run ID as `RUN`:
+1. **Inspect.** Dispatch unsigned inspection, find its run and wait for it to
+   succeed. Check that the run's `headSha` is the reviewed tool commit and record
+   its ID as `RUN`:
 
    ```sh
-   gh workflow run release-candidate.yml --ref main -f action=inspect \
+   gh workflow run release-candidate.yml --ref "$TOOLS_REF" -f action=inspect \
      -f version="$VERSION" -f source_commit="$SOURCE" -f signer="$SIGNER"
+   gh run list --workflow release-candidate.yml --branch "$TOOLS_REF" --limit 1 \
+     --json databaseId,headSha,status
+   RUN=<databaseId>
+   gh run watch "$RUN" --exit-status
    ```
 
 2. **Download** the unsigned artifact into a new directory:
@@ -229,23 +249,18 @@ mkdir -p "$RELEASE" && cd "$RELEASE"
    checkout commit, tool hashes and GnuPG/Python versions. A directory without
    `signing.json` is incomplete: never upload from it; sign again into a new
    directory. Refuse to continue if `tool_checkout.clean` is false or its commit
-   is not the reviewed `main`.
+   is not the reviewed tool commit.
 
-5. **Review and tag.** Review `signing.json` and record `bundle_sha256` and
-   `entries_sha256` with the release approval. After immutable-release approval,
-   create and push the signed tag on the source commit:
+5. **Review** `signing.json` and record `bundle_sha256` and `entries_sha256` with
+   the release approval.
 
-   ```sh
-   git -C "$TOOLS" tag -s "v$VERSION" "$SOURCE" -m "Release $VERSION"
-   git -C "$TOOLS" push origin "v$VERSION"
-   ```
-
-6. **Upload to `VALIDATED`.** Generate a fresh Central user token for this
-   release window and enter it only into the current shell session, without
-   echo, files or shell history:
+6. **Upload to `VALIDATED`.** Enter the release manager's Central token (the
+   user token's username and password) into the current shell session only. `read
+   -rs` shows nothing and keeps the values out of shell history; never pass them
+   as arguments or write them to a file:
 
    ```sh
-   read -r CENTRAL_TOKEN_USERNAME; read -rs CENTRAL_TOKEN_PASSWORD
+   read -rs CENTRAL_TOKEN_USERNAME; echo; read -rs CENTRAL_TOKEN_PASSWORD; echo
    export CENTRAL_TOKEN_USERNAME CENTRAL_TOKEN_PASSWORD
    python3 -I "$TOOLS/.github/scripts/central-recovery.py" --bundle "$RELEASE/signed/candidate.zip" \
      --receipt "$RELEASE/signed/candidate.json" --state "$RELEASE/signed/deployment.json" \
@@ -267,27 +282,36 @@ mkdir -p "$RELEASE" && cd "$RELEASE"
    unset CENTRAL_TOKEN_USERNAME CENTRAL_TOKEN_PASSWORD
    ```
 
-   After `PUBLISHED`, revoke the token in the portal.
-
 9. **Read back locally** once the files appear on Maven Central (this can take a
    while; the check is read-only and safe to repeat):
 
    ```sh
-   git -C "$TOOLS" show "v$VERSION:pom.xml" > "$RELEASE/tag-pom.xml"
-   python3 -I "$TOOLS/.github/scripts/verify-public-release.py" --pom "$RELEASE/tag-pom.xml" \
+   git -C "$TOOLS" show "$SOURCE:pom.xml" > "$RELEASE/source-pom.xml"
+   python3 -I "$TOOLS/.github/scripts/verify-public-release.py" --pom "$RELEASE/source-pom.xml" \
      --version "$VERSION" --signer "$SIGNER" --expected-receipt "$RELEASE/signed/candidate.json" \
      --output "$RELEASE/signed/public-readback.json"
    ```
 
-10. **Run the release-page workflow**, which repeats the readback on a fresh
+10. **Tag.** Create and push the signed tag on the source commit:
+
+    ```sh
+    git -C "$TOOLS" tag -s "v$VERSION" "$SOURCE" -m "Release $VERSION"
+    git -C "$TOOLS" push origin "v$VERSION"
+    ```
+
+    Pushing the tag also starts `release.yml`. Its `sign-upload` job waits for
+    approval in `release`: reject that deployment, since this release is
+    already published.
+
+11. **Run the release-page workflow**, which repeats the readback on a fresh
     runner and then creates or compares the GitHub Release:
 
     ```sh
-    gh workflow run release-page.yml --ref "v$VERSION" -f tag="v$VERSION" \
+    gh workflow run release-page.yml --ref "$TOOLS_REF" -f tag="v$VERSION" \
       -f candidate_run="$RUN" -f signer="$SIGNER" -f signed_entries_sha256=<entries_sha256>
     ```
 
-11. **Archive** `$RELEASE` (candidate, `signed/` with bundle, receipts,
+12. **Archive** `$RELEASE` (candidate, `signed/` with bundle, receipts,
     `deployment.json` and readback) in the approved durable release evidence
     store. It contains no key or token.
 
@@ -331,42 +355,68 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
 
 ## Key custody
 
-- The primary release key, its revocation certificate and every secret subkey
-  except the dedicated CI signing subkey exist only in the release workstation's
-  GnuPG keyring and, as a passphrase-protected export, in the team password
-  manager backup. Never copy them to GitHub, CI, agent or development hosts,
-  shared drives, tickets or chat. The CI signing subkey and its Central token
-  exist only as secrets of the protected release environments; see
-  [Protected-tag release in CI](#protected-tag-release-in-ci).
+- The release key has a certify-only primary key and a signing subkey. The
+  primary secret key and the revocation certificate are kept offline, as a
+  passphrase-protected export in the team password manager backup. The release
+  workstation's GnuPG keyring holds only its signing subkey's secret
+  (`gpg --list-secret-keys` shows `sec#`). Never copy any of them to GitHub, CI,
+  agent or development hosts, shared drives, tickets or chat. The dedicated CI
+  signing subkey (last item) exists only as a secret of environment `release`.
 - The passphrase is entered only through pinentry and stored only in the team
   password manager. Never put it in files, scripts, environment variables, shell
   history or command arguments, and never use loopback pinentry or agent presets
   for the release key. `sign-candidate.py` has no passphrase input.
 - Keep the gpg-agent cache short and the workstation encrypted and locked when
   unattended. Coding agents never operate the release keyring.
-- For an offline release, Central tokens are generated per release window, live
-  only in the release shell session and are revoked after publication. The
-  protected-tag path's token lives only in the release environments' secrets.
-- If the key or its backup may be compromised, publish its revocation
+- The Central token is the release manager's own user token and is kept only on
+  the release workstation, entered into the shell session for
+  `central-recovery.py`. Never put it in
+  GitHub, CI, a checkout, a ticket or chat. If it may have leaked, revoke it in
+  the Central portal and generate a new one. The protected-tag path has a
+  Central token of its own, which lives only in the release environments'
+  secrets.
+- If the signing subkey may be compromised, revoke it with the offline primary
+  key, add a new signing subkey and publish the updated public key. If the
+  primary key or its backup may be compromised, publish its revocation
   certificate to both keyservers below, stop releases and rotate.
 - For the [protected-tag release](#protected-tag-release-in-ci), the primary key
-  is certify-only and stays offline. On the release workstation, add a
-  dedicated signing subkey for CI with a one-year expiry, export only that
-  subkey (`gpg --armor --export-secret-subkeys CI_SUBKEY_FINGERPRINT!`) from a
-  temporary copy of the keyring in which its passphrase was removed, and paste
-  the export only into the `RELEASE_SIGNING_SUBKEY` secret of environment
-  `release`. Delete the temporary copy. The workflow refuses an export that
+  is certify-only and stays offline. On the release workstation, restore the
+  primary key from its backup into a temporary keyring, add a dedicated signing
+  subkey for CI with a one-year expiry there, remove that subkey's passphrase,
+  export only that subkey (`gpg --armor --export-secret-subkeys
+  CI_SUBKEY_FINGERPRINT!`), and paste the export only into the
+  `RELEASE_SIGNING_SUBKEY` secret of environment `release`. Delete the temporary
+  keyring and publish the updated public key. The workflow refuses an export that
   contains the primary secret key. Revoke and replace the CI subkey on its
   expiry, on any doubt about the environment, or when a reviewer leaves; the
   primary key and its other subkeys stay valid.
 
 ## Key rotation
 
-1. On the release workstation, generate a new primary key (RSA 4096 is the most
-   widely accepted choice) with a finite expiry and a strong passphrase. Create
-   a revocation certificate and store it, with a passphrase-protected secret-key
-   export, in the team password manager.
-2. Publish the public key to two keyservers that Central consults, then confirm
+1. On the release workstation, create a certify-only primary key (RSA 4096 is
+   the most widely accepted choice) with a finite expiry and a strong
+   passphrase, then a signing subkey that expires after one year:
+
+   ```sh
+   gpg --quick-generate-key "NAME <ADDRESS>" rsa4096 cert 3y
+   gpg --list-keys "<ADDRESS>"    # NEW_FINGERPRINT is the primary key's fingerprint
+   gpg --quick-add-key NEW_FINGERPRINT rsa4096 sign 1y
+   ```
+
+2. Take the primary key offline. First store a passphrase-protected export
+   (`gpg --armor --export-secret-keys NEW_FINGERPRINT`) in the team password
+   manager, together with the revocation certificate that GnuPG wrote to
+   `openpgp-revocs.d/NEW_FINGERPRINT.rev` in its home directory, and remove that
+   certificate from the workstation. Then delete the primary secret key from the
+   keyring; the signing subkey stays:
+
+   ```sh
+   gpg --with-keygrip --list-secret-keys NEW_FINGERPRINT   # the first Keygrip is the primary key's
+   rm "$(gpgconf --list-dirs homedir)/private-keys-v1.d/PRIMARY_KEYGRIP.key"
+   gpg --list-secret-keys NEW_FINGERPRINT                  # sec#: primary secret key absent
+   ```
+
+3. Publish the public key to two keyservers that Central consults, then confirm
    retrieval from each into an empty temporary keyring:
 
    ```sh
@@ -375,12 +425,21 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
    ```
 
    keys.openpgp.org publishes user IDs only after email verification; complete it.
-3. Replace the `RELEASE_SIGNING_PUBLIC_KEY` repository variable with the armored
-   public key (`gpg --armor --export NEW_FINGERPRINT`). It is public data, not a
-   secret.
-4. Use the new fingerprint as `signer` for inspection, signing and readback, and
+4. Replace the `RELEASE_SIGNING_PUBLIC_KEY` repository variable with the armored
+   public key. It is public data, not a secret:
+
+   ```sh
+   gpg --armor --export NEW_FINGERPRINT | gh variable set RELEASE_SIGNING_PUBLIC_KEY
+   ```
+
+5. Use the new fingerprint as `signer` for inspection, signing and readback, and
    state the new fingerprint in the next release notes.
-5. Retire the old key as **superseded**: after any pending readback of releases
+6. Before the signing subkey expires, extend it with the offline primary key
+   (`gpg --quick-set-expire NEW_FINGERPRINT 1y SUBKEY_FINGERPRINT`) or add a new
+   signing subkey, and publish the updated public key to both keyservers and the
+   repository variable. The release tools reject signatures from an expired
+   key; extending the subkey keeps earlier releases verifiable.
+7. Retire the old key as **superseded**: after any pending readback of releases
    signed with it is complete, generate a revocation with reason "Key is
    superseded" and publish it to both keyservers. Published artifacts keep their
    signatures; the release tools reject revoked signers, so readback of old
@@ -510,7 +569,10 @@ a tag; the release owner supplies those decisions under actual approval.
 
 ## Synthetic runner qualification
 
-The Test workflow has a separate bounded packaging qualification job. It uses
+On `main`, the Test workflow runs this as a separate bounded packaging
+qualification job. On the 0.3 line no workflow runs it; run
+`python3 .github/scripts/qualify-release-packaging.py --evidence <dir>` by hand
+before a release. It uses
 Java 21, the checked-in Maven wrapper and the source POM's exact compiler,
 source, Javadoc and GPG plugin configuration to build a small synthetic Java
 artifact. It excludes the publisher plugin and uses only the reserved test

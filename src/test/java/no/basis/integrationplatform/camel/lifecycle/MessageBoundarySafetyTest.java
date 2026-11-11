@@ -39,8 +39,11 @@ class MessageBoundarySafetyTest {
             var factory = new MessageStoreRoutePolicyFactory(r -> {}, "order-pipeline", "postgres-inline", 100_000, 30, true);
             assertNotNull(factory.createRoutePolicy(context, "orders", new RouteDefinition().from("kafka:orders")));
             assertNotNull(factory.createRoutePolicy(context, "orders", new RouteDefinition().from("{{input.uri}}")));
-            assertNull(factory.createRoutePolicy(context, "internal", new RouteDefinition().from("direct:internal")));
-            assertNull(factory.createRoutePolicy(context, "http", new RouteDefinition().from("platform-http:/orders")));
+            // Not recorded: such a route only reads a replay's redo list, so it cannot forward it.
+            assertInstanceOf(RedoStepsRoutePolicy.class,
+                    factory.createRoutePolicy(context, "internal", new RouteDefinition().from("direct:internal")));
+            assertInstanceOf(RedoStepsRoutePolicy.class,
+                    factory.createRoutePolicy(context, "http", new RouteDefinition().from("platform-http:/orders")));
         }
     }
 }

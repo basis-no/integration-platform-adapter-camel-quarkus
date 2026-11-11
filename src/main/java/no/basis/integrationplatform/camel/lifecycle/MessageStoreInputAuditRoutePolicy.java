@@ -5,6 +5,7 @@ import java.util.Map;
 import java.util.UUID;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.store.MessageStoreSinkException;
 import org.apache.camel.Exchange;
@@ -45,6 +46,8 @@ public final class MessageStoreInputAuditRoutePolicy extends MessageStoreRoutePo
             exchange.setRouteStop(true);
             throw failure;
         }
+        // The inspection below works on a copy; the route's own exchange must not forward a redo list.
+        DefaultStepTracker.captureRedoSteps(exchange);
         String rowId = UUID.randomUUID().toString();
         Exchange capture = exchange.copy();
         String inputId = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
@@ -57,10 +60,6 @@ public final class MessageStoreInputAuditRoutePolicy extends MessageStoreRoutePo
         // Capturing a poll/batch must not seed one operational ID into all records
         // emitted by its split, or override the producer's recovery state.
         super.onExchangeBegin(route, capture);
-        byte[] captured = capture.getProperty(PlatformExchangeProperties.PAYLOAD_BYTES, byte[].class);
-        if (captured != null) {
-            capture.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, captured.clone());
-        }
         Map<String, Object> headers = new LinkedHashMap<>();
         for (String name : HEADERS) {
             Object value = capture.getMessage().getHeader(name);
@@ -114,9 +113,9 @@ public final class MessageStoreInputAuditRoutePolicy extends MessageStoreRoutePo
             sink.record(result(route, inspection));
         } catch (Exception failure) {
             var storeFailure = new MessageStoreSinkException("Failed to record non-Kafka input inspection", failure);
-            if (exchange.getException() != null) {
-                exchange.getException().addSuppressed(storeFailure);
-            } else {
+            // A source's exception stays unchanged: it may be one instance shared by many inputs.
+            // Camel logs the failure thrown here.
+            if (exchange.getException() == null) {
                 exchange.setException(storeFailure);
             }
             throw storeFailure;

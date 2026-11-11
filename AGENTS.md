@@ -2,6 +2,12 @@
 
 Preserve source acknowledgement, durable recovery and public repository boundaries.
 
+The adapter is generic open source. Describe its behavior in its own terms and
+do not refer to a particular product, service, dashboard, or documentation set
+that uses it. Existing identifiers such as the Maven coordinates, packages,
+`x-bip-*` headers and `bip_*` tables keep their names; refer to them as this
+adapter's identifiers.
+
 ## Release notes and completion
 
 Every stable version requires a dated, reviewed section in `CHANGELOG.md` and a
@@ -13,9 +19,9 @@ A `vX.Y.Z` tag starts `release.yml`, which builds an unsigned candidate and then
 waits for human approval in protected environments before signing, uploading and
 publishing; the alternative is offline signing on the release workstation (see
 below). A reviewed snapshot is published only through the approval-gated,
-manual snapshot lane. The release-page workflow verifies
-actual public bytes before creating notes. The synthetic CI gate does not replace
-full candidate review, the signer's receipt or portal validation before release.
+manual snapshot lane. The release-page workflow verifies actual public bytes
+before creating notes. The synthetic CI gate does not replace full candidate
+review, the signer's receipt or portal validation before release.
 Never rebuild or republish packages merely to repair missing release notes.
 Historical backfills use verified existing tags and must not replace the latest
 release. See `docs/releasing.md`.
@@ -32,8 +38,8 @@ hosts. Signing and Central upload happen in exactly one of two places:
   secrets hold the CI signing subkey and a Central token. This path exists only
   once the repository is public and those settings are in place.
 - The trusted release workstation, where a human release manager runs
-  `sign-candidate.py` and `central-recovery.py` from reviewed `main` (also for a
-  `release/0.3` source commit).
+  `sign-candidate.py` and `central-recovery.py` from the reviewed tool branch:
+  `main`, or `release/0.3` for a 0.3.x release.
 
 Never add signing or portal credentials to repository or organization secrets, to
 any other workflow or job, or to a job that builds, tests or runs candidate code;

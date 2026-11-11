@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Bounded, offline fixtures for packaging and recovery guards."""
+import errno
 import hashlib
 import importlib.util
 import io
@@ -8,6 +9,8 @@ import os
 from pathlib import Path
 import re
 import shutil
+import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -228,6 +231,9 @@ class Fixtures(unittest.TestCase):
         self.assertNotIn('cache:', text)
         self.assertNotIn('actions/cache', text)
         self.assertIn('--workflow-run "$GITHUB_RUN_ID"', text)
+        # Dispatchable from main, and from release/0.3 until main carries the same tools.
+        self.assertIn("(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/0.3')", text)
+        self.assertIn('refs/heads/main|refs/heads/release/0.3) ;; *) exit 1 ;;', text)
         # Post-publication readback only: public key variable, never a signer or portal token.
         # Renamed so the publish-central.yml workflow, tag-triggered in older revisions, stays disabled.
         self.assertFalse((workflows / 'publish-central.yml').exists())
@@ -254,7 +260,13 @@ class Fixtures(unittest.TestCase):
             for trigger in ('pull_request_target', 'workflow_run', 'issue_comment'):
                 self.assertNotIn(trigger, text, name)
             if name not in ('release.yml', 'publish-snapshot.yml'):
-                self.assertNotIn('secrets.', text, name)
+                # The public content check reads its private name patterns, which are not a
+                # credential, and runs no Maven or project code.
+                allowed = ('secrets.PUBLIC_CONTENT_PATTERNS',) if name == 'public-content.yml' else ()
+                unchecked = text
+                for secret in allowed:
+                    unchecked = unchecked.replace(secret, '')
+                self.assertNotIn('secrets.', unchecked, name)
                 self.assertNotRegex(text, r'(?m)^\s+tags:', name + ': only release.yml may start on a tag')
         text = texts['release.yml']
         head, body = text.split('\njobs:\n')
@@ -541,6 +553,37 @@ class Fixtures(unittest.TestCase):
             with self.assertRaises(ValueError):
                 recovery.recover(self.path, self.receipt, self.state, publish=True, call=call)
             self.assertEqual(calls, ['/status?id=' + ID])
+
+    def test_saved_state_and_its_directory_are_synced_before_any_network_call(self):
+        synced, original = [], recovery.sync
+        def record(descriptor):
+            synced.append(stat.S_ISDIR(os.fstat(descriptor).st_mode))
+            original(descriptor)
+        with patch.object(recovery, 'sync', side_effect=record):
+            recovery.save(self.root / 'synced.json', {'phase': 'upload-started'})
+        self.assertEqual(synced, [False, True])  # The file, then the directory holding the rename.
+        def fail_directory(descriptor):
+            if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+                raise OSError('directory sync failed')
+        with patch.object(recovery, 'sync', side_effect=fail_directory):
+            with self.assertRaises(OSError):
+                recovery.recover(self.path, self.receipt, self.state, allow_upload=True,
+                                 call=lambda *args: self.fail('Network called before the intent was durable'))
+
+    def test_full_flush_falls_back_only_when_unsupported(self):
+        descriptor = os.open(self.root, os.O_RDONLY)
+        self.addCleanup(os.close, descriptor)
+        for code, falls_back in ((errno.ENOTSUP, True), (errno.EINVAL, True), (errno.EIO, False)):
+            with patch.object(recovery.fcntl, 'F_FULLFSYNC', 51, create=True), \
+                    patch.object(recovery.fcntl, 'fcntl', side_effect=OSError(code, 'flush')), \
+                    patch.object(recovery.os, 'fsync') as fsync:
+                if falls_back:
+                    recovery.sync(descriptor)
+                    fsync.assert_called_once_with(descriptor)
+                else:
+                    with self.assertRaises(OSError):
+                        recovery.sync(descriptor)
+                    fsync.assert_not_called()  # A failed full flush is never papered over by fsync.
 
     def test_ambiguous_publish_never_repeated(self):
         self.saved(publish_attempted=True)
@@ -1033,6 +1076,64 @@ class OfflineSigner(unittest.TestCase):
         shutil.move(str(self.candidate / 'unsigned'), str(outside / 'unsigned'))
         (self.candidate / 'unsigned').symlink_to(outside / 'unsigned')
         self.refused('Symbolic link')
+
+    def test_directory_swapped_after_inventory_is_never_followed(self):
+        original = signer.inventory
+        def swap(root, names):
+            descriptor = original(root, names)
+            tampered = self.root / 'tampered'
+            shutil.copytree(self.candidate / 'unsigned', tampered)
+            for path in tampered.iterdir():
+                path.write_bytes(b'tampered')
+            (self.candidate / 'unsigned').rename(self.root / 'inventoried')
+            (self.candidate / 'unsigned').symlink_to(tampered)
+            return descriptor
+        with patch.object(signer, 'inventory', side_effect=swap):
+            result = signer.verify_candidate(self.candidate, VERSION, self.COMMIT, self.RUN, self.pom)
+        # Read through the inventoried directory, not the link that replaced it.
+        self.assertEqual(result['payloads'], self.payloads)
+
+    def test_directory_descriptor_closed_when_its_check_fails(self):
+        def descriptors():
+            return set(os.listdir('/proc/self/fd' if os.path.isdir('/proc/self/fd') else '/dev/fd'))
+        before = descriptors()
+        with patch.object(signer.os, 'fstat', side_effect=OSError(errno.EIO, 'stat')):
+            with self.assertRaises(OSError):
+                signer.open_directory(self.candidate)
+        self.assertEqual(descriptors(), before)
+
+    def test_file_swapped_for_a_fifo_after_inventory_is_refused_without_waiting(self):
+        original = signer.inventory
+        def swap(root, names):
+            descriptor = original(root, names)
+            (self.candidate / 'unsigned.json').unlink()
+            os.mkfifo(self.candidate / 'unsigned.json')
+            return descriptor
+        def blocked(*args):
+            raise AssertionError('verification waited on a FIFO')  # Not an OSError: never absorbed.
+        previous = signal.signal(signal.SIGALRM, blocked)
+        signal.alarm(10)
+        try:
+            with patch.object(signer, 'inventory', side_effect=swap):
+                with self.assertRaisesRegex(ValueError, 'regular file'):
+                    signer.verify_candidate(self.candidate, VERSION, self.COMMIT, self.RUN, self.pom)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_archived_receipt_and_provenance_are_the_verified_bytes(self):
+        receipt = (self.candidate / 'unsigned.json').read_bytes()
+        provenance = (self.candidate / 'provenance.json').read_bytes()
+        original = signer.detach_sign
+        def change_evidence(payload, signature, fingerprint):
+            (self.candidate / 'unsigned.json').write_bytes(receipt + b' ')
+            (self.candidate / 'provenance.json').write_bytes(provenance + b' ')
+            original(payload, signature, fingerprint)
+        with patch.object(signer, 'detach_sign', side_effect=change_evidence):
+            result = self.sign()
+        self.assertEqual((self.output / 'unsigned.json').read_bytes(), receipt)
+        self.assertEqual((self.output / 'provenance.json').read_bytes(), provenance)
+        self.assertEqual(result['unsigned_receipt_sha256'], hashlib.sha256(receipt).hexdigest())
 
     def test_receipt_mismatch_rejected(self):
         self.refused('mismatch', commit='e' * 40)

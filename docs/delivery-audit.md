@@ -1,8 +1,8 @@
 # Configurable delivery audit — 0.3.5
 
 Available in the stable `0.3.5` package. Publication and runtime qualification
-do not automatically change a platform's certified pins or deployed integrations.
-This extension does not require the forthcoming Message Store service or a database migration.
+do not automatically change any integration's pinned version or deployment.
+This extension does not require a separate Message Store service or a database migration.
 
 ## Input and delivery are different
 
@@ -26,16 +26,16 @@ basis.delivery-audit.routes=deliver-order,deliver-invoice
 ```
 
 The integration owns the route selection. Its `basis.delivery-audit.*` namespace
-is separate from platform-owned `basis.message-store.*` capture and replay settings;
-managed-source conformance permits the route selector without overriding those
-settings. In a managed deployment, use an approved ordinary application setting
-and map it in the source, for example:
+is separate from the deployment-owned `basis.message-store.*` capture and replay
+settings, so the route selector can be set without overriding those settings.
+When the deployment supplies application settings, use an ordinary application
+setting and map it in the source, for example:
 
 ```properties
 basis.delivery-audit.routes=${DELIVERY_AUDIT_ROUTES:deliver-order}
 ```
 
-An empty value disables the feature. Platform-generated Message Store settings
+An empty value disables the feature. Deployment-owned Message Store settings
 must not be overridden in the application. Integrations without audit routes
 keep the 0.3.4 recording behavior on the same adapter version.
 
@@ -51,7 +51,7 @@ Copy only the required HTTP response body and status back to the input exchange;
 retain the original input identity and attempt/commit headers. The input route
 owns retry and parking; the request route should use `ip-no-retry`. A receiver
 failure must propagate through shared splits to that input. Do not add a catch-all
-that bypasses platform recovery.
+that bypasses the adapter's recovery.
 
 ## Stored behavior
 
@@ -66,7 +66,7 @@ that bypasses platform recovery.
 - Audit recording never commits Kafka offsets, publishes a DLQ record or handles
   the receiver exception. A journal failure fails the request; it does not claim
   successful recording. The parent input's existing recovery policy applies.
-- Existing SQL-backed dashboard searches match the correlation id. Payload
+- Existing SQL-backed operator searches match the correlation id. Payload
   preview/download uses the normal payload authorization and retention controls.
   Audit rows are ineligible for Kafka replay in both stored flags and server-side
   route validation. No historic delivery rows are synthesized.
@@ -84,21 +84,23 @@ on ordinary shared input exchanges to restore non-Kafka visibility.
 ## Qualification and rollout
 
 Run the adapter suite, startup fixture, real Postgres persistence tests and the
-contract-v1 Kafka/Postgres suite with audit disabled. With audit enabled, prove
+cross-runtime Kafka/Postgres tests against the .NET adapter with audit disabled. With audit enabled, prove
 sibling identities/correlation, retained outgoing bytes, receiver and journal
 failure propagation, no audit offset commit/DLQ publication and replay rejection
 before audit/publication. Qualify an input success/failure/success sequence and
 one original-input replay in an isolated tenant before customer rollout.
 
 The earlier delivery-only candidate's local qualification on 2026-10-06 passed the adapter and startup suites, real
-Kafka/PostgreSQL tests and base-contract S1–S22 for candidate Camel and released
+Kafka/PostgreSQL tests and the base cross-runtime scenarios for candidate Camel and released
 .NET 0.3.1, with no differences after documented normalization. Additional failure
 coverage proves that an audit journal error after receiver success reaches the
 original input's recovery handler: only the original payload is parked, and
-input-journal failure still prevents its offset commit. A managed-build
-compatibility check additionally reserves the `basis.message-store.*` namespace for platform capabilities. Route selection uses `basis.delivery-audit.routes`
-and is qualified through the unchanged managed-source checker and Quarkus startup.
-The final combined source passed the base-contract S1–S22 suite on 2026-10-11
+input-journal failure still prevents its offset commit. Route selection uses
+`basis.delivery-audit.routes`, outside the deployment-owned
+`basis.message-store.*` namespace, so a build-time check that reserves that
+namespace needs no change; selection was qualified with such a check and
+Quarkus startup.
+The final combined source passed the base cross-runtime scenarios on 2026-10-11
 with matching released .NET results, focused non-Kafka regression/startup checks,
 and isolated delivery inspection and original-input recovery acceptance. Verify
 the selected package and application route configuration before rollout; optional

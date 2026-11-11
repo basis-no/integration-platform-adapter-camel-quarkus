@@ -21,5 +21,5 @@ first, then run this module with the same repository and pinned Java 21 toolchai
 
 Use the qualified artifact matching `adapter.version`, never a floating remote
 snapshot as proof of the current source. This fixture is prepared source until
-its actual execution and cleanup receipt is recorded. Full certification and
-installed agent/platform collection remain independent gates.
+its actual execution and cleanup receipt is recorded. Full qualification and
+collection by installed operator tools remain independent gates.

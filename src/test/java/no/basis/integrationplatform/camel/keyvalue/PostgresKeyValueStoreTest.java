@@ -399,7 +399,7 @@ class PostgresKeyValueStoreTest {
     }
 
     @Test
-    void withoutTheTableTheSweepIdlesAndStateCallsNameTheContract() throws Exception {
+    void withoutTheTableTheSweepIdlesAndStateCallsNameTheTable() throws Exception {
         execute("drop table " + PostgresKeyValueStore.TABLE_NAME);
         IdempotentRepository seen = state.idempotentRepository("seen/files", Duration.ofDays(1));
 
@@ -407,7 +407,7 @@ class PostgresKeyValueStoreTest {
 
         KeyValueStoreException missing = assertThrows(KeyValueStoreException.class,
                 () -> state.get("cursor/ledger"));
-        assertTrue(missing.getMessage().contains("contract 1.2"), missing.getMessage());
+        assertTrue(missing.getMessage().contains("needs a provisioned " + PostgresKeyValueStore.TABLE_NAME), missing.getMessage());
         assertThrows(KeyValueStoreException.class, () -> state.put("cursor/ledger", BooleanNode.TRUE));
         assertThrows(KeyValueStoreException.class, () -> seen.add("a.csv"));
     }

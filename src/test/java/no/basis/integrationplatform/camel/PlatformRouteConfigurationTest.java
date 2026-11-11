@@ -1,7 +1,12 @@
 package no.basis.integrationplatform.camel;
 
+import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import org.apache.camel.Exchange;
 import org.apache.camel.impl.DefaultCamelContext;
+import org.apache.camel.model.RedeliveryPolicyDefinition;
+import org.apache.camel.model.RouteConfigurationDefinition;
+import org.apache.camel.model.errorhandler.DefaultErrorHandlerDefinition;
+import org.apache.camel.processor.errorhandler.RedeliveryPolicy;
 import org.apache.camel.support.DefaultExchange;
 import org.junit.jupiter.api.Test;
 
@@ -11,16 +16,63 @@ import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.junit.jupiter.api.Assertions.fail;
 
 class PlatformRouteConfigurationTest {
     private final PlatformRouteConfiguration configuration = new PlatformRouteConfiguration();
 
     @Test
+    void slowBackendRedeliveriesWaitWellUnderTheKafkaPollInterval() throws Exception {
+        try (var context = new DefaultCamelContext()) {
+            context.addRoutesConfigurations(new PlatformRouteConfiguration());
+            RedeliveryPolicyDefinition policy = redeliveryPolicy(context, PlatformRouteConfiguration.SLOW_BACKEND);
+
+            // Camel's own policy computes the waits, including its default cap when none is set. A
+            // delay pattern or collision avoidance would change them, so the profile sets neither.
+            assertNull(policy.getDelayPattern());
+            assertNull(policy.getUseCollisionAvoidance());
+            var camel = new RedeliveryPolicy();
+            camel.setMaximumRedeliveries(Integer.parseInt(policy.getMaximumRedeliveries()));
+            camel.setRedeliveryDelay(Long.parseLong(policy.getRedeliveryDelay()));
+            camel.setUseExponentialBackOff(Boolean.parseBoolean(policy.getUseExponentialBackOff()));
+            camel.setBackOffMultiplier(Double.parseDouble(policy.getBackOffMultiplier()));
+            if (policy.getMaximumRedeliveryDelay() != null) {
+                camel.setMaximumRedeliveryDelay(Long.parseLong(policy.getMaximumRedeliveryDelay()));
+            }
+            int redeliveries = camel.getMaximumRedeliveries();
+            long delay = 0;
+            long total = 0;
+            for (int redelivery = 1; redelivery <= redeliveries; redelivery++) {
+                delay = camel.calculateRedeliveryDelay(delay, redelivery);
+                total += delay;
+            }
+
+            // Still patient: six redeliveries, the first after five seconds.
+            assertEquals(6, redeliveries);
+            assertEquals(5_000, Long.parseLong(policy.getRedeliveryDelay()));
+            // The waits run on the Kafka consumer thread. With Camel's default 60 s cap they took
+            // 195 s of the 300 s max.poll.interval.ms; capped at 20 s, they leave most of it to the attempts.
+            assertEquals(95_000, total);
+        }
+    }
+
+    private static RedeliveryPolicyDefinition redeliveryPolicy(DefaultCamelContext context, String id) {
+        for (RouteConfigurationDefinition definition : context.getRouteConfigurationDefinitions()) {
+            if (id.equals(definition.getId())) {
+                return ((DefaultErrorHandlerDefinition) definition.getErrorHandler().getErrorHandlerType())
+                        .getRedeliveryPolicy();
+            }
+        }
+        return fail("No route configuration " + id);
+    }
+
+    @Test
     void dlqParkingRestoresOriginalPayloadAndSetsDiagnosticsHeaders() {
-        // Given a message whose body was transformed mid-route before the failure (contract §8).
+        // Given a message whose body was transformed mid-route before the failure.
         byte[] originalPayload = "{\"original\":true}".getBytes(StandardCharsets.UTF_8);
         Exchange exchange = exchange();
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_BYTES, originalPayload);
@@ -30,12 +82,14 @@ class PlatformRouteConfigurationTest {
         Instant before = Instant.now();
 
         // When the dead letter channel prepares the exchange for parking.
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         // Then the DLQ record carries the original consumed payload plus diagnostics.
         assertEquals(false, exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
         assertEquals("{\"original\":true}",
                 new String(exchange.getMessage().getBody(byte[].class), StandardCharsets.UTF_8));
+        assertNotSame(originalPayload, exchange.getMessage().getBody(),
+                "The parking endpoint gets its own array; the capture stays the input for replay storage");
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
 
         String dlqAt = exchange.getMessage().getHeader(PlatformHeaders.DLQ_AT, String.class);
@@ -46,13 +100,25 @@ class PlatformRouteConfigurationTest {
     }
 
     @Test
+    void dlqParkingRestoresTheParkingCopyWhenReplayStorageDidNotKeepThePayload() {
+        Exchange exchange = exchange();
+        exchange.setProperty(PlatformExchangeProperties.PARKING_PAYLOAD, "<Input/>");
+        exchange.getMessage().setBody("<Transformed/>");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
+
+        PlatformRouteConfiguration.prepareDlq(exchange);
+
+        assertEquals("<Input/>", exchange.getMessage().getBody());
+    }
+
+    @Test
     void dlqParkingLeavesBodyAsIsWhenPayloadWasNotCaptured() {
-        // Given a metadata_only / uncapturable message: no PAYLOAD_BYTES property was recorded.
+        // Given an uncapturable body: neither the replay nor the parking copy was recorded.
         Exchange exchange = exchange();
         exchange.getMessage().setBody("stream-derived body");
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("vendor unavailable"));
 
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         assertEquals("stream-derived body", exchange.getMessage().getBody());
         assertEquals("vendor unavailable", exchange.getMessage().getHeader(PlatformHeaders.ERROR));
@@ -67,13 +133,34 @@ class PlatformRouteConfigurationTest {
         exchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
 
         try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
-            configuration.prepareDlq(exchange);
+            PlatformRouteConfiguration.prepareDlq(exchange);
 
             var errors = logs.at(java.util.logging.Level.SEVERE);
             assertEquals(1, errors.size());
             assertSame(failure, errors.getFirst().getThrown());
             assertEquals("Message message-123 failed after its configured retries and is being sent to the dead letter queue",
                     LogCapture.text(errors.getFirst()));
+        }
+    }
+
+    @Test
+    void aMessageWhoseStepOutcomeWasNotRecordedIsLoggedAsNotParked() {
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        var failure = new IllegalStateException("step outcome store unavailable");
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
+        StepOutcomeFailure.begin(exchange);
+        exchange.getProperty(PlatformExchangeProperties.STEP_OUTCOME_FAILURE,
+                java.util.concurrent.atomic.AtomicReference.class).set(failure);
+
+        try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
+            PlatformRouteConfiguration.prepareDlq(exchange);
+
+            var errors = logs.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            assertSame(failure, errors.getFirst().getThrown());
+            assertEquals("Message message-123 failed after its configured retries and is not parked: a step outcome "
+                    + "was not checked or recorded, so it is consumed again", LogCapture.text(errors.getFirst()));
         }
     }
 
@@ -104,7 +191,7 @@ class PlatformRouteConfigurationTest {
         message.setHeader("Content-Type", "application/xml");
         message.setHeader("CamelHttpResponseCode", 200);
 
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         for (String name : List.of("Authorization", "client_secret", "Ocp-Apim-Subscription-Key", "X-API-Key",
                 "x-functions-key", "X-Access-Key", "x_client_key",
@@ -124,7 +211,7 @@ class PlatformRouteConfigurationTest {
     @Test
     void dlqParkingWithoutAFailureLogsNoError() {
         try (var logs = LogCapture.of(PlatformRouteConfiguration.class)) {
-            configuration.prepareDlq(exchange());
+            PlatformRouteConfiguration.prepareDlq(exchange());
 
             assertTrue(logs.records().isEmpty());
         }
@@ -135,14 +222,14 @@ class PlatformRouteConfigurationTest {
         Exchange exchange = exchange();
         exchange.setException(new IllegalStateException((String) null));
 
-        configuration.prepareDlq(exchange);
+        PlatformRouteConfiguration.prepareDlq(exchange);
 
         assertEquals(IllegalStateException.class.getName(), exchange.getMessage().getHeader(PlatformHeaders.ERROR));
     }
 
     @Test
     void redeliveryCapturesDiagnosticsIntoExchangeProperties() {
-        // Contract §5: the redelivery headers are only present while a
+        // The redelivery headers are only present while a
         // redelivery attempt is in flight (Camel strips them before dead-letter
         // delivery), so onRedelivery must snapshot them into properties.
         Exchange exchange = exchange();

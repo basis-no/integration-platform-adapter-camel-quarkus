@@ -122,11 +122,11 @@ class PublishedMessageIdTest {
     }
 
     /**
-     * The handbook's example (message envelope, "Message ids between integrations"),
-     * pasted verbatim as a sub-route of a recording Kafka input.
+     * The derived message id example for publishing to another integration,
+     * run unchanged as a sub-route of a recording Kafka input.
      */
     @org.junit.jupiter.api.Test
-    void handbookExampleDerivesTheIdDeterministicallyAndRestoresTheInputId() throws Exception {
+    void derivedIdExampleDerivesTheIdDeterministicallyAndRestoresTheInputId() throws Exception {
         String brokers = KAFKA.getBootstrapServers();
         List<MessageAttemptResult> rows = new CopyOnWriteArrayList<>();
         Set<String> ledger = java.util.Collections.synchronizedSet(new HashSet<>());
@@ -147,7 +147,7 @@ class PublishedMessageIdTest {
                             .routePolicy(new MessageStoreRoutePolicy(rows::add, "upstream"))
                             .to("direct:publish-orders");
 
-                    // Verbatim from the handbook.
+                    // The derived message id example, unchanged.
                     from("direct:publish-orders")
                         .setProperty("inputMessageId", header("x-bip-message-id"))
                         .process(exchange -> exchange.getMessage().setHeader("x-bip-message-id",
@@ -189,7 +189,7 @@ class PublishedMessageIdTest {
     }
 
     /**
-     * The doTry/doFinally form of the handbook example, which also restores the input id
+     * The doTry/doFinally form of the derived message id example, which also restores the input id
      * when the send fails, on the success path: the same publications and journal rows.
      */
     @org.junit.jupiter.api.Test

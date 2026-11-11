@@ -25,11 +25,14 @@ rules the agents follow; human contributors follow the same rules.
   commit message. Write it as a short sentence in the imperative mood.
 - Before asking for review, run `./mvnw verify`, update `CHANGELOG.md` for
   user-visible changes and update the documentation.
-- This adapter and the .NET adapter implement the same Message Store
-  contract. Say in the pull request whether the other adapter needs the same
-  change.
+- This adapter and the .NET adapter implement the same message store
+  (schema, topics and headers). Say in the pull request whether the other
+  adapter needs the same change.
 - Never put customer names, internal hostnames, credentials, personal data or
-  test-run evidence in code, documentation, commits or pull requests.
+  test-run evidence in code, documentation, commits or pull requests. The
+  `Public content` check scans every pull request and every push to `main` and
+  `release/*` for credentials and for private names and hosts. It reports only
+  the file, line and pattern number.
 
 ## Security
 
