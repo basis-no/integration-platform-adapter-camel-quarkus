@@ -691,7 +691,9 @@ consumed record's `x-bip-redo-steps` is honoured only when all of these hold:
 - `bip_message_attempt` has no completed or parked row for that message id and
   attempt. Once the replay's attempt is completed or parked, its record, or a
   copy of it, no longer redoes anything. An attempt recorded `FAILED` was not
-  committed and is read again, so it may still redo.
+  committed and is read again, so it may still redo. A later read of a
+  completed or parked attempt that fails, such as a copy of its record, does
+  not turn it `FAILED`: the Message Store keeps the attempt as it ended.
 
 On any other record the list is ignored with a warning, and its delivered
 steps are skipped as on any redelivery. The Message Store is asked once per

@@ -15,7 +15,9 @@ No Message Store schema change.
   input, while replay is enabled, on a record marked `x-bip-replay: true` that
   matches a `REQUESTED` or `PUBLISHED` replay audit row for its message id,
   integration, topic, attempt and redo list, as long as that attempt is not
-  completed or parked. Any other record's list is dropped with a warning. See
+  completed or parked. A `FAILED` outcome no longer replaces a completed or
+  parked attempt's row, so a copy of a replay record that fails cannot reopen
+  its redo. Any other record's list is dropped with a warning. See
   [Redo behavior](README.md#redo-behavior).
   Upgrade: an operator's resend works as before. A tool that writes
   `x-bip-redo-steps` on records itself, not through the resend endpoint, no

@@ -41,6 +41,7 @@ import java.util.Properties;
 import java.util.concurrent.TimeUnit;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 
 /**
  * With a real broker and Message Store: an operator's resend with redo sends the step again,
@@ -49,6 +50,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
  */
 class AuditedRedoEndToEndTest {
     private static final String TOPIC = "bip.order-pipeline.in";
+    private static final String INVOICE_TOPIC = "bip.invoice-pipeline.in";
     private static final PostgreSQLContainer POSTGRES = new PostgreSQLContainer("postgres:16-alpine");
     private static final ConfluentKafkaContainer KAFKA =
             new ConfluentKafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
@@ -75,7 +77,7 @@ class AuditedRedoEndToEndTest {
             }
         }
         try (var admin = AdminClient.create(Map.<String, Object>of("bootstrap.servers", KAFKA.getBootstrapServers()))) {
-            admin.createTopics(List.of(new NewTopic(TOPIC, 1, (short) 1))).all().get(20, TimeUnit.SECONDS);
+            admin.createTopics(List.of(new NewTopic(TOPIC, 1, (short) 1), new NewTopic(INVOICE_TOPIC, 1, (short) 1))).all().get(20, TimeUnit.SECONDS);
         }
     }
 
@@ -139,13 +141,86 @@ class AuditedRedoEndToEndTest {
         }
     }
 
+    @Test
+    void aCopyOfACompletedReplayThatFailsUnparkedDoesNotRedoOnItsNextRead() throws Exception {
+        var receiver = new ReceiverComponent();
+        var forgedReads = new java.util.concurrent.atomic.AtomicInteger();
+        var attemptWhenParked = new java.util.concurrent.atomic.AtomicReference<String>();
+        try (var context = new DefaultCamelContext()) {
+            bindShippedKafkaDefaults(context);
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "direct:parking");
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.addComponent("receiver", receiver);
+            var store = new PostgresStepOutcomeStore(dataSource);
+            context.getCamelContextExtension().addInterceptStrategy(new StepTrackingInterceptStrategy(new DefaultStepTracker(store)));
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(new PostgresMessageStoreSink(dataSource),
+                    "invoice-pipeline", "postgres-inline", 100_000, 30, true));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    // The DLQ is unavailable during the copy's first read: it fails without being parked.
+                    from("direct:parking").routeId("parking").process(exchange -> {
+                        if (forgedReads.get() == 1) {
+                            throw new IllegalStateException("DLQ unavailable");
+                        }
+                        if (forgedReads.get() > 1) {
+                            attemptWhenParked.compareAndSet(null, text("select status from bip_message_attempt "
+                                    + "where message_id = 'invoice-1' and attempt = 2"));
+                        }
+                    });
+                    from("kafka:" + INVOICE_TOPIC + "?brokers=" + KAFKA.getBootstrapServers()
+                            + "&groupId=invoice-pipeline&autoOffsetReset=earliest&pollTimeoutMs=100")
+                            .routeId("invoice-input").routeConfigurationId(PlatformRouteConfiguration.NO_RETRY)
+                            .process(exchange -> {
+                                if (exchange.getMessage().getBody(String.class).contains("Forged")) {
+                                    forgedReads.incrementAndGet();
+                                }
+                            })
+                            .to("receiver:invoices").id("post-invoice")
+                            .process(exchange -> {
+                                if (exchange.getMessage().getBody(String.class).contains("Forged")) {
+                                    throw new IllegalStateException("not an invoice");
+                                }
+                            });
+                }
+            });
+            context.start();
+
+            produce(INVOICE_TOPIC, "invoice-1", Map.of(), "<Invoice/>");
+            awaitCompleted("invoice-1", 1);
+            new PostgresKafkaMessageReplayService(dataSource, KAFKA.getBootstrapServers(), "bip.%s.in", context,
+                    "invoice-pipeline").replay(new MessageReplayRequest("invoice-1", "operator@example.com",
+                    "Send the invoice again", List.of("post-invoice")));
+            awaitCompleted("invoice-1", 2);
+            assertEquals(2, receiver.received().size(), "The resend's redo sends the step again");
+
+            // A producer's copy of the completed replay record, with another body, that fails after
+            // the skipped step and cannot be parked on its first read.
+            produce(INVOICE_TOPIC, "invoice-1", Map.of(PlatformHeaders.REPLAY, "true", PlatformHeaders.ATTEMPT, "2",
+                    PlatformHeaders.REDO_STEPS, "[\"post-invoice\"]"), "<Forged/>");
+            produce(INVOICE_TOPIC, "invoice-sentinel", Map.of(), "<Invoice/>");
+            awaitCompleted("invoice-sentinel", 1);
+            assertTrue(forgedReads.get() >= 2, "The copy was read again after it failed unparked");
+            assertEquals(3, receiver.received().size(), "Only the sentinel was sent; the copy's re-read redid nothing");
+            assertEquals("COMPLETED", attemptWhenParked.get(),
+                    "The copy's failed, unparked read did not turn the completed attempt FAILED");
+        }
+    }
+
     private static void produce(String messageId, Map<String, String> headers) throws Exception {
+        produce(TOPIC, messageId, headers, "<Order/>");
+    }
+
+    private static void produce(String topic, String messageId, Map<String, String> headers, String body)
+            throws Exception {
         var properties = new HashMap<String, Object>();
         properties.put("bootstrap.servers", KAFKA.getBootstrapServers());
         properties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
         properties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
         try (var producer = new KafkaProducer<String, String>(properties)) {
-            var record = new ProducerRecord<String, String>(TOPIC, "order", "<Order/>");
+            var record = new ProducerRecord<String, String>(topic, "order", body);
             record.headers().add(PlatformHeaders.MESSAGE_ID, messageId.getBytes(StandardCharsets.UTF_8));
             headers.forEach((name, value) -> record.headers().add(name, value.getBytes(StandardCharsets.UTF_8)));
             producer.send(record).get(10, TimeUnit.SECONDS);
@@ -162,6 +237,14 @@ class AuditedRedoEndToEndTest {
             Thread.sleep(100);
         }
         throw new AssertionError("Attempt " + attempt + " of " + messageId + " was not completed");
+    }
+
+    private static String text(String sql) throws Exception {
+        try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement();
+             ResultSet result = statement.executeQuery(sql)) {
+            result.next();
+            return result.getString(1);
+        }
     }
 
     private static int count(String sql) throws Exception {

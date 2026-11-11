@@ -77,7 +77,9 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             """;
 
     // The CTE reads another integration that already journaled this message id, without
-    // an extra round trip. Its snapshot is taken before the insert.
+    // an extra round trip. Its snapshot is taken before the insert. A FAILED outcome never
+    // replaces a COMPLETED or DLQ attempt: a later read of that attempt that fails, such as a
+    // copy of its record, leaves the attempt as it ended, so its redo list stays used.
     private static final String UPSERT_MESSAGE_ATTEMPT_SQL = """
             with other as (
                 select integration from bip_message_attempt
@@ -131,6 +133,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 occurred_at = excluded.occurred_at,
                 steps_json = excluded.steps_json,
                 error = excluded.error
+            where not (bip_message_attempt.status in ('COMPLETED', 'DLQ') and excluded.status = 'FAILED')
             returning (select integration from other)
             """;
 
