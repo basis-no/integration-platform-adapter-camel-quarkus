@@ -107,7 +107,9 @@ The settings this path reads, all from `release.yml`:
   fingerprint in 40 uppercase hexadecimal characters (`build` reads it and has
   no environment, so it cannot be an environment variable), and
   `RELEASE_SIGNING_PUBLIC_KEY`, the armored public key including the CI subkey
-  (`sign-upload` and `release-page.yml` verify signatures against it);
+  (`sign-upload` checks that its primary fingerprint is
+  `RELEASE_SIGNER_FINGERPRINT`; `release-page.yml` verifies the published
+  signatures against it, so update it before the first CI-signed release);
 - environments `release` and `release-publish`, each with required reviewers
   (at least two, "prevent self-review" on), no administrator bypass and a
   deployment rule that allows only tags; the jobs refuse to run otherwise;
