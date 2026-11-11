@@ -23,7 +23,17 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
             "authorization", "proxy-authorization", "cookie", "set-cookie", "www-authenticate", "proxy-authenticate");
     private static final List<String> CREDENTIAL_PARTS = List.of(
             "secret", "token", "password", "passwd", "credential", "session", "signature",
-            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth");
+            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth",
+            "assertion", "privatekey", "jwt", "bearer");
+    // The adapter's own envelope headers carry no credential and stay readable; any other name,
+    // also one that starts with x-bip-, is judged by the rule.
+    private static final Set<String> ENVELOPE_HEADERS = Set.of(
+            PlatformHeaders.MESSAGE_ID, PlatformHeaders.CORRELATION_ID, PlatformHeaders.SCHEMA_VERSION,
+            PlatformHeaders.CONTENT_TYPE, PlatformHeaders.IDEMPOTENCY_KEY, PlatformHeaders.SOURCE_SYSTEM,
+            PlatformHeaders.SOURCE_EVENT_ID, PlatformHeaders.TARGET_SYSTEM, PlatformHeaders.REPLAY,
+            PlatformHeaders.ATTEMPT, PlatformHeaders.REDO_STEPS, PlatformHeaders.ERROR, PlatformHeaders.DLQ_AT,
+            PlatformHeaders.PAYLOAD_STORAGE, PlatformHeaders.PAYLOAD_REF, PlatformHeaders.PAYLOAD_SIZE,
+            PlatformHeaders.PAYLOAD_SHA256, "idempotency-key");
     /** Named profile for slow external backends. */
     public static final String SLOW_BACKEND = "ip-slow-backend";
     // The slow-backend waits run on the Kafka consumer thread: 5, 10, 20, 20, 20 and 20 seconds,
@@ -194,10 +204,10 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
         if (failure != null && StepOutcomeFailure.of(exchange) != null) {
             LOG.error("Message {} exhausted retries and is not parked: a step outcome was not checked or recorded",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(failure));
         } else if (failure != null) {
             LOG.error("Message {} exhausted retries and is being parked in the DLQ",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(failure));
         }
 
         // The DLQ record must carry the ORIGINAL consumed payload, not a body the route
@@ -243,7 +253,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
     static boolean isCredentialHeader(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
-        if (lower.startsWith("x-bip-") || lower.equals("idempotency-key")) {
+        if (ENVELOPE_HEADERS.contains(lower)) {
             return false;
         }
         return CREDENTIAL_HEADERS.contains(lower) || CREDENTIAL_PARTS.stream().anyMatch(lower::contains)
@@ -258,6 +268,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (failure == null) {
             return "unknown failure";
         }
-        return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+        // Published on the shared DLQ topic: a receiver URI in the text keeps no credential.
+        return ErrorTextMasking.message(failure);
     }
 }

@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.replay;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
@@ -408,7 +409,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
     private void markReplayFailed(String replayId, Exception failure) {
         try (Connection connection = requiredDataSource().getConnection();
              PreparedStatement statement = connection.prepareStatement(MARK_REPLAY_FAILED_SQL)) {
-            statement.setString(1, failure.getMessage());
+            statement.setString(1, ErrorTextMasking.message(failure));
             statement.setString(2, replayId);
             statement.executeUpdate();
         } catch (Exception auditFailure) {

@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.model;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import java.time.Instant;
 
 /**
@@ -63,6 +64,7 @@ public record StepResult(
         if (error == null) {
             return null;
         }
-        return error.getMessage() == null ? error.getClass().getName() : error.getMessage();
+        // Stored in the step ledger and the attempt's steps: a receiver URI keeps no credential.
+        return ErrorTextMasking.message(error);
     }
 }

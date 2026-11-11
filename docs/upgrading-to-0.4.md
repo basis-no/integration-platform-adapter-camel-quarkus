@@ -353,7 +353,8 @@ The changelog's Unreleased section has the details; in short:
   `basis.message-store.step.output-checkpoint.header-names`, by the rule that
   masks header values in parked DLQ records (`Authorization`, cookies, names
   containing `token`, `secret`, `session`, `auth` and the like, names ending in
-  `-key` or `_key`; not `x-bip-*` or `Idempotency-Key`). Do not list such names,
+  `-key` or `_key`; not the adapter's own envelope headers or
+  `Idempotency-Key`). Do not list such names,
   and obtain a fresh credential on each attempt. The rule goes by the name, so
   harmless headers such as `X-Partition-Key` or `X-Session-Count` are refused
   too: copy the value to an exchange property and list it in `property-names`

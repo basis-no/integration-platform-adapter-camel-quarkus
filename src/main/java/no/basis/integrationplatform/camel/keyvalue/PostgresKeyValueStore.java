@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.keyvalue;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import org.apache.camel.spi.IdempotentRepository;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -308,7 +309,7 @@ final class PostgresKeyValueStore implements KeyValueStore, AutoCloseable {
             sweepExpired();
         } catch (RuntimeException e) {
             // An exception would cancel the schedule; the next run retries.
-            LOG.warn("Key-Value Store sweep failed; retrying at the next interval", e);
+            LOG.warn("Key-Value Store sweep failed; retrying at the next interval", ErrorTextMasking.forLog(e));
         }
     }
 
@@ -369,12 +370,37 @@ final class PostgresKeyValueStore implements KeyValueStore, AutoCloseable {
                     + " table: this Message Store has no " + TABLE_NAME + " table (" + operation + ")", e);
         }
         // Constraint and data errors repeat on every retry; they are not an unavailable store.
+        // PostgreSQL's text for them repeats the failing row, the stored value included, and the
+        // error is stored, parked and logged: name the key's operation and the limit instead, and
+        // keep only the SQLSTATE of the database's error.
         if (KEY_LIMIT.equals(sqlState) || CHECK_VIOLATION.equals(sqlState)
                 || (sqlState != null && sqlState.startsWith(DATA_EXCEPTION_CLASS))) {
-            return new KeyValueLimitException(
-                    "Key-Value Store rejected the write (" + operation + "): " + e.getMessage(), e);
+            String limit = limit(sqlState, e.getMessage());
+            return new KeyValueLimitException("Key-Value Store rejected the write (" + operation + "): " + limit,
+                    new SQLException(limit, sqlState));
         }
         return new KeyValueStoreException("Key-Value Store failed to " + operation, e);
+    }
+
+    /** The limit a refused write broke, from the SQLSTATE and the constraint's name only. */
+    private static String limit(String sqlState, String databaseText) {
+        if (KEY_LIMIT.equals(sqlState)) {
+            return "an integration has at most 10000 live keys (SQLSTATE " + sqlState + ")";
+        }
+        if (CHECK_VIOLATION.equals(sqlState)) {
+            String text = databaseText == null ? "" : databaseText;
+            if (text.contains("\"bip_key_value_key_check\"")) {
+                return "a key is 1 to " + MAX_KEY_CHARACTERS + " characters without control characters (SQLSTATE "
+                        + sqlState + ", bip_key_value_key_check)";
+            }
+            if (text.contains("\"bip_key_value_value_check\"")) {
+                return "a value is at most " + MAX_VALUE_BYTES + " bytes as stored JSON text (SQLSTATE " + sqlState
+                        + ", bip_key_value_value_check)";
+            }
+            return "a check constraint of " + TABLE_NAME + " (SQLSTATE " + sqlState + ")";
+        }
+        return "the database cannot store the value, for example a NUL character in a JSON string (SQLSTATE "
+                + sqlState + ")";
     }
 
     private static OptionalLong version(ResultSet resultSet) throws SQLException {

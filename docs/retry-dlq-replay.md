@@ -176,6 +176,20 @@ captured payload to `basis.message-store.dlq-uri`, preserves the envelope, adds
 `x-bip-error` and `x-bip-dlq-at`, records `DLQ`, and only then commits the input
 offset. A replay's `x-bip-redo-steps` is not carried; see [Redo Steps](#redo-steps).
 
+The failure text in `x-bip-error`, in the Message Store's error columns, in the
+attempt's steps and in the adapter's log lines has every URI in it masked by
+the stored-endpoint rule ([Stored Endpoints](steps-and-idempotency.md#stored-endpoints)):
+a receiver URL that a failed send's exception names keeps no user info, key or
+signature. A URI is a scheme followed by `://`, up to the next white space,
+quote or angle bracket; after 20 URIs in one text, each further one is replaced
+by `xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
+needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`) whose text
+names each original class, with the stack traces kept and the messages of the
+failure and its causes masked the same way. Other text
+in an exception message is stored as it is, so do not put credentials in
+exception messages of your own. Headers the record or the route carries are
+masked in the parked copy by the credential-name rule below.
+
 The message counts as parked only after the DLQ endpoint accepted the record; a
 Kafka producer with Camel's default `requestRequiredAcks=all` returns once the
 broker acknowledged it. The publish runs in the adapter's

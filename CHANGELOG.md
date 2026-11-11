@@ -2,6 +2,38 @@
 
 ## Unreleased
 
+- Security: credentials in error texts no longer reach the Message Store, the
+  shared DLQ topic or the log. A failed send's exception names the receiver's
+  URL, query included, and the adapter stored that text in the message log, the
+  attempt and its steps and the step ledger, published it in `x-bip-error` on
+  the DLQ topic, and logged it. Every URI in such a text is now masked by the
+  stored-endpoint rule (user info, and parameters such as `code`, `sig`, `key`
+  or a credential-like name), also in the failures the adapter logs, whose class
+  names and stack traces stay. See
+  [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+  Upgrade: error texts show `xxxxxx` where they showed credentials; a DLQ reader
+  or alert that matched an unmasked value in `x-bip-error` must match the
+  masked form. Rows and DLQ records written before keep their text: rotate any
+  credential that has appeared in the URL of a failed send.
+- Security: the credential-name rule masks `X-JWT-Assertion`, `PrivateKey` and
+  other names containing `assertion`, `privatekey`, `jwt` or `bearer`, and no
+  longer exempts every `x-bip-*` name: only the adapter's own envelope headers
+  and `Idempotency-Key` stay readable. The rule decides which header values are
+  masked in a parked DLQ record, which of a consumed record's credential headers
+  an HTTP send withholds, which published headers the Kafka-publish warning
+  names, which query parameters a stored endpoint masks, and which names an
+  output checkpoint refuses.
+  Upgrade: a consumed record's `X-JWT-Assertion` or `PrivateKey` header no
+  longer reaches HTTP receivers; an application's own `x-bip-…-key` or
+  `x-bip-…-token` header is masked in the parked copy; stored endpoints mask
+  `?jwt=`, `?assertion=` and `?bearer=` values. The .NET adapter needs the same
+  names for its stored endpoints to stay identical.
+- Security: a Key-Value Store write that the database refuses no longer copies
+  the row into the error. PostgreSQL's text for a constraint or data error names
+  the failing row, the stored value included, and the adapter stored, parked and
+  logged it as the message's failure. The error now names the key's operation,
+  the limit and the SQLSTATE only.
+
 - A Kafka boundary route that holds records in memory after its input
   completes refuses to start, naming the route and node: Camel's `resequence`
   (batch or stream), or an `aggregate` on Camel's in-memory repository (the

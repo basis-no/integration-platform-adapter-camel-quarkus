@@ -1,6 +1,7 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
 import no.basis.integrationplatform.camel.KafkaPollInterval;
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
@@ -275,7 +276,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         Throwable unrecorded = StepOutcomeFailure.of(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA && unrecorded != null) {
             LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed again",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), unrecorded);
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(unrecorded));
             if (exchange.getException() == null) {
                 // The route handled the failure; the Kafka consumer reads the record again only from a failed exchange.
                 exchange.setException(new IllegalStateException(
@@ -836,10 +837,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return Boolean.FALSE.equals(recordMessage);
     }
 
+    // Stored, published as a status event and shown to operators: URIs keep no credential.
     private String errorMessage(Throwable failure) {
-        if (failure == null) {
-            return null;
-        }
-        return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+        return ErrorTextMasking.message(failure);
     }
 }
