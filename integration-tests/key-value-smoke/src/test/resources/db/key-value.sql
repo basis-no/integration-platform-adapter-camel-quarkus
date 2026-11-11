@@ -1,10 +1,10 @@
--- Disposable test fixture only. Platform-owned migrations008+009 provision production.
--- Key-Value Store: a small key-value store per integration (spec section 13,
--- ADR-006). Contract v1.2.0-rc2, additive: no existing table changes.
+-- Disposable test fixture only. In production the database operator provisions
+-- this table. Key-Value Store: a small key-value store per integration.
+-- Additive: no existing table changes.
 --
 -- Rows belong to the integration that wrote them (`integration` is the same
 -- identity as bip_message_log.integration). Adapters read and write only their
--- own rows; the dashboard/agent read path reads every row. Values are small JSON
+-- own rows; an operator read path reads every row. Values are small JSON
 -- documents, never payloads or secrets. Expired rows are invisible to reads and
 -- swept by the adapter that owns them; message retention never touches them.
 

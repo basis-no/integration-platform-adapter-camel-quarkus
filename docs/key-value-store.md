@@ -5,12 +5,10 @@ integration in its environment's Message Store: polling cursors, markers such
 as "a full re-sync already ran", keys of input already seen, and small buffers.
 It is not a place for payloads, secrets, or business records.
 
-**Local 0.3.6 candidate; not published or certified.** This implements the
-Key-Value Store API subset of section 13 of draft message-store contract
-`v1.2.0-rc2`. Section 13.1 single-active leases and certification scenarios
-S39–S44 are not implemented or qualified. It needs a Message Store provisioned
-with `bip_key_value`. Against an older Message Store the adapter starts
-and runs as before, and only Key-Value Store calls fail.
+**New in 0.3.6.** The adapter implements the Key-Value Store operations below.
+Single-active leases are not implemented. It needs a Message Store provisioned
+with `bip_key_value`. Against an older Message Store the adapter starts and runs
+as before, and only Key-Value Store calls fail.
 
 ## Operations
 
@@ -32,8 +30,8 @@ while the row remains. An expired row is invisible; rewriting it before the
 sweep continues that row's version. Once the sweep or an explicit delete removes
 it, recreation starts at 1 again. A version read before deletion may therefore
 match the new row, allowing a stale compare-and-set to succeed. These numbers
-are not lease or fencing tokens. This candidate behavior is recorded explicitly
-while its draft contract/version clarification awaits human review.
+are not lease or fencing tokens. This is a known limitation of 0.3.6; see the
+[changelog](../CHANGELOG.md).
 
 A `ttl` sets expiry from database time; `put` and `compareAndSet` without one
 clear any expiry. Keep durable cursor keys without a TTL and do not delete them
@@ -75,8 +73,8 @@ Compare-and-set protects the stored cursor; it does not lock the preceding
 fetch or publish. Several pollers can perform those effects before one wins the
 write. Retain a qualified polling lock or use a tested stop-before-start process,
 and make publication safe to repeat with a stable source message identity.
-A crash after publish and before the cursor update may repeat publication. This
-candidate adds no leases or transaction across state and message outcomes.
+A crash after publish and before the cursor update may repeat publication. The
+Key-Value Store adds no leases or transaction across state and message outcomes.
 
 ## Deduplicating Input
 
@@ -117,7 +115,7 @@ would be dropped.
 
 A rejected write throws `KeyValueLimitException`; repeating it fails the
 same way. An unavailable store throws `KeyValueStoreException`, as does a
-Message Store without `bip_key_value`, with a message that the Key-Value Store needs Message Store contract 1.2.
+Message Store without `bip_key_value`, with a message that the Message Store has no `bip_key_value` table.
 
 ## Expiry and Environments
 
@@ -145,26 +143,26 @@ cursors. After new writes, reconcile the latest state before rolling code back.
 
 ## Provisioning and isolation
 
-The platform owns the contract migrations and runtime database grants. This API
-uses the same default JDBC Message Store datasource and integration identity as
-the maintenance adapter. It never creates tables, renames the old table, or
-changes contract metadata. It does not fall back to `bip_integration_state`.
+The database operator owns the schema migrations and runtime database grants.
+This API uses the same default JDBC Message Store datasource and integration
+identity as the maintenance adapter. It never creates tables, renames the old
+table, or changes the `bip_contract` metadata. It does not fall back to `bip_integration_state`.
 A deployment with a different application datasource must supply the correctly
 scoped store bean rather than point this API at a business database. Where
 per-integration database isolation is enabled, qualify the API with the actual
-runtime and platform reader logins and the platform's policies. An owner-role
+runtime and operator reader logins and the deployment's policies. An owner-role
 fixture proves API wiring, but cannot prove those permission boundaries.
 
 Rows belong to one environment and do not move with image promotion. Rollback
 after new state writes must reconcile the latest state before an older
 application resumes; changing the adapter pin alone does not move data back.
 
-## Candidate qualification fixtures
+## Qualification fixtures
 
 The ordinary maintenance smoke includes a lazy-CDI check with its datasource
 inactive. A separate `integration-tests/key-value-smoke` fixture boots Quarkus
-against one isolated PostgreSQL 17 container pinned to the platform test image and exercises the injected API,
-integration identity, contract metadata preservation and application disposal.
+against one isolated PostgreSQL 17 container pinned to a reviewed test image and exercises the injected API,
+integration identity, `bip_contract` metadata preservation and application disposal.
 Its synthetic database binds to loopback and never accepts a supplied JDBC URL.
 The pinned image must already be cached; this fixture refuses automatic image
 pulls. It requires a fresh `bip.test.run-id`, supplied to Maven and its test fork,
@@ -172,9 +170,9 @@ for exact container ownership. Memory and swap are both bounded to 256 MiB,
 with one CPU and 64 PIDs. Partial startup and schema failures stop the owned
 database and preserve the first failure. Image preparation needs its own
 resource window.
-These fixtures exercise candidate API behavior and runtime wiring. They do not
-certify the draft contract or least-privileged database permissions. With Docker
-available and the pinned image cached, install the candidate locally, then run
+These fixtures exercise the API behavior and runtime wiring. They do not
+qualify unimplemented Key-Value Store features or least-privileged database permissions. With Docker
+available and the pinned image cached, install the adapter build under test locally, then run
 `./mvnw -f integration-tests/maintenance-smoke/pom.xml verify` and
 the PostgreSQL fixture with an explicit unique run ID, for example:
 
@@ -191,7 +189,7 @@ The root `PostgresKeyValueStoreTest` supports the maintenance suite's opt-in
 PostgreSQL 16 digest, refuses image pulls, bounds memory and swap to 256 MiB,
 CPU to one and PIDs to 64, and publishes all ports on loopback. Ordinary CI
 keeps its existing container setup when the flag is absent.
-The S33–S38 protocol tests and least-privileged RLS proof remain separate gates.
+The Key-Value Store protocol tests and least-privileged RLS proof remain separate gates.
 
 SQL execution is bounded to five seconds per statement; connection acquisition
 and network timeouts remain the datasource's responsibility. A cancelled or

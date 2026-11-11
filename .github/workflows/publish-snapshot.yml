@@ -1,9 +1,10 @@
-name: Snapshot publication suspended (releases are signed offline)
+name: Snapshot publication (not from CI)
 
-# Every Central upload requires the offline release signer; acceptance uses
-# locally built artifacts. See docs/release-packaging.md#snapshot-lane.
-# Existing signed releases and previously published snapshots are unaffected.
-# Never add signing or publisher credentials to a source build.
+# CI publishes no snapshots. A snapshot of a reviewed commit is published,
+# unsigned, from the release manager's workstation; final releases are signed
+# in the protected tag run (release.yml) or with the offline signer. See
+# docs/release-packaging.md#snapshot-lane. Never add signing or publisher
+# credentials to a workflow.
 on:
   workflow_dispatch:
 
@@ -11,11 +12,11 @@ permissions:
   contents: read
 
 jobs:
-  suspended:
+  refuse:
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
-      - name: Refuse credential-bearing source builds
+      - name: Refuse; CI publishes no snapshots
         run: |
-          echo "Snapshot publication is suspended. See docs/release-packaging.md#snapshot-lane." >&2
+          echo "CI does not publish snapshots. See docs/release-packaging.md#snapshot-lane." >&2
           exit 1

@@ -4,11 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.EndpointUriMasking;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.StepResult;
 import org.apache.camel.Exchange;
-import org.apache.camel.util.URISupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -32,6 +32,18 @@ public class DefaultStepTracker implements StepTracker {
 
     private static final ObjectMapper REDO_STEPS_READER = new ObjectMapper();
 
+    /**
+     * The exchange properties that describe the send in progress: {@link #beforeSend} sets
+     * them and the outcome is recorded from them.
+     */
+    static final List<String> CURRENT_STEP_PROPERTIES = List.of(
+            StepVisits.REPEATED_IN,
+            PlatformExchangeProperties.CURRENT_STEP_ID,
+            PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY,
+            PlatformExchangeProperties.CURRENT_ENDPOINT_URI,
+            PlatformExchangeProperties.STEP_SHOULD_SKIP,
+            PlatformExchangeProperties.STEP_ALREADY_DELIVERED);
+
     private final StepOutcomeStore stepOutcomeStore;
 
     @Inject
@@ -42,11 +54,13 @@ public class DefaultStepTracker implements StepTracker {
     @Override
     public void beforeSend(Exchange exchange) {
         String endpointUri = exchange.getProperty(Exchange.INTERCEPTED_ENDPOINT, String.class);
+        // Before any send, so that no send carries this attempt's redo list.
+        Set<String> redoSteps = captureRedoSteps(exchange);
         clearCurrentStep(exchange);
         // The journal keeps the endpoint without credentials: a resolved password or
         // token in the URI must never reach the Message Store. Step ids still derive
         // from the exact URI, so existing step identities are unchanged.
-        exchange.setProperty(PlatformExchangeProperties.CURRENT_ENDPOINT_URI, URISupport.sanitizeUri(endpointUri));
+        exchange.setProperty(PlatformExchangeProperties.CURRENT_ENDPOINT_URI, EndpointUriMasking.mask(endpointUri));
 
         if (isInternalEndpoint(endpointUri)) {
             exchange.setProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, true);
@@ -59,9 +73,8 @@ public class DefaultStepTracker implements StepTracker {
         String idempotencyKey = messageId + ":" + stepId;
         boolean alreadyDelivered = stepOutcomeStore.wasDelivered(idempotencyKey);
 
-        // Contract §9 (DECISION D1): steps listed in x-bip-redo-steps MUST be
+        // Steps listed in x-bip-redo-steps MUST be
         // re-executed even when the durable ledger already has them DELIVERED.
-        Set<String> redoSteps = redoSteps(exchange);
         boolean redoRequested = redoSteps.contains(stepId) || redoSteps.contains(idempotencyKey);
         boolean skip = alreadyDelivered && !redoRequested;
         if (alreadyDelivered && redoRequested) {
@@ -74,21 +87,36 @@ public class DefaultStepTracker implements StepTracker {
         exchange.setProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, skip);
         exchange.getMessage().setHeader(PlatformHeaders.IDEMPOTENCY_KEY, idempotencyKey);
         exchange.getMessage().setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, idempotencyKey);
+        // Another part of this attempt with the same message id may have sent the key. This
+        // only changes how the skip is logged.
+        String repeatedIn = skip ? StepVisits.of(exchange).repeatedIn(StepVisits.path(exchange), idempotencyKey) : null;
+        if (repeatedIn != null) {
+            exchange.setProperty(StepVisits.REPEATED_IN, repeatedIn);
+        }
     }
 
+    /**
+     * Reads a replay's {@code x-bip-redo-steps} into the exchange once and removes the header.
+     * The list belongs to this integration's replayed attempt: a receiver or a downstream
+     * integration that got it would send its own steps with the same ids again for the same
+     * message id. With the adapter installed, every route reads it when an exchange enters
+     * the route; a tracked send and DLQ parking read it again in case a route restored it.
+     * @param exchange the exchange
+     * @return the step ids to send again in this attempt
+     */
     @SuppressWarnings("unchecked")
-    private Set<String> redoSteps(Exchange exchange) {
+    public static Set<String> captureRedoSteps(Exchange exchange) {
+        Object header = exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS);
         Set<String> cached = exchange.getProperty(PlatformExchangeProperties.REDO_STEPS, Set.class);
         if (cached != null) {
             return cached;
         }
-        Set<String> redoSteps = parseRedoSteps(redoStepsHeaderValue(exchange));
+        Set<String> redoSteps = parseRedoSteps(redoStepsHeaderValue(header));
         exchange.setProperty(PlatformExchangeProperties.REDO_STEPS, redoSteps);
         return redoSteps;
     }
 
-    private String redoStepsHeaderValue(Exchange exchange) {
-        Object value = exchange.getMessage().getHeader(PlatformHeaders.REDO_STEPS);
+    private static String redoStepsHeaderValue(Object value) {
         if (value == null) {
             return null;
         }
@@ -99,19 +127,20 @@ public class DefaultStepTracker implements StepTracker {
     }
 
     /**
-     * Contract §3 (DECISION D1): {@code x-bip-redo-steps} is a JSON array of step
+     * {@code x-bip-redo-steps} is a JSON array of step
      * ids. A malformed value is logged as a warning and treated as empty; it must
-     * never fail message processing.
+     * never fail message processing. The warning names the header only: the value
+     * comes from the message, and the parser's error would repeat it.
      */
-    private Set<String> parseRedoSteps(String headerValue) {
+    private static Set<String> parseRedoSteps(String headerValue) {
         if (headerValue == null || headerValue.isBlank()) {
             return Set.of();
         }
         try {
             JsonNode root = REDO_STEPS_READER.readTree(headerValue);
             if (root == null || !root.isArray()) {
-                LOG.warn("Malformed {} header (expected JSON array of step ids, got '{}'); treating as no redo",
-                        PlatformHeaders.REDO_STEPS, headerValue);
+                LOG.warn("Malformed {} header (expected a JSON array of step ids); treating it as no redo",
+                        PlatformHeaders.REDO_STEPS);
                 return Set.of();
             }
             Set<String> redoSteps = new LinkedHashSet<>();
@@ -119,13 +148,13 @@ public class DefaultStepTracker implements StepTracker {
                 if (item.isTextual() && !item.asText().isBlank()) {
                     redoSteps.add(item.asText());
                 } else {
-                    LOG.warn("Ignoring non-string entry '{}' in {} header", item, PlatformHeaders.REDO_STEPS);
+                    LOG.warn("Ignoring an entry of the {} header that is not a step id", PlatformHeaders.REDO_STEPS);
                 }
             }
             return Set.copyOf(redoSteps);
         } catch (Exception e) {
-            LOG.warn("Malformed {} header (expected JSON array of step ids, got '{}'); treating as no redo",
-                    PlatformHeaders.REDO_STEPS, headerValue, e);
+            LOG.warn("Malformed {} header (expected a JSON array of step ids); treating it as no redo",
+                    PlatformHeaders.REDO_STEPS);
             return Set.of();
         }
     }
@@ -137,6 +166,7 @@ public class DefaultStepTracker implements StepTracker {
         }
         StepResult step = StepResult.delivered(currentStepId(exchange), currentIdempotencyKey(exchange), currentEndpointUri(exchange));
         steps(exchange).add(step);
+        StepVisits.of(exchange).sent(StepVisits.path(exchange), step.idempotencyKey());
         stepOutcomeStore.recordDelivered(step);
     }
 
@@ -145,6 +175,18 @@ public class DefaultStepTracker implements StepTracker {
         String stepId = currentStepId(exchange);
         if (stepId != null) {
             steps(exchange).add(StepResult.skipped(stepId, currentIdempotencyKey(exchange), currentEndpointUri(exchange)));
+            String repeatedIn = exchange.getProperty(StepVisits.REPEATED_IN, String.class);
+            if (repeatedIn != null) {
+                // Names the route, step and scope only: no message content and no header values.
+                LOG.error("Step {} was skipped in a {} of input route {}, so this part was not delivered: another part "
+                                + "of the same attempt already sent this step key. In 0.3.x split parts, loop "
+                                + "iterations and multicast and recipient list branches keep the input's "
+                                + PlatformHeaders.MESSAGE_ID + ", so they share one step key. Give each part its own "
+                                + PlatformHeaders.MESSAGE_ID + " before the send, or publish each part with its own id. "
+                                + "See docs/split-step-identity.md",
+                        stepId, part(repeatedIn), exchange.getFromRouteId());
+                return;
+            }
             // A replayed message otherwise looks delivered in the logs although nothing was sent.
             LOG.info("Step {} SKIPPED for message {}: an earlier attempt recorded it as delivered, so the send to {} "
                             + "was not repeated in this attempt; list the step in {} to repeat it",
@@ -181,11 +223,18 @@ public class DefaultStepTracker implements StepTracker {
         stepOutcomeStore.recordFailed(step);
     }
 
+    private static String part(String scope) {
+        return switch (scope) {
+            case StepVisits.SPLIT -> "split part";
+            case StepVisits.LOOP -> "loop iteration";
+            case StepVisits.MULTICAST -> "multicast branch";
+            case StepVisits.RECIPIENT_LIST -> "recipient list branch";
+            default -> scope;
+        };
+    }
+
     private void clearCurrentStep(Exchange exchange) {
-        exchange.removeProperty(PlatformExchangeProperties.CURRENT_STEP_ID);
-        exchange.removeProperty(PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY);
-        exchange.removeProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP);
-        exchange.removeProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED);
+        CURRENT_STEP_PROPERTIES.forEach(exchange::removeProperty);
     }
 
     private boolean shouldSkip(Exchange exchange) {
@@ -200,7 +249,7 @@ public class DefaultStepTracker implements StepTracker {
 
         String routeId = exchange.getFromRouteId() == null ? "unknown-route" : exchange.getFromRouteId();
         String fallback = routeId + ":" + scheme(endpointUri) + ":" + shortHash(endpointUri);
-        LOG.warn("Endpoint {} has no stable Camel node id; using generated step id {}", URISupport.sanitizeUri(endpointUri), fallback);
+        LOG.warn("Endpoint {} has no stable Camel node id; using generated step id {}", EndpointUriMasking.mask(endpointUri), fallback);
         return fallback;
     }
 
