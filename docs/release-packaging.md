@@ -93,7 +93,11 @@ instead.
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
 whose `.github/scripts` are the tools to trust, and change it only through a
-reviewed change. The jobs never execute tools from the tag.
+reviewed change. The jobs never execute tools from the tag. Set it on each
+environment (`release`, `release-publish` and `snapshot`) and never as a
+repository or organization variable: a job whose environment lacks it silently
+uses that value, which more people can change. The same holds for the secret
+names.
 
 The CI signing subkey is a separate, passphrase-less signing subkey of the
 release key, stored only as the `RELEASE_SIGNING_SUBKEY` secret of environment
@@ -103,7 +107,7 @@ environments. These names never existed as repository secrets, so a job outside
 the environments resolves them to empty values instead of a stale repository
 secret.
 
-The settings this path reads, all from `release.yml`:
+The settings this path needs:
 
 - repository variables `RELEASE_SIGNER_FINGERPRINT`, the release key's primary
   fingerprint in 40 uppercase hexadecimal characters (`build` reads it and has
@@ -140,8 +144,8 @@ dependency can execute arbitrary code, and no step cleanup or log masking protec
 a key while that code runs. Without an enforceable protected environment no
 workflow can hold a production credential safely. Do not add signing or portal
 secrets to repository secrets or to any workflow other than the protected jobs
-of `release.yml`, and do not dispatch historical workflow revisions that used
-them.
+of `release.yml` and the `upload` job of `publish-snapshot.yml`, and do not
+dispatch historical workflow revisions that used them.
 
 | Stage | Where | Credentials | Executes |
 | --- | --- | --- | --- |
@@ -401,7 +405,9 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
   subkey (`gpg --armor --export-secret-subkeys CI_SUBKEY_FINGERPRINT!`) from a
   temporary copy of the keyring in which its passphrase was removed, and paste
   the export only into the `RELEASE_SIGNING_SUBKEY` secret of environment
-  `release`. Delete the temporary copy. The workflow refuses an export that
+  `release`. Delete the temporary copy, and publish the updated public key to
+  both keyservers and the `RELEASE_SIGNING_PUBLIC_KEY` repository variable,
+  also whenever the CI subkey is replaced. The workflow refuses an export that
   contains the primary secret key. Revoke and replace the CI subkey on its
   expiry, on any doubt about the environment, or when a reviewer leaves; the
   primary key and its other subkeys stay valid.
@@ -481,7 +487,7 @@ protected-tag release:
 The lane never signs (Central does not require signatures on snapshots) and
 never calls the publisher API that releases use. A re-run of `upload` refuses;
 dispatch a new run, which uploads a new timestamped build. Repository settings
-the lane needs, in addition to those of the [release path](#protected-tag-release-in-ci):
+the lane needs, next to those of the [release path](#protected-tag-release-in-ci):
 
 - snapshot publishing enabled for the namespace in the Central portal;
 - the environment `snapshot` with the same two required reviewers and "prevent
