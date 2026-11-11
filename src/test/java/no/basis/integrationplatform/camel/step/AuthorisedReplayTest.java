@@ -60,7 +60,6 @@ class AuthorisedReplayTest {
         assertTrue(store.isAuthorisedReplay(claim("message-1", 2, REDO)), "Consumed before the audit row is PUBLISHED");
         execute("update bip_message_replay_audit set status = 'PUBLISHED'");
         assertTrue(store.isAuthorisedReplay(claim("message-1", 2, REDO)));
-        assertTrue(store.isAuthorisedReplay(claim("message-1", 2, "[ \"post-order\" ]")), "Compared as JSON");
     }
 
     @Test
@@ -87,6 +86,29 @@ class AuthorisedReplayTest {
 
         assertFalse(store.isAuthorisedReplay(claim("message-1", 2, REDO)),
                 "A copy of the replay record, or the same record read again after its outcome");
+    }
+
+    @Test
+    void aFailedAttemptDoesNotUseTheRedoUp() throws Exception {
+        // The attempt failed without being parked, for example because the audit read failed
+        // once: it is read again, and its redo must still run.
+        audit("message-1", "order-pipeline", "bip.order-pipeline.in", 2, REDO, "PUBLISHED");
+        execute("insert into bip_message_attempt (message_id, attempt, schema_version, integration, route_id, status,"
+                + " occurred_at) values ('message-1', 2, 1, 'order-pipeline', 'input', 'FAILED', now())");
+        assertTrue(store.isAuthorisedReplay(claim("message-1", 2, REDO)));
+        execute("update bip_message_attempt set status = 'DLQ'");
+        assertFalse(store.isAuthorisedReplay(claim("message-1", 2, REDO)), "Parked: the redo has run");
+    }
+
+    @Test
+    void theDatabaseNeverParsesTheRecordsOwnList() throws Exception {
+        audit("message-1", "order-pipeline", "bip.order-pipeline.in", 2, REDO, "PUBLISHED");
+        // Lists that JSON parsers accept but PostgreSQL's jsonb does not.
+        for (String forged : new String[]{"[\"post-order\",\"a\\u0000\"]", "[\"post-order\",\"\\ud800\"]",
+                "[\"post-order\",1e400000]"}) {
+            assertFalse(store.isAuthorisedReplay(claim("message-1", 2, forged)), forged);
+        }
+        assertTrue(store.isAuthorisedReplay(claim("message-1", 2, " [\"post-order\"] ")), "Compared as JSON");
     }
 
     @Test

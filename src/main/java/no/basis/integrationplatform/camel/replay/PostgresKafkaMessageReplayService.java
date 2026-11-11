@@ -252,11 +252,12 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
                 addHeader(record, PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
             }
             producer.send(record).get();
-            markReplayPublished(replayId);
         } catch (Exception e) {
             markReplayFailed(replayId, e);
             throw new MessageReplayException("Failed to replay message " + LogText.escape(messageId) + " to " + topic, e);
         }
+        // Published: a row left REQUESTED still lets the record redo, which FAILED would not.
+        markReplayPublished(replayId);
 
         return new MessageReplayResult(replayId, message.messageId(), message.integration(), topic, nextAttempt);
     }
@@ -300,28 +301,28 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
 
     private void validateReplayable(ReplayableMessage message) {
         if (message.integration() == null || message.integration().isBlank()) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: integration is missing");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: integration is missing");
         }
         // Checked first, so that nothing more of another integration's message is read or reported.
         if (!message.integration().equals(integrationName)) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable by this integration");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable by this integration");
         }
         if (!message.replayable()) {
             String reason = message.replayDisabledReason() == null
                     ? "message is marked non-replayable"
                     : message.replayDisabledReason();
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: " + reason);
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: " + reason);
         }
         if (message.payloadDeletedAt() != null) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: payload was deleted");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: payload was deleted");
         }
         if (message.payloadExpiresAt() != null && message.payloadExpiresAt().isBefore(Instant.now())) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: payload has expired");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: payload has expired");
         }
         if (PayloadReference.STORAGE.equals(message.payloadStorage())) {
             objectStore.verify(message.payloadReference());
         } else if (message.payloadBytes() == null) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: payload bytes are missing");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: payload bytes are missing");
         }
     }
 
@@ -335,7 +336,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
         if (route == null || !(route.getEndpoint() instanceof KafkaEndpoint endpoint)
                 || endpoint.getConfiguration().isTopicIsPattern()
                 || !topic.equals(endpoint.getConfiguration().getTopic())) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: its stored"
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: its stored"
                     + " input route does not consume this integration's replay topic " + topic + ". A missing,"
                     + " changed or non-Kafka input route needs review before the message is sent again.");
         }
@@ -391,7 +392,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             statement.setTimestamp(9, Timestamp.from(Instant.now()));
             statement.executeUpdate();
         } catch (Exception e) {
-            throw new MessageReplayException("Failed to audit replay request for message " + message.messageId(), e);
+            throw new MessageReplayException("Failed to audit replay request for message " + LogText.escape(message.messageId()), e);
         }
     }
 

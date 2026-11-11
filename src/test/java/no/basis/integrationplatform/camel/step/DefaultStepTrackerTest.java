@@ -569,6 +569,44 @@ class DefaultStepTrackerTest {
     }
 
     @Test
+    void aListWithTextAfterTheArrayIsMalformedAndNotAsked() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(exchange, "[\"notify-vendor\"] x");
+
+        tracker.beforeSend(exchange);
+
+        assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        assertEquals(0, stepOutcomeStore.replayChecks);
+    }
+
+    @Test
+    void aRecordWhoseValuesTheStoreCannotReadGetsNoRedoAndIsNotHeldBack() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        stepOutcomeStore.replayCheckFailure = new StepOutcomeStoreException("bad value",
+                new java.sql.SQLException("invalid byte sequence for encoding \"UTF8\": 0x00", "22021"));
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(exchange, "[\"notify-vendor\"]");
+
+        tracker.beforeSend(exchange);
+
+        assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+    }
+
+    @Test
+    void aSecondReadOfTheSameExchangeKeepsItsList() {
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(exchange, "[\"notify-vendor\"]");
+        DefaultStepTracker.acceptRedoSteps(exchange, "message-123", "order-pipeline", "bip.order-pipeline.in", 2, true);
+
+        assertEquals(Set.of("notify-vendor"), exchange.getProperty(PlatformExchangeProperties.REDO_STEPS, Set.class));
+        assertNotNull(exchange.getProperty(PlatformExchangeProperties.REDO_CLAIM));
+    }
+
+    @Test
     void aLoginThatMayNotReadTheReplayAuditGetsNoRedo() {
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         stepOutcomeStore.replayCheckFailure = new StepOutcomeStoreException("denied",
