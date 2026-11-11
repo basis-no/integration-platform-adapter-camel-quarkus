@@ -386,6 +386,17 @@ The changelog's Unreleased section has the details; in short:
   `setHeader("Authorization", header("Authorization").convertToString())`. A
   receiver that read `kafka.*` request headers must get the values from
   headers the route sets itself.
+- **`rest:` sends withhold them too.** A `rest:` send through `http`,
+  `vertx-http` or `netty-http` now also leaves the record's credential headers
+  and the `kafka.*` / `CamelKafka*` headers out of its request; its path and
+  query bind as before, also through a `rest:` endpoint a route consumes from.
+  A REST DSL service (a `rest:` route input) is unchanged. A `rest:` send
+  through a producer component other than these three fails when its producer
+  is created, or at its first request, instead of sending the headers. A
+  `rest-openapi:` send is not covered yet
+  ([#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158));
+  remove the headers before it. See
+  [Kafka Consumers](ingress-and-scaling.md#kafka-consumers).
 - **No credential-like names in the output checkpoint's header list.**
   Output checkpoints are new in 0.4.0. When you configure one (or already did
   on a 0.4 development build), startup refuses a credential-like name in
