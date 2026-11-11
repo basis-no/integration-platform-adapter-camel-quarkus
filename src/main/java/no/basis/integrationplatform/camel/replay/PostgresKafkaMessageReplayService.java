@@ -19,6 +19,8 @@ import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
@@ -43,6 +45,8 @@ import java.util.stream.Collectors;
  */
 @ApplicationScoped
 public class PostgresKafkaMessageReplayService implements MessageReplayService {
+    private static final Logger LOG = LoggerFactory.getLogger(PostgresKafkaMessageReplayService.class);
+
     private static final String LOAD_REPLAYABLE_MESSAGE_SQL = """
             select message_id,
                    correlation_id,
@@ -257,7 +261,13 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             throw new MessageReplayException("Failed to replay message " + LogText.escape(messageId) + " to " + topic, e);
         }
         // Published: a row left REQUESTED still lets the record redo, which FAILED would not.
-        markReplayPublished(replayId);
+        try {
+            markReplayPublished(replayId);
+        } catch (MessageReplayException e) {
+            // A request made again would publish a second replay with its own redo.
+            LOG.warn("Replay {} of message {} was published, but could not be marked PUBLISHED; it is still REQUESTED. "
+                    + "Do not request it again", replayId, LogText.escape(messageId), e);
+        }
 
         return new MessageReplayResult(replayId, message.messageId(), message.integration(), topic, nextAttempt);
     }

@@ -90,6 +90,17 @@ class PostgresMessageStoreSinkTest {
         assertEquals("COMPLETED", singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 1"));
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.EnumSource(value = MessageStatus.class, names = {"COMPLETED", "DLQ"})
+    void aFailedReadOfAnEndedAttemptLeavesTheAttemptAsItEnded(MessageStatus ended) {
+        sink.record(result(ended, 1, ended == MessageStatus.DLQ ? "parked" : null));
+        sink.record(result(MessageStatus.FAILED, 1, "a later read failed"));
+
+        assertEquals(ended.name(), singleValue("select status from bip_message_attempt where message_id = 'message-123' and attempt = 1"));
+        assertEquals(ended == MessageStatus.DLQ ? "parked" : null,
+                singleValue("select error from bip_message_attempt where message_id = 'message-123' and attempt = 1"));
+    }
+
     @Test
     void laterAttemptUpdatesCurrentMessageLog() {
         sink.record(result(MessageStatus.FAILED, 1, "first failure"));
