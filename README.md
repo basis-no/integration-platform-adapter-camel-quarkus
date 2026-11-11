@@ -481,7 +481,7 @@ partition, offset and timestamp, still reach the receiver, but they hold no
 other header's value. To remove every header but the adapter's, see
 [Removing headers before a tracked send](#removing-headers-before-a-tracked-send):
 `removeHeaders("*")` alone also removes `x-bip-message-id`, and with it the
-send's stable step key. Do not remove them all with `removeHeaders("kafka.*")`:
+send's stable step key. Do not remove the `kafka.*` headers with `removeHeaders("kafka.*")`:
 that also removes `kafka.KEY`, which Camel's Kafka producer uses as the key of
 the record that the adapter parks in the DLQ, so a parked record loses its
 key. Alternatively, upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
@@ -825,7 +825,11 @@ warning (`Message missing x-bip-message-id; generated <id>`)
   so the step store never skips the send, and even a receiver that
   deduplicates by `Idempotency-Key` applies it twice.
 - A message whose send completes is journaled under the random id, so the
-  consumed message cannot be found or resent by its own id.
+  consumed message cannot be found or resent by its own id. The fallback to
+  the consumed input's id that 0.3.6 added applies only when no tracked send
+  follows the removal: the send sets the generated id as the header, and that
+  value is journaled. A message that fails and is parked is still parked and
+  journaled under the consumed input's id.
 
 Keep the adapter's headers when you remove the others:
 
@@ -842,24 +846,28 @@ the simplest rule. The adapter sets `x-bip-idempotency-key` and
 `x-bip-redo-steps` when the input arrives, so removing those does not change
 the send.
 
-Removing every header also removes Camel's Kafka record key header,
-`kafka.KEY` on Camel 4.18.0 and `CamelKafkaKey` from camel-kafka 4.18.3. Camel's
-Kafka producer uses it as the key of a record the adapter parks in the DLQ, so
-keep it too if a parked record should keep its key:
+Removing every header also removes Camel's Kafka record key header:
+`kafka.KEY` on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0, such as
+4.18.0, and `CamelKafkaKey` from those versions, which rename the `kafka.*`
+headers. Camel's Kafka producer uses it as the key of a record the adapter
+parks in the DLQ, so keep it too if a parked record should keep its key:
 
 ```java
 .removeHeaders("*", "x-bip-.*", "kafka.KEY", "CamelKafkaKey")
 ```
 
 Both forms still remove the record's credential headers, such as
-`Authorization`, and `kafka.HEADERS` (see [Retry and DLQ](#retry-and-dlq)).
+`Authorization`, and `kafka.HEADERS` (see [Retry and DLQ](#retry-and-dlq)). A
+record parked after the removal carries only the headers that were kept, so
+also keep any application header a parked record must carry.
 
 Inside a `split`, do not rely on removed headers to give each part its own
 step key: the generated ids change on every delivery, so every part is sent
 again on each redelivery and resend. Use one of the safe forms in
 [Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
 
-Keeping the consumed record's id when a route removes it is tracked in #143;
+Keeping the consumed record's id when a route removes it is tracked in
+[#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143);
 0.3.7 does not change the send.
 
 ### Splitting before a tracked send in 0.3.x

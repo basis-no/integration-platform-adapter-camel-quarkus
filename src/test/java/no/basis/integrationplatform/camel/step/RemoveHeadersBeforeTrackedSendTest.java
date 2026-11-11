@@ -63,19 +63,24 @@ class RemoveHeadersBeforeTrackedSendTest {
         var sent = receiver.received().getFirst().getMessage();
         assertEquals("message-1:send-order", sent.getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
         assertEquals(null, sent.getHeader("Authorization"), "The record's other headers are removed");
+        assertEquals(null, sent.getHeader("kafka.HEADERS"));
+        assertEquals(null, sent.getHeader("kafka.KEY"));
+        assertEquals(null, sent.getHeader("CamelKafkaKey"));
         assertEquals("message-1", rows.getLast().messageId());
     }
 
     @Test
-    void theKafkaKeyHeaderCanBeKeptForParking() throws Exception {
+    void theKafkaKeyHeadersCanBeKept() throws Exception {
         start(route -> route.removeHeaders("*", "x-bip-.*", "kafka.KEY", "CamelKafkaKey"));
 
         send();
 
         var sent = receiver.received().getFirst().getMessage();
-        assertEquals("order-key", sent.getHeader(KafkaConstants.KEY));
+        assertEquals("order-key", sent.getHeader("kafka.KEY"));
+        assertEquals("order-key", sent.getHeader("CamelKafkaKey"));
         assertEquals("message-1:send-order", sent.getHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY));
         assertEquals(null, sent.getHeader("Authorization"));
+        assertEquals(null, sent.getHeader("kafka.HEADERS"));
     }
 
     private void start(Function<RouteDefinition, RouteDefinition> removeHeaders) throws Exception {
@@ -102,7 +107,10 @@ class RemoveHeadersBeforeTrackedSendTest {
         try (var producer = context.createProducerTemplate()) {
             producer.send("direct:input", e -> {
                 e.getMessage().setHeader(KafkaConstants.TOPIC, "bip.order-pipeline.in");
-                e.getMessage().setHeader(KafkaConstants.KEY, "order-key");
+                // Both names: camel-kafka 4.18.0 uses kafka.KEY, later versions CamelKafkaKey.
+                e.getMessage().setHeader("kafka.KEY", "order-key");
+                e.getMessage().setHeader("CamelKafkaKey", "order-key");
+                e.getMessage().setHeader("kafka.HEADERS", "all record headers");
                 e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> { });
                 e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-1");
                 e.getMessage().setHeader("Authorization", "Bearer test-only");

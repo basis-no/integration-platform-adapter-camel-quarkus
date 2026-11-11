@@ -39,9 +39,9 @@ Documentation only; no code, schema or configuration change.
   new random id on every delivery, so a redelivery, a read again or a resend
   sends again under another `Idempotency-Key`, and the message is journaled
   under that random id. Keep the adapter's headers with
-  `removeHeaders("*", "x-bip-.*")`, and also keep `kafka.KEY` (Camel 4.18.0)
-  or `CamelKafkaKey` (camel-kafka 4.18.3 and later) for a parked record to keep
-  its key. See
+  `removeHeaders("*", "x-bip-.*")`, and also keep `kafka.KEY` (camel-kafka
+  before 4.14.8, 4.18.3 and 4.21.0) or `CamelKafkaKey` (those versions and
+  later) for a parked record to keep its key. See
   [Removing headers before a tracked send](README.md#removing-headers-before-a-tracked-send).
 - Known limitation, documented: a `toD` that chooses its component only when
   it sends, through a literal scheme other than `kafka`, such as
