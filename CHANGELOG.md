@@ -15,6 +15,23 @@ Documentation only; no code, schema or configuration change.
   outage, set `autoOffsetReset=earliest` on the Kafka input, and check the DLQ
   for copies of a message by `x-bip-message-id` before resending it. See
   [Retry and DLQ](README.md#retry-and-dlq).
+- Corrected: a tracked send is not repeated during an outage only while the
+  Message Store cannot be read. When the store can be read but not written (a
+  read-only database after a failover or for maintenance, a lost write
+  privilege, probably a full disk), 0.3.6 repeats the send on every read of the
+  record, without end, with the same `Idempotency-Key` when the record carries
+  `x-bip-message-id`, while readiness stays `UP`. The README's runbook now
+  says to scale the integrations to zero at once in that case. Receivers should
+  deduplicate by `Idempotency-Key`
+  ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
+- Known limitation, extended: a failed send in a `direct:` sub-route that was
+  recorded `DELIVERED` is also lost without a resend. Any later read of the
+  parked record, when it carries `x-bip-message-id`, records the message
+  `COMPLETED`, for example after a commit that failed because a receiver that
+  never answers kept the route busy past the poll interval. The README gives a
+  way to find such messages: `COMPLETED` in the Message Store, with a record on
+  the DLQ topic
+  ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
 - Known limitation, documented: a `toD` that chooses its component only when
   it sends, through a literal scheme other than `kafka`, such as
   `language:header:receiverUrl`, does not invalidate the
