@@ -20,8 +20,8 @@
   Upgrade: a restart or a rebalance still loses the kept outcomes, so the next
   read in another process can send once more. While the store refuses writes, a
   step takes up to about 3.5 seconds longer for the waits between the tries; when
-  it stops answering, each try runs to its call timeouts, about 40 seconds in
-  all at the defaults. The dead letter channel and an application's own
+  it stops answering, each try runs to its call timeouts, up to about 40 seconds
+  in all at the defaults (about 30 when every try runs to the network timeout). The dead letter channel and an application's own
   `onException` do not run for an attempt that a store failure ended.
 - A Kafka record whose envelope values the Message Store cannot hold is parked
   and recorded without them, and committed, instead of blocking its partition
