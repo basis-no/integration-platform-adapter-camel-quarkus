@@ -31,7 +31,11 @@ public enum StoreErrorClass {
         this.label = label;
     }
 
-    /** @return the class as log lines name it, such as {@code read-only} */
+    /**
+     * The class as the adapter's log lines name it.
+     *
+     * @return the label, such as {@code read-only}
+     */
     public String label() {
         return label;
     }
