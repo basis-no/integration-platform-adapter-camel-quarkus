@@ -178,15 +178,72 @@ kind.
 
 A Kafka input whose attempt could not check or record a step outcome is neither
 parked nor committed. It is recorded `FAILED`, and its exchange stays failed, so
-the consumer reads the record again once Camel's retries are done. This also
+the consumer reads the record again. The adapter marks the exchange's
+redelivery exhausted, so Camel's error handler neither redelivers it nor runs
+the dead letter channel or an application's own `onException` for it; the ERROR
+line `Message <id> is not committed: a step outcome was not checked or recorded,
+so it is consumed again` with `storeError=<class>` reports it. This also
 holds when the route catches the failure, and when it happens in a split part,
-loop iteration or branch, which run on copies of the input's exchange. Camel's
-retries still run first, so a receiver can get the same send again; receivers
-deduplicate on the stable `Idempotency-Key`. During a Message Store outage the
-partition therefore waits at that input, as it does when parking fails, and
-reads it again with a growing wait; see
-[Reading a record again](retry-dlq-replay.md#reading-a-record-again). Alert on
-inputs that stay `FAILED`.
+loop iteration or branch, which run on copies of the input's exchange. A store
+failure ends the attempt: every send through `to` or `toD` after it in the same
+attempt fails before it sends, with the same failure, tracked or not (such as a
+`direct:` call), including a redelivery of the same send and a later send after
+a `doCatch`. Other processing goes on as the route says, but nothing is
+committed. Sends already running in parallel parts still finish. During a Message Store outage the partition therefore waits at
+that input, as it does when parking fails, and reads it again with a growing
+wait; see [Reading a record again](retry-dlq-replay.md#reading-a-record-again).
+Alert on inputs that stay `FAILED`.
+
+### A send whose `DELIVERED` outcome could not be written
+
+When a send returned but its `DELIVERED` outcome cannot be written, for example
+because the Message Store is read-only after a failover or the login lost its
+write privilege, the send is not made again only because its outcome was lost:
+
+1. On the thread that processes the record, and outside an application
+   transaction, the adapter writes the same outcome again in place, up to 3
+   more times after 0.5, 1 and 2 seconds, starting no try more than 10 seconds
+   after the first failure. A write that succeeds lets the attempt go on.
+2. If it still fails, the adapter keeps a mark in memory for the input route,
+   the record's topic, partition and offset, and the step key: the complete
+   outcome, including an output checkpoint. The attempt fails as above.
+3. When the same record is read again, a step whose step key has a mark gets
+   its outcome written from the mark before the ledger check. If that
+   succeeds, the send is skipped, a checkpointed step's output is restored, the
+   step is listed as `DELIVERED` with the time of the send, and a WARN says so.
+   If it fails, nothing is sent and the record is read again later. A mark wins
+   over a redo list: the earlier read of the same record already made that
+   send.
+
+A step whose output could not be captured for its checkpoint has no outcome to
+keep: it gets no retry in place and no mark, its ERROR line says
+`storeError=checkpoint`, and the record is read again as before. The send has
+returned by then, so while the capture keeps failing, for example for an output
+above the inline checkpoint threshold, every read sends again: fix the cause, or
+park the record.
+
+A record without `x-bip-message-id` keeps the id generated for it while the
+same offset is read again in the process, so its marks match. Split parts with
+their own `x-bip-message-id` have their own marks; a part whose id is random on
+every read never matches. Marks are kept in memory only, at most 10,000 of
+them and 64 MiB of checkpoint bytes (a dropped one is logged), and are dropped
+when a record at or after their offset is committed, or when a record at any
+other offset of the partition begins. A restart, or a rebalance to another
+process, loses them, so the next read there can send once more with the same
+`Idempotency-Key`. A mark whose step the next read does not reach, because the
+route takes another path, is not written. When parts of one attempt share a
+step key, only the part that reaches it first is written from the mark; the
+others are skipped and reported as not delivered, as for a ledger skip. Marks
+and kept ids match by offset only, so after a topic is deleted and created
+again, restart the integrations that consume it.
+
+The adapter's ERROR lines for a record that is not committed end with
+`storeError=<class>` and the SQLSTATE, so an alert can tell these cases apart:
+`read-only` (`25006`), `privilege` (`42501`, class `28`), `schema` (another
+class `42`, class `23`, `3D000`, `3F000`), `checkpoint` (a step's output could
+not be captured), `record-data` (class `22`, `54000`; see
+[A record whose own values the store cannot hold](retry-dlq-replay.md#a-record-whose-own-values-the-store-cannot-hold))
+and `unavailable` (everything else, including timeouts).
 
 A separate request, such as one sent with a `ProducerTemplate`, fails on its
 own when one of its step outcomes is not recorded, also when its own route

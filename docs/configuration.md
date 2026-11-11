@@ -187,7 +187,10 @@ things do, and each makes the call a Message Store failure:
   `01000`, and its text follows the server's `lc_messages`. The text is matched
   only to name the cause in the error, "committed locally, but a synchronous
   standby did not confirm it". Any other warning a commit reports also fails
-  the call, with "committed, but the commit reported a warning".
+  the call, with "committed, but the commit reported a warning". The failure
+  has SQLSTATE `08007` (transaction resolution unknown) and names the warning's
+  own SQLSTATE in its text, so it counts as `unavailable` whatever the warning
+  says.
 
 The check needs the warning to reach the adapter, that is `client_min_messages`
 at `warning` or lower: with `error`, set on the role, the database or in the

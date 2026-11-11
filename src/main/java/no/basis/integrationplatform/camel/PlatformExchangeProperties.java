@@ -24,6 +24,12 @@ public final class PlatformExchangeProperties {
     public static final String CURRENT_STEP_ROLE = "basis.messageStore.currentStepRole";
     /** Idempotency key injected by the adapter on the current send. */
     public static final String INJECTED_IDEMPOTENCY_KEY = "basis.messageStore.injectedIdempotencyKey";
+    /** A managed Kafka input's record position, {@code <topic>/<partition>@<offset>}, captured when it begins. */
+    public static final String RECORD_POSITION = "basis.messageStore.recordPosition";
+    /** The id of the thread that began processing a managed Kafka input: its consumer thread. */
+    public static final String POLL_THREAD = "basis.messageStore.pollThread";
+    /** The DELIVERED outcome a send's step got from an earlier read's mark instead of being sent. */
+    public static final String STEP_FROM_MARK = "basis.messageStore.stepFromMark";
     /** Captured Kafka manual commit handle. */
     public static final String KAFKA_MANUAL_COMMIT = "basis.messageStore.kafkaManualCommit";
     /** Whether terminal failure was successfully parked in the DLQ. */
