@@ -20,7 +20,7 @@ No Message Store schema change.
   the pattern (Camel's own sanitizer, which also runs when an application has
   added keywords, has no such bound). See [Step Tracking](README.md#step-tracking).
   Upgrade: new attempts store the masked value; rows recorded before keep
-  theirs. A query or tool that matched a stored endpoint's user name or one of
+  theirs unless the same step is recorded again. A query or tool that matched a stored endpoint's user name or one of
   these parameter values no longer finds it in new rows. Step keys and
   classification by node id are unchanged.
 

@@ -756,7 +756,7 @@ guess. Confirm the ids before the upgrade:
   ```sql
   select o.step_id,
          regexp_replace(regexp_replace(o.endpoint_uri, '//[^/@]*@', '//xxxxxx@'),
-           '(?i)((password|passphrase|secret[a-z_]*|[a-z_]*token|authpassword)=)[^&]*',
+           '(?i)([?&](code|sig|key|pwd|[^=&]*(password|passphrase|passcode|secret|token|signature|credential|auth|apikey|api-key|api_key|[-_]key|accesskey|accountkey|privatekey|connectionstring)[^=&]*)=)[^&]*',
            '\1xxxxxx', 'g') as endpoint,
          count(*) as steps, max(o.occurred_at) as last_occurred_at
   from bip_step_outcome o
@@ -835,9 +835,10 @@ masked. Failed and skipped step entries use the same masked endpoint, as do the
 warning emitted when a send has no stable Camel node id and the startup
 refusal for a send without an id. This masks the endpoint field, not arbitrary
 exception messages or application logs. Existing rows, logs and backups are not
-rewritten; review their access and retention separately. A query or tool that
-matched a stored endpoint's user name or one of these parameter values no
-longer finds it in rows recorded from 0.3.7.
+rewritten, unless the same step is recorded again; review their access and
+retention separately. A query or tool that matched a stored endpoint's user
+name or one of these parameter values no longer finds it in rows recorded from
+0.3.7.
 
 ### Splitting before a tracked send in 0.3.x
 
