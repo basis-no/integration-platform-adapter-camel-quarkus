@@ -7,6 +7,7 @@ import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.EndpointUriMasking;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.StoreErrorClass;
 import no.basis.integrationplatform.camel.model.StepResult;
 import org.apache.camel.Exchange;
 import org.slf4j.Logger;
@@ -21,6 +22,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 @ApplicationScoped
 public class DefaultStepTracker implements StepTracker {
@@ -32,6 +34,31 @@ public class DefaultStepTracker implements StepTracker {
 
     private static final ObjectMapper REDO_STEPS_READER = new ObjectMapper();
 
+    // A DELIVERED write that fails is tried again in place: after these waits, but no try starts
+    // more than RETRY_IN_PLACE_FOR_MS after the first failure.
+    static final long[] RETRY_IN_PLACE_WAITS_MS = {500, 1_000, 2_000};
+    static final long RETRY_IN_PLACE_FOR_MS = 10_000;
+
+    /** Waits before a write is tried again; {@code false} when the wait was interrupted. */
+    @FunctionalInterface
+    interface RetrySleeper {
+        boolean sleep(long millis);
+    }
+
+    private RetrySleeper retrySleeper = millis -> {
+        try {
+            Thread.sleep(millis);
+            return true;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            return false;
+        }
+    };
+
+    void setRetrySleeper(RetrySleeper retrySleeper) {
+        this.retrySleeper = retrySleeper;
+    }
+
     /**
      * The exchange properties that describe the send in progress: {@link #beforeSend} sets
      * them and the outcome is recorded from them.
@@ -42,7 +69,8 @@ public class DefaultStepTracker implements StepTracker {
             PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY,
             PlatformExchangeProperties.CURRENT_ENDPOINT_URI,
             PlatformExchangeProperties.STEP_SHOULD_SKIP,
-            PlatformExchangeProperties.STEP_ALREADY_DELIVERED);
+            PlatformExchangeProperties.STEP_ALREADY_DELIVERED,
+            PlatformExchangeProperties.STEP_FROM_MARK);
 
     private final StepOutcomeStore stepOutcomeStore;
 
@@ -71,6 +99,11 @@ public class DefaultStepTracker implements StepTracker {
         String stepId = resolveStepId(exchange, endpointUri);
         String messageId = ensureMessageId(exchange);
         String idempotencyKey = messageId + ":" + stepId;
+        UnrecordedDeliveries.Mark mark = UnrecordedDeliveries.find(exchange, idempotencyKey);
+        if (mark != null) {
+            writeFromMark(exchange, mark, idempotencyKey);
+            return;
+        }
         boolean alreadyDelivered = stepOutcomeStore.wasDelivered(idempotencyKey);
 
         // Steps listed in x-bip-redo-steps MUST be
@@ -167,11 +200,83 @@ public class DefaultStepTracker implements StepTracker {
         StepResult step = StepResult.delivered(currentStepId(exchange), currentIdempotencyKey(exchange), currentEndpointUri(exchange));
         steps(exchange).add(step);
         StepVisits.of(exchange).sent(StepVisits.path(exchange), step.idempotencyKey());
-        stepOutcomeStore.recordDelivered(step);
+        writeDelivered(exchange, step);
+    }
+
+    /**
+     * Writes the outcome of a send that returned. If the write fails, it is tried again in place
+     * a few times, unless the record's own data cannot be stored, and then kept as a mark for
+     * the record's next read, so that the send is not made again because only its outcome was
+     * lost. The failure still fails the attempt.
+     */
+    private void writeDelivered(Exchange exchange, StepResult step) {
+        RuntimeException failure;
+        try {
+            stepOutcomeStore.recordDelivered(step);
+            return;
+        } catch (RuntimeException first) {
+            failure = first;
+        }
+        if (StoreErrorClass.of(failure) != StoreErrorClass.RECORD_DATA && retriesInPlace(exchange)) {
+            long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(RETRY_IN_PLACE_FOR_MS);
+            for (long wait : RETRY_IN_PLACE_WAITS_MS) {
+                if (System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(wait) > deadline || !retrySleeper.sleep(wait)) {
+                    break;
+                }
+                try {
+                    stepOutcomeStore.recordDelivered(step);
+                    LOG.info("Step {} of message {}: its DELIVERED outcome was written when tried again in place",
+                            step.step(), exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+                    return;
+                } catch (RuntimeException again) {
+                    failure = again;
+                    if (StoreErrorClass.of(again) == StoreErrorClass.RECORD_DATA) {
+                        break;
+                    }
+                }
+            }
+        }
+        UnrecordedDeliveries.mark(exchange, step);
+        throw failure;
+    }
+
+    // Only on the thread that processes the record, so that no I/O thread of an asynchronous
+    // client waits, and not in an application's transaction, where every later statement fails.
+    private static boolean retriesInPlace(Exchange exchange) {
+        Long thread = exchange.getProperty(PlatformExchangeProperties.POLL_THREAD, Long.class);
+        return thread != null && thread == Thread.currentThread().getId() && !exchange.isTransacted();
+    }
+
+    /**
+     * An earlier read of this record made the send, and its outcome could not be written then:
+     * write it now and skip the send. A write that fails again fails this attempt before
+     * anything is sent.
+     */
+    private void writeFromMark(Exchange exchange, UnrecordedDeliveries.Mark mark, String idempotencyKey) {
+        // The mark stays until its record is superseded: the write may join a transaction that
+        // rolls back, and writing it again on a later read is harmless.
+        stepOutcomeStore.recordDelivered(mark.step());
+        exchange.setProperty(PlatformExchangeProperties.CURRENT_STEP_ID, mark.step().step());
+        exchange.setProperty(PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY, idempotencyKey);
+        exchange.setProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, true);
+        exchange.setProperty(PlatformExchangeProperties.STEP_ALREADY_DELIVERED, true);
+        exchange.setProperty(PlatformExchangeProperties.STEP_FROM_MARK, mark.step());
+        exchange.getMessage().setHeader(PlatformHeaders.IDEMPOTENCY_KEY, idempotencyKey);
+        exchange.getMessage().setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, idempotencyKey);
+        LOG.warn("Step {} of message {} was sent in an earlier read of record {}, and its DELIVERED outcome is "
+                        + "written now; the send is not repeated", mark.step().step(),
+                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), mark.position());
     }
 
     @Override
     public void recordSkipped(Exchange exchange) {
+        StepResult fromMark = exchange.getProperty(PlatformExchangeProperties.STEP_FROM_MARK, StepResult.class);
+        if (fromMark != null) {
+            // Delivered by this attempt in an earlier read of the record; written now.
+            steps(exchange).add(fromMark);
+            StepVisits.of(exchange).sent(StepVisits.path(exchange), fromMark.idempotencyKey());
+            return;
+        }
         String stepId = currentStepId(exchange);
         if (stepId != null) {
             steps(exchange).add(StepResult.skipped(stepId, currentIdempotencyKey(exchange), currentEndpointUri(exchange)));

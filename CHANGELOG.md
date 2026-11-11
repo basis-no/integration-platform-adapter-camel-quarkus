@@ -97,6 +97,37 @@ No Message Store schema change.
   messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);
   resend each one the receiver did not get with the step in `redoSteps`. See
   [Retry and DLQ](README.md#retry-and-dlq).
+- A send whose `DELIVERED` outcome could not be written is not made again on
+  the record's next read in the same process
+  ([#137](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/137)).
+  Before, with a Message Store that could be read but not written (a read-only
+  database after a failover, a lost write privilege), every read of the record
+  passed the ledger check, sent again and failed to write the outcome, without
+  end. Now the write is tried again in place a few times, then kept in memory
+  for the record, and the next read writes it before the ledger check and skips
+  the send. A record without `x-bip-message-id` keeps its generated id while it
+  is read again. A store failure also ends the attempt: no later tracked send of
+  it, nor a redelivery of the failed one, is made. The ERROR lines for a record
+  that is not committed name the store error's class (`storeError=read-only`,
+  `privilege`, `schema`, `record-data` or `unavailable`) and its SQLSTATE. See
+  [A send whose `DELIVERED` outcome could not be written](README.md#a-send-whose-delivered-outcome-could-not-be-written).
+  Upgrade: a restart or a rebalance still loses the kept outcomes, so the next
+  read in another process can send once more; a step can take up to about 25
+  seconds longer while the store refuses writes.
+- A Kafka record whose envelope values the Message Store cannot hold is parked
+  and recorded without them, and committed, instead of blocking its partition
+  ([#138](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/138)).
+  Before the route runs, `x-bip-message-id`, `x-bip-correlation-id`,
+  `x-bip-content-type`, `x-bip-source-system` and `x-bip-target-system` are
+  refused when they contain a NUL byte or are longer than 1,024 bytes; a step
+  outcome or outcome write that fails for the record's own data (SQLSTATE class
+  `22`, `54000`) takes the same path. A refused `x-bip-message-id` is replaced
+  by an id derived from the record's position, shared with the .NET adapter.
+  After three records in a row whose data the store refused on a partition, the
+  next one is held back. A failure text with U+0000 is stored with U+FFFD.
+  See [A record whose own values the store cannot hold](README.md#a-record-whose-own-values-the-store-cannot-hold).
+  Upgrade: an envelope value over 1,024 bytes, which the store accepted
+  before, is now refused and its record parked.
 
 ### Documentation
 

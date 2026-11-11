@@ -3,14 +3,17 @@ package no.basis.integrationplatform.camel.lifecycle;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.StoreErrorClass;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
+import no.basis.integrationplatform.camel.step.UnrecordedDeliveries;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.Exchange;
+import org.apache.camel.ProducerTemplate;
 import org.apache.camel.Route;
 import org.apache.camel.component.kafka.KafkaConstants;
 import org.apache.camel.component.kafka.consumer.KafkaManualCommit;
@@ -48,15 +51,43 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     static final long MAX_BACK_OFF_MS = 30_000;
     private static final long DEFAULT_MAX_POLL_INTERVAL_MS = 300_000;
     private static final int MAX_HELD_BACK_PARTITIONS = 1_024;
-    private static final String RECORD_POSITION = "basis.messageStore.recordPosition";
     private static final String POLL_STARTED = "basis.messageStore.pollStarted";
-    private static final String POLL_THREAD = "basis.messageStore.pollThread";
     private static final String LAST_POLL_RECORD = "basis.messageStore.lastPollRecord";
     // Per consumer thread: when its current poll's records began, and whether the next record
     // starts a new poll. A failed record ends its poll: with breakOnFirstError the consumer
     // stops the batch and reconnects.
     private final Map<Long, Long> pollStarted = new ConcurrentHashMap<>();
     private final Set<Long> newPollNext = ConcurrentHashMap.newKeySet();
+
+    // Per topic partition: the offset of a held-back record that came without x-bip-message-id,
+    // and the id generated for it, so that its next read keeps the id and its marks match.
+    private final Map<String, String[]> generatedIds = new ConcurrentHashMap<>();
+    // Per topic partition: how many records in a row took the terminal path because the store
+    // refused their data. Records the boundary check refused do not count: they say nothing
+    // about the store's settings or schema.
+    private final Map<String, Integer> recordDataInARow = new ConcurrentHashMap<>();
+    // Records parked for their own data in this process, so that one whose reduced row cannot
+    // be written is not parked again on every read.
+    private final Set<String> parkedForData = java.util.Collections.newSetFromMap(
+            java.util.Collections.synchronizedMap(new java.util.LinkedHashMap<>(16, 0.75f, false) {
+                @Override
+                protected boolean removeEldestEntry(Map.Entry<String, Boolean> eldest) {
+                    return size() > MAX_HELD_BACK_PARTITIONS;
+                }
+            }));
+    private volatile ProducerTemplate parking;
+
+    /** Above this many bytes, a stored text envelope value is refused at the boundary. */
+    static final int MAX_ENVELOPE_VALUE_BYTES = 1_024;
+    /** After this many records in a row parked for their own data, the next one blocks instead. */
+    static final int MAX_RECORD_DATA_IN_A_ROW = 3;
+    private static final String ENVELOPE_REFUSAL = "basis.messageStore.envelopeRefusal";
+    // The adapter's dead-letter route, which parks a record and confirms the publish.
+    private static final String DEAD_LETTER_URI = "direct:bip-confirmed-dead-letter";
+    // The record headers the Message Store keeps as text, two of them in indexes.
+    private static final List<String> STORED_TEXT_HEADERS = List.of(PlatformHeaders.MESSAGE_ID,
+            PlatformHeaders.CORRELATION_ID, PlatformHeaders.CONTENT_TYPE, PlatformHeaders.SOURCE_SYSTEM,
+            PlatformHeaders.TARGET_SYSTEM);
 
     /** Waits before a record is handed back to its consumer to be read again. */
     @FunctionalInterface
@@ -84,37 +115,166 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
+        captureKafkaManualCommit(exchange);
+        boolean managed = managed(exchange);
+        if (managed) {
+            captureRecordPosition(exchange);
+            // On the record's own bytes, before an id is assigned or the payload captured.
+            refuseUnstorableEnvelope(exchange);
+        }
         normalizeKafkaEnvelopeHeaders(exchange);
         // A replay's redo list is for this attempt only; the route must not forward it.
         DefaultStepTracker.captureRedoSteps(exchange);
-        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
+        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID,
+                managed ? keepGeneratedId(exchange) : ensureMessageId(exchange));
         exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
         captureInputEnvelope(exchange);
-        captureKafkaManualCommit(exchange);
-        if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null) {
+        if (managed) {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
             StepOutcomeFailure.begin(exchange);
-            captureRecordPosition(exchange);
             capturePollStart(exchange);
+            // A later record on the partition supersedes the marks of the one before it.
+            UnrecordedDeliveries.supersede(exchange, false);
         }
         capturePayloadMetadata(exchange);
         if (trafficSignals != null) trafficSignals.recordAdmitted(exchange);
+        if (exchange.getProperty(ENVELOPE_REFUSAL) != null) {
+            // The route does not run; onExchangeDone parks and records the record.
+            exchange.setRouteStop(true);
+        }
+    }
+
+    private static boolean managed(Exchange exchange) {
+        return exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null;
+    }
+
+    /**
+     * Refuses a record whose text envelope values the Message Store cannot hold: a value with a
+     * NUL byte, or longer than {@value #MAX_ENVELOPE_VALUE_BYTES} bytes. When the message id
+     * itself is refused, the record gets the id derived from its position.
+     */
+    private void refuseUnstorableEnvelope(Exchange exchange) {
+        List<String> refused = new java.util.ArrayList<>();
+        boolean idRefused = false;
+        for (String name : STORED_TEXT_HEADERS) {
+            Object value = exchange.getMessage().getHeader(name);
+            byte[] bytes = value instanceof byte[] raw ? raw
+                    : value == null ? null : value.toString().getBytes(StandardCharsets.UTF_8);
+            String why = bytes == null ? null : containsNul(bytes) ? "contains a NUL byte"
+                    : bytes.length > MAX_ENVELOPE_VALUE_BYTES
+                    ? "is " + bytes.length + " bytes, over the " + MAX_ENVELOPE_VALUE_BYTES + "-byte limit" : null;
+            if (why != null) {
+                refused.add(name + " " + why);
+                idRefused |= name.equals(PlatformHeaders.MESSAGE_ID);
+            }
+        }
+        if (refused.isEmpty()) {
+            return;
+        }
+        if (idRefused) {
+            String derived = derivedMessageId(exchange);
+            if (derived == null) {
+                exchange.getMessage().removeHeader(PlatformHeaders.MESSAGE_ID);
+            } else {
+                exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, derived);
+            }
+        }
+        exchange.setProperty(ENVELOPE_REFUSAL, "The Message Store cannot hold the record's " + String.join(", ", refused)
+                + "; the route did not run");
+    }
+
+    private static boolean containsNul(byte[] bytes) {
+        for (byte b : bytes) {
+            if (b == 0) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private String derivedMessageId(Exchange exchange) {
+        String position = exchange.getProperty(PlatformExchangeProperties.RECORD_POSITION, String.class);
+        if (position == null) {
+            return null;
+        }
+        int slash = position.lastIndexOf('/');
+        int at = position.lastIndexOf('@');
+        return KafkaRecordIdentity.derive(integrationName, position.substring(0, slash),
+                Integer.parseInt(position.substring(slash + 1, at)), Long.parseLong(position.substring(at + 1)));
+    }
+
+    /**
+     * The record's message id. A record without one gets a generated id, and keeps it when the
+     * same record is read again in this process while it is held back, so that the marks of its
+     * sends match.
+     */
+    private String keepGeneratedId(Exchange exchange) {
+        String current = exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID, String.class);
+        String position = exchange.getProperty(PlatformExchangeProperties.RECORD_POSITION, String.class);
+        if (position != null && (current != null && !current.isBlank())) {
+            String[] kept = generatedIds.get(partition(position));
+            if (kept != null && !kept[0].equals(position.substring(position.lastIndexOf('@') + 1))) {
+                generatedIds.remove(partition(position));
+            }
+        }
+        if ((current != null && !current.isBlank()) || position == null) {
+            return ensureMessageId(exchange);
+        }
+        String offset = position.substring(position.lastIndexOf('@') + 1);
+        String[] kept = generatedIds.get(partition(position));
+        if (kept != null && !kept[0].equals(offset)) {
+            // Another record began on the partition, which supersedes the kept id.
+            generatedIds.remove(partition(position));
+            kept = null;
+        }
+        if (kept != null) {
+            exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, kept[1]);
+            return kept[1];
+        }
+        String generated = ensureMessageId(exchange);
+        if (generatedIds.size() >= MAX_HELD_BACK_PARTITIONS && !generatedIds.containsKey(partition(position))) {
+            generatedIds.keySet().stream().findFirst().ifPresent(generatedIds::remove);
+        }
+        generatedIds.put(partition(position), new String[]{offset, generated});
+        return generated;
     }
 
     @Override
     public void onExchangeDone(Route route, Exchange exchange) {
+        if (managed(exchange)) {
+            String refusal = exchange.getProperty(ENVELOPE_REFUSAL, String.class);
+            if (refusal != null) {
+                parkForItsOwnData(route, exchange, refusal, false, false);
+                return;
+            }
+            // Only when every step outcome failure was the record's data: a part that failed for
+            // another reason has an outcome that must not be dropped by a commit.
+            if (StepOutcomeFailure.onlyRecordData(exchange)) {
+                parkForItsOwnData(route, exchange, stepDataReason(exchange, StepOutcomeFailure.of(exchange)), false, true);
+                return;
+            }
+        }
         MessageAttemptResult result = result(route, exchange);
 
         try {
             sink.record(result);
         } catch (Exception e) {
-            readAgain(route, exchange, "Failed to record message outcome; Kafka offset was not committed", e);
+            // Only when every step outcome is durable: a step outcome the store could not take
+            // otherwise means the record must be read again, whatever the outcome write says.
+            if (managed(exchange) && StoreErrorClass.of(e) == StoreErrorClass.RECORD_DATA
+                    && StepOutcomeFailure.of(exchange) == null) {
+                parkForItsOwnData(route, exchange, "The Message Store cannot hold the record's outcome (SQLSTATE "
+                        + StoreErrorClass.sqlState(e) + ")", result.status() == MessageStatus.COMPLETED, true);
+                return;
+            }
+            readAgain(route, exchange, "Failed to record message outcome; Kafka offset was not committed"
+                    + StoreErrorClass.logSuffix(e), e);
             return;
         }
         Throwable unrecorded = StepOutcomeFailure.of(exchange);
         if (unrecorded != null) {
-            readAgain(route, exchange, "A step outcome was not checked or recorded; Kafka offset was not committed",
-                    unrecorded);
+            readAgain(route, exchange, "A step outcome was not checked or recorded; Kafka offset was not committed"
+                    + StoreErrorClass.logSuffix(unrecorded), unrecorded);
             return;
         }
         if (result.status() == MessageStatus.FAILED) {
@@ -127,12 +287,111 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         } catch (Exception e) {
             fail(exchange, "Message outcome was recorded but Kafka offset commit failed", e);
         }
-        String position = exchange.getProperty(RECORD_POSITION, String.class);
+        committed(exchange);
+        String position = exchange.getProperty(PlatformExchangeProperties.RECORD_POSITION, String.class);
+        if (position != null) {
+            recordDataInARow.remove(partition(position));
+        }
+    }
+
+    /** What a committed record ends: its partition's wait, kept id and marks. */
+    private void committed(Exchange exchange) {
+        String position = exchange.getProperty(PlatformExchangeProperties.RECORD_POSITION, String.class);
         if (position != null) {
             heldBack.remove(partition(position));
+            generatedIds.remove(partition(position));
+            UnrecordedDeliveries.supersede(exchange, true);
         }
         if (Boolean.TRUE.equals(exchange.getProperty(LAST_POLL_RECORD, Boolean.class))) {
             endOfPoll(exchange);
+        }
+    }
+
+    private static String stepDataReason(Exchange exchange, Throwable unrecorded) {
+        List<String> sent = UnrecordedDeliveries.markedSteps(exchange);
+        return "The Message Store cannot hold a step outcome of the record (SQLSTATE " + StoreErrorClass.sqlState(unrecorded)
+                + "); " + (sent.isEmpty() ? "no send of the attempt had returned without a recorded outcome"
+                : "the send of step " + String.join(", ", sent) + " had returned, its outcome not recorded");
+    }
+
+    /**
+     * The terminal path for a record whose own data the Message Store cannot hold: park it,
+     * unless it was parked already or its route completed, record a reduced outcome without the
+     * envelope's text values and steps, and commit only after both are durable. If either fails,
+     * the record is read again and the path runs again. After {@value #MAX_RECORD_DATA_IN_A_ROW}
+     * such records in a row on a partition, the next one is held back instead, since a setting or
+     * column that fails every record must not drain the topic into the DLQ.
+     */
+    private void parkForItsOwnData(Route route, Exchange exchange, String reason, boolean completed,
+            boolean refusedByStore) {
+        String position = exchange.getProperty(PlatformExchangeProperties.RECORD_POSITION, String.class);
+        String messageId = exchange.getProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, String.class);
+        String parkedKey = route.getRouteId() + "\n" + position;
+        if (refusedByStore && position != null
+                && recordDataInARow.getOrDefault(partition(position), 0) >= MAX_RECORD_DATA_IN_A_ROW) {
+            LOG.error("Message {} at {} is not committed: {} records in a row on this partition could not be stored for "
+                            + "their own data, so this one is held back; check the Message Store's settings and schema. "
+                            + "{} storeError=schema", messageId, position, MAX_RECORD_DATA_IN_A_ROW, reason);
+            readAgain(route, exchange, reason + "; held back after " + MAX_RECORD_DATA_IN_A_ROW + " such records in a row",
+                    null);
+            return;
+        }
+        if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, reason)) {
+            LOG.error("Message {} at {} is not committed: it could not be parked for its own data; {} storeError=record-data",
+                    messageId, position, reason);
+            readAgain(route, exchange, "Not parked: " + reason, null);
+            return;
+        }
+        MessageAttemptResult full = result(route, exchange);
+        MessageAttemptResult reduced = new MessageAttemptResult(full.schemaVersion(), messageId, null, null, null, null,
+                full.payloadStorage(), full.payloadSizeBytes(), full.payloadBytes(), full.payloadExpiresAt(),
+                full.payloadDeletedAt(), full.replayable(),
+                full.replayDisabledReason(), full.integration(), full.routeId(), full.attempt(), full.autoRedelivered(),
+                full.autoRedeliveryCount(), full.autoRedeliveryMax(), full.occurredAt(),
+                completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), reason);
+        if (!completed) {
+            parkedForData.add(parkedKey);
+        }
+        try {
+            recordReduced(reduced);
+        } catch (Exception e) {
+            LOG.error("Message {} at {} is not committed: its reduced outcome could not be recorded{}", messageId,
+                    position, StoreErrorClass.logSuffix(e), e);
+            readAgain(route, exchange, "Failed to record the reduced outcome", e);
+            return;
+        }
+        parkedForData.remove(parkedKey);
+        try {
+            commitKafkaOffsetIfPresent(exchange);
+        } catch (Exception e) {
+            fail(exchange, "Message outcome was recorded but Kafka offset commit failed", e);
+        }
+        committed(exchange);
+        if (position != null && refusedByStore) {
+            recordDataInARow.merge(partition(position), 1, Integer::sum);
+        }
+        // Parked and recorded: the consumer goes on with the next record.
+        exchange.setException(null);
+        LOG.error("Message {} from record {} was {}: {} storeError=record-data", messageId, position,
+                completed ? "recorded without its envelope values" : "parked", reason);
+    }
+
+    /**
+     * Writes the reduced outcome. If the store refuses its data too, for example a payload
+     * reference from the record, it is written once more without the payload.
+     */
+    private void recordReduced(MessageAttemptResult reduced) throws Exception {
+        try {
+            sink.record(reduced);
+        } catch (Exception e) {
+            if (StoreErrorClass.of(e) != StoreErrorClass.RECORD_DATA) {
+                throw e;
+            }
+            sink.record(new MessageAttemptResult(reduced.schemaVersion(), reduced.messageId(), null, null, null, null,
+                    PayloadMode.METADATA_ONLY.storageValue(), reduced.payloadSizeBytes(), null, null, null,
+                    false, "the record's envelope values could not be stored", reduced.integration(), reduced.routeId(),
+                    reduced.attempt(), reduced.autoRedelivered(), reduced.autoRedeliveryCount(),
+                    reduced.autoRedeliveryMax(), reduced.occurredAt(), reduced.status(), List.of(), reduced.error()));
         }
     }
 
@@ -140,6 +399,45 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void readAgain(Route route, Exchange exchange, String message, Throwable cause) {
         backOffBeforeReadingAgain(route, exchange);
         fail(exchange, message, cause);
+    }
+
+    /**
+     * Publishes a copy of the record through the adapter's dead-letter route, which parks the
+     * consumed payload, masks credential headers and confirms the publish. The copy carries the
+     * reason as its failure and no step outcome failure, which would stop the parking.
+     */
+    private boolean park(Route route, Exchange exchange, String reason) {
+        Exchange copy = exchange.copy();
+        copy.setException(null);
+        copy.setRouteStop(false);
+        copy.removeProperty(PlatformExchangeProperties.DLQ_PARKED);
+        copy.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException(reason));
+        StepOutcomeFailure.begin(copy);
+        try {
+            producer(route).send(DEAD_LETTER_URI, copy);
+        } catch (RuntimeException e) {
+            return false;
+        }
+        boolean parked = copy.getException() == null
+                && Boolean.TRUE.equals(copy.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
+        if (parked) {
+            exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, true);
+        }
+        return parked;
+    }
+
+    private ProducerTemplate producer(Route route) {
+        ProducerTemplate current = parking;
+        if (current == null) {
+            synchronized (this) {
+                current = parking;
+                if (current == null) {
+                    current = route.getCamelContext().createProducerTemplate();
+                    parking = current;
+                }
+            }
+        }
+        return current;
     }
 
     private void fail(Exchange exchange, String message, Throwable cause) {
@@ -227,7 +525,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
      * the partition resets it. A record without its position is read again at once, as before.
      */
     private void backOffBeforeReadingAgain(Route route, Exchange exchange) {
-        String position = exchange.getProperty(RECORD_POSITION, String.class);
+        String position = exchange.getProperty(PlatformExchangeProperties.RECORD_POSITION, String.class);
         // The failed record ends its poll, so the next record on this thread starts a new one.
         endOfPoll(exchange);
         if (position == null || !breaksOnFirstError(route)) {
@@ -265,7 +563,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             pollStarted.put(thread, now);
         }
         exchange.setProperty(POLL_STARTED, pollStarted.getOrDefault(thread, now));
-        exchange.setProperty(POLL_THREAD, thread);
+        exchange.setProperty(PlatformExchangeProperties.POLL_THREAD, thread);
         // camel-kafka 4.18.3 and later name the header CamelKafkaLastPollRecord; 4.18.0, which
         // 0.3 also supports, names it kafka.LAST_POLL_RECORD.
         Object last = exchange.getMessage().getHeader("CamelKafkaLastPollRecord");
@@ -276,7 +574,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     }
 
     private void endOfPoll(Exchange exchange) {
-        Long thread = exchange.getProperty(POLL_THREAD, Long.class);
+        Long thread = exchange.getProperty(PlatformExchangeProperties.POLL_THREAD, Long.class);
         if (thread != null) {
             newPollNext.add(thread);
         }
@@ -340,7 +638,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         Object partition = KafkaRecordHeaders.partition(exchange.getMessage());
         Object offset = KafkaRecordHeaders.offset(exchange.getMessage());
         if (topic instanceof String name && partition instanceof Number p && offset instanceof Number o) {
-            exchange.setProperty(RECORD_POSITION, name + "/" + p.intValue() + "@" + o.longValue());
+            exchange.setProperty(PlatformExchangeProperties.RECORD_POSITION, name + "/" + p.intValue() + "@" + o.longValue());
         }
     }
 
@@ -595,6 +893,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         if (failure == null) {
             return null;
         }
-        return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+        String message = failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+        // PostgreSQL text cannot hold a NUL; a failure's own text must not make its record unstorable.
+        return message.replace('\u0000', '\uFFFD');
     }
 }
