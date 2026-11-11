@@ -87,7 +87,9 @@ A failed or timed-out portal step is never re-run and never repeated by pushing
 another tag: a re-run refuses. Recover on the release workstation after checking
 the deployment in the Central portal, from the retained state when it matches the
 portal, otherwise by reconciling in the portal; see
-[release packaging](release-packaging.md#protected-tag-release-in-ci).
+[release packaging](release-packaging.md#protected-tag-release-in-ci). Any
+re-run, also of a failed `build`, disables signing and publication for that
+run; finish such a release offline from the existing tag.
 
 ## Final release offline
 

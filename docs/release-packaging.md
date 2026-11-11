@@ -72,6 +72,12 @@ what the portal shows (for example `VALIDATED` state for a deployment the portal
 shows as publishing or published), do not resume from it: reconcile with the
 portal, and publish or drop the deployment there under the same approvals.
 
+Any re-run counts, also one of a failed `build` or `attest`: from the second
+attempt on, `sign-upload` and `publish` refuse, even when nothing was uploaded.
+The tag cannot be pushed again, so finish such a release on the release
+workstation with the [offline path](#offline-release-signing), from an unsigned
+inspection of the tag's commit, and skip the runbook's tag step.
+
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
 whose `.github/scripts` are the tools to trust, and change it only through a
