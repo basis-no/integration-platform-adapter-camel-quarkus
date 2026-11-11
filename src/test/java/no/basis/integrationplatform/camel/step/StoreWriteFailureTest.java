@@ -44,6 +44,7 @@ class StoreWriteFailureTest {
     private DataSource app;
     private final ReceiverComponent receiver = new ReceiverComponent();
     private final AtomicInteger commits = new AtomicInteger();
+    private final AtomicInteger retryWaits = new AtomicInteger();
     private DefaultCamelContext context;
 
     @BeforeEach
@@ -114,6 +115,7 @@ class StoreWriteFailureTest {
 
                 assertEquals(1, receiver.received().size());
                 assertEquals(0, commits.get());
+                assertEquals(3, retryWaits.get(), "Tried again in place three times before the mark");
                 assertTrue(logs.at(java.util.logging.Level.SEVERE).stream()
                         .map(no.basis.integrationplatform.camel.LogCapture::text)
                         .anyMatch(line -> line.contains("storeError=unavailable sqlState=55P03")));
@@ -239,7 +241,10 @@ class StoreWriteFailureTest {
 
     private void start(StepOutcomeStore store) throws Exception {
         DefaultStepTracker tracker = new DefaultStepTracker(store);
-        tracker.setRetrySleeper(millis -> true);
+        tracker.setRetrySleeper(millis -> {
+            retryWaits.incrementAndGet();
+            return true;
+        });
         context = new DefaultCamelContext();
         var properties = new java.util.Properties();
         properties.setProperty("basis.message-store.dlq-uri", "direct:parking");

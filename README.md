@@ -629,8 +629,8 @@ not made again only because its outcome was lost:
    more times after 0.5, 1 and 2 seconds, starting no try more than 10 seconds
    after the first failure. Each try is bounded by the
    [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts),
-   so when the store stops answering the write takes about 40 seconds in all
-   at the defaults. A write that succeeds lets the attempt go on.
+   so when the store stops answering the write takes up to about 40 seconds in
+   all at the defaults (about 30 when every try runs to the network timeout). A write that succeeds lets the attempt go on.
 2. If it still fails, the adapter keeps a mark in memory for the input route,
    the record's topic, partition and offset, and the step key. The attempt
    fails, and the record is not committed and is read again with the growing

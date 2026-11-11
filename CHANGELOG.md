@@ -46,8 +46,9 @@ No Message Store schema change.
   transaction sets `client_min_messages` to `warning`, so that a role or
   database setting of `error` cannot hide the warning.
   A failed `DELIVERED` write that is tried again in place runs each try to these
-  timeouts: when the store stops answering, the write takes about 40 seconds in
-  all at the defaults. A commit reported with a warning fails with SQLSTATE
+  timeouts: when the store stops answering, the write takes up to about 40
+  seconds in all at the defaults (about 30 when every try runs to the network
+  timeout). A commit reported with a warning fails with SQLSTATE
   `08007`, whatever the warning's own SQLSTATE, so it is read again, never
   parked as the record's own data.
   Upgrade: an outcome or step-outcome statement that legitimately needs longer
