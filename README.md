@@ -27,11 +27,13 @@ and the schema it expects ships in `src/main/resources/db/message-store/`.
 
 See the [changelog](CHANGELOG.md) for changes, upgrade actions and
 limitations. [Release tooling](docs/release-packaging.md) builds unsigned candidates
-without production credentials. Final releases are signed with the offline
-signer and uploaded by the release manager from reviewed tooling; CI holds no
-publishing credentials. A tag never rebuilds or uploads a release. Final notes
-need an approved date and exact artifact provenance; source preparation does not
-authorize publication. See [Releasing](docs/releasing.md).
+without production credentials. Final releases are signed and uploaded either by
+a protected tag run that waits for reviewer approval before signing with a CI
+signing subkey, or offline by the release manager; the primary release key never
+exists in GitHub. A reviewed snapshot is published only through the
+approval-gated, manual snapshot lane. Final notes need an approved
+date and exact artifact provenance; source preparation does not authorize
+publication. See [Releasing](docs/releasing.md).
 
 ## 0.3 maintenance line
 
@@ -47,14 +49,15 @@ application.
 
 A release is built as an unsigned candidate in CI, without credentials, from the
 reviewed source commit; the release tooling sets the release version, while the
-source POM stays at `X.Y.Z-SNAPSHOT`. The release manager signs that candidate
-offline and uploads it to Maven Central. Select the stable package explicitly
-when upgrading an integration.
+source POM stays at `X.Y.Z-SNAPSHOT`. It is signed and uploaded to Maven
+Central by the protected tag run after reviewer approval, or offline by the
+release manager. Select the stable package explicitly when upgrading an
+integration.
 
-For acceptance, use a locally built `X.Y.Z-SNAPSHOT` or a snapshot of a reviewed
-commit published from the release manager's workstation. See
-[Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts) and
-[published snapshots](docs/releasing.md#published-snapshots).
+For acceptance, use locally built `X.Y.Z-SNAPSHOT` artifacts, or, to test in
+another environment, a reviewed snapshot from the approval-gated snapshot lane.
+See [Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts) and
+[Testing a published snapshot](docs/releasing.md#testing-a-published-snapshot).
 Snapshots are test artifacts; production integrations keep an explicitly
 selected stable version.
 
