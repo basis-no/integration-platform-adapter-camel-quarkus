@@ -118,8 +118,8 @@ hosts. Signing and Central uploads happen only in these places:
 - `publish-snapshot.yml` job `upload`, which runs in the protected environment
   `snapshot` (required reviewers, deployment rule for `main` and `release/0.3`),
   checks out only the release tools (and the root `pom.xml`) at
-  `TRUSTED_TOOLING_SHA`, never signs and uploads only an unsigned snapshot. Only its environment secrets hold a
-  snapshot Central token.
+  `TRUSTED_TOOLING_SHA`, never signs and uploads only an unsigned snapshot.
+  Only its environment secrets hold a snapshot Central token.
 - The trusted release workstation, where a human release manager runs
   `sign-candidate.py` and `central-recovery.py` from reviewed `main` (also for a
   `release/0.3` source commit).
