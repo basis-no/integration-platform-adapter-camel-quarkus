@@ -463,6 +463,13 @@ What to do:
   `storeError=read-only` or `storeError=privilege`. Scale them back up once
   writes work again. Receivers should deduplicate by `Idempotency-Key`; this helps
   only for records that carry `x-bip-message-id`.
+- From 0.3.7 each statement of the Postgres sink and the Postgres step outcome
+  store is bounded by `basis.message-store.statement-timeout` (10 s) and
+  `basis.message-store.lock-timeout` (5 s), and a call by a network timeout, so
+  a held lock or a database that stopped answering fails the call instead of
+  holding the consumer thread past `max.poll.interval.ms`; see
+  [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts).
+  Set `loginTimeout` in the JDBC URL as well, for example `?loginTimeout=10`.
 - When the store cannot be read either, and the outage lasts longer than a
   few minutes, scale the integration down to zero replicas until the store
   accepts writes again, then scale it back up. Its uncommitted records are read
@@ -628,7 +635,10 @@ not made again only because its outcome was lost:
 1. On the thread that processes the record, and outside an application
    transaction, the adapter writes the same outcome again in place, up to 3
    more times after 0.5, 1 and 2 seconds, starting no try more than 10 seconds
-   after the first failure. A write that succeeds lets the attempt go on.
+   after the first failure. Each try is bounded by the
+   [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts),
+   so when the store stops answering the write takes up to about 40 seconds in
+   all at the defaults (about 30 when every try runs to the network timeout). A write that succeeds lets the attempt go on.
 2. If it still fails, the adapter keeps a mark in memory for the input route,
    the record's topic, partition and offset, and the step key. The attempt
    fails, and the record is not committed and is read again with the growing
@@ -1242,6 +1252,8 @@ Adapter defaults:
 basis.message-store.sink=log
 basis.message-store.status-topic=bip.message.status
 basis.message-store.step-outcome-store=noop
+basis.message-store.statement-timeout=10s
+basis.message-store.lock-timeout=5s
 camel.component.kafka.auto-commit-enable=false
 camel.component.kafka.allow-manual-commit=true
 camel.component.kafka.auto-offset-reset=earliest
@@ -1262,6 +1274,8 @@ Configuration reference:
 | `basis.message-store.key-value.sweep-interval-seconds` | integer seconds, `1..3600` | `3600` | Once the Key-Value Store is used, sweep this integration’s expired keys in bounded batches. |
 | `basis.message-store.sink` | `log`, `postgres`, `kafka` | `log` | Selects where terminal message outcomes go. |
 | `basis.message-store.step-outcome-store` | `noop`, `postgres` | `noop` | Selects whether delivered-step checks are durable. |
+| `basis.message-store.statement-timeout` | duration, at least `1ms` | `10s` | From 0.3.7: bounds each statement of a Postgres sink or step outcome store call. See [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts). |
+| `basis.message-store.lock-timeout` | duration, at least `1ms` and at most the statement timeout | `5s` | From 0.3.7: bounds each such statement's wait for a lock. |
 | `basis.message-store.step-ids.emergency-allow-generated` | `true`, `false` | `false` | Emergency escape hatch: start even though a tracked send has no explicit id, with a warning for each. See [step tracking](#step-tracking). |
 | `basis.message-store.payload.mode` | `postgres-inline`, `metadata-only` | `postgres-inline` | Selects whether safely capturable payloads are stored inline for replay. |
 | `basis.message-store.status-topic` | Kafka topic name | `bip.message.status` | Used only when `basis.message-store.sink=kafka`. |

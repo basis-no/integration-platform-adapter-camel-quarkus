@@ -20,6 +20,40 @@ No Message Store schema change.
   waiting instead of 195. The interval covers all records of one poll: for
   such a route, set `maxPollRecords=1` on its Kafka input or raise
   `maxPollIntervalMs`. See [Retry and DLQ](README.md#retry-and-dlq).
+- Every statement of a Postgres sink or Postgres step outcome store call is
+  bounded
+  ([#90](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/90)):
+  the call runs in its own transaction with a statement timeout
+  (`basis.message-store.statement-timeout`, default 10 s) and a lock timeout
+  (`basis.message-store.lock-timeout`, default 5 s), set for that transaction
+  only, each statement has a JDBC query timeout of the statement timeout, and
+  the JDBC network timeout is the statement timeout plus 5 seconds. At the
+  defaults a step-outcome call ends within about 10 s and the sink's record
+  (up to three statements) within about 30 s. Before, a call waited without
+  limit on a held lock or a database that stopped answering, and held the
+  Kafka consumer thread past `max.poll.interval.ms`. A timeout is a Message
+  Store failure: the record is not committed and is read again. Startup
+  refuses a timeout under 1 ms, or a lock timeout longer than the statement
+  timeout. On a connection already in an application transaction (such as a
+  JTA transaction), the step outcome store joins it as before and only the
+  query and network timeouts apply.
+  A commit that PostgreSQL reports with a warning is a store failure too: a
+  synchronous commit whose wait for the standby was cancelled returns with only
+  a warning ("committed locally, but might not have been replicated"), and the
+  record is now read again and its outcome written again (the writes are
+  idempotent) instead of being committed to Kafka. `statement_timeout` does not
+  end a synchronous commit's wait; the network timeout does. The call's own
+  transaction sets `client_min_messages` to `warning`, so that a role or
+  database setting of `error` cannot hide the warning.
+  A failed `DELIVERED` write that is tried again in place runs each try to these
+  timeouts: when the store stops answering, the write takes up to about 40
+  seconds in all at the defaults (about 30 when every try runs to the network
+  timeout). A commit reported with a warning fails with SQLSTATE
+  `08007`, whatever the warning's own SQLSTATE, so it is read again, never
+  parked as the record's own data.
+  Upgrade: an outcome or step-outcome statement that legitimately needs longer
+  fails now; raise the property. Set `loginTimeout` in the JDBC URL as well
+  (see [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts)).
 - A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
   the endpoint named in the adapter's warnings mask credentials by the .NET
   adapter's rule, so both adapters store the same value
