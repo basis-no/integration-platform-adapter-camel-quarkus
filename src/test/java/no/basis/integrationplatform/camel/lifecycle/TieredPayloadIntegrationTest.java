@@ -1,16 +1,22 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.TestJdbc;
+import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
 import no.basis.integrationplatform.camel.payload.PayloadStorageException;
 import no.basis.integrationplatform.camel.payload.S3PayloadObjectStore;
+import no.basis.integrationplatform.camel.payload.UnresolvablePayloadException;
 import no.basis.integrationplatform.camel.replay.PostgresKafkaMessageReplayService;
 import no.basis.integrationplatform.camel.store.PostgresMessageStoreSink;
 import org.apache.camel.Exchange;
 import org.apache.camel.Route;
 import org.apache.camel.builder.RouteBuilder;
+import org.apache.camel.component.kafka.KafkaConstants;
+import org.apache.camel.component.kafka.consumer.KafkaManualCommit;
 import org.apache.camel.impl.DefaultCamelContext;
 import org.apache.camel.support.DefaultExchange;
 import org.apache.kafka.clients.consumer.ConsumerConfig;
@@ -57,6 +63,8 @@ import java.util.UUID;
 
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertInstanceOf;
 import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -256,11 +264,12 @@ class TieredPayloadIntegrationTest {
         s3.deleteObject(DeleteObjectRequest.builder().bucket(BUCKET).key(key).build());
         PayloadStorageException missing = assertThrows(PayloadStorageException.class,
                 () -> objectStore.verify(reference));
-        assertTrue(missing.getMessage().contains("unavailable"));
+        assertInstanceOf(UnresolvablePayloadException.class, missing);
+        assertTrue(missing.getMessage().contains("does not exist"), missing.getMessage());
     }
 
     @Test
-    void aChangedObjectIsRefusedBeforeTheRouteReadsAnyOfIt() throws Exception {
+    void aChangedObjectIsParkedBeforeTheRouteReadsAnyOfIt() throws Exception {
         byte[] original = new byte[4096];
         for (int index = 0; index < original.length; index++) {
             original[index] = (byte) (index % 199);
@@ -274,64 +283,57 @@ class TieredPayloadIntegrationTest {
         // Same size, so the size check passes; only the full SHA-256 check can see it.
         s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key(key).build(), RequestBody.fromBytes(changed));
 
-        var reads = new java.util.concurrent.atomic.AtomicInteger();
-        var parked = new java.util.concurrent.atomic.AtomicInteger();
-        var outcomes = new java.util.concurrent.CopyOnWriteArrayList<String>();
-        var rows = new java.util.concurrent.CopyOnWriteArrayList<no.basis.integrationplatform.camel.model.MessageAttemptResult>();
-        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
-                row -> {
-                    outcomes.add(row.status().name());
-                    rows.add(row);
-                },
-                "large-payload-validation",
-                new PayloadCapturePolicy(PayloadMode.TIERED, 1024, 32L * 1024 * 1024, Duration.ofDays(30), true),
-                MessageBoundaryKind.KAFKA,
-                true,
-                objectStore);
-        try (DefaultCamelContext context = new DefaultCamelContext()) {
-            context.addRoutes(new RouteBuilder() {
-                @Override
-                public void configure() {
-                    // A dead letter channel would park the exchange if the policy only failed it.
-                    errorHandler(deadLetterChannel("direct:parked"));
-                    from("direct:parked").process(e -> parked.incrementAndGet());
-                    from("direct:replayed").routeId("large-payload-validation").routePolicy(policy)
-                            .process(e -> {
-                                // Reading even the first byte would be a failure of the check.
-                                reads.incrementAndGet();
-                                e.getMessage().getBody(InputStream.class).read();
-                            });
-                }
-            });
-            context.start();
-            Exchange replayed = context.createProducerTemplate().send("direct:replayed", e -> {
-                e.getMessage().setBody(reference.toJsonBytes());
-                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "changed-before-route");
-                e.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
-                e.getMessage().setHeader(PlatformHeaders.PAYLOAD_REF, reference.ref());
-                e.getMessage().setHeader(PlatformHeaders.PAYLOAD_SIZE, Long.toString(reference.sizeBytes()));
-                e.getMessage().setHeader(PlatformHeaders.PAYLOAD_SHA256, reference.sha256());
-            });
+        var boundary = new Boundary(objectStore);
+        Exchange replayed = boundary.send(claimCheck(reference, "changed-before-route"));
 
-            assertEquals(0, reads.get(), "the route must not see a byte of an object that does not match");
-            assertEquals(0, parked.get(), "nothing is parked");
-            assertTrue(replayed.isFailed());
-            assertTrue(replayed.getException().getMessage().contains("does not match its reference's SHA-256"),
-                    replayed.getException().getMessage());
-            assertEquals(java.util.List.of("FAILED"), outcomes);
-            // The FAILED outcome keeps the message's claim check, so a later resend still has it.
-            assertEquals("s3_object", rows.getFirst().payloadStorage());
-            assertEquals(reference.ref(), rows.getFirst().payloadRef());
-            assertEquals(reference.sha256(), rows.getFirst().payloadSha256());
-        }
+        assertEquals(0, boundary.reads.get(), "the route must not see a byte of an object that does not match");
+        assertEquals(List.of("dlq", "record DLQ", "commit"), boundary.events, "committed only after the DLQ accepted it");
+        assertArrayEquals(reference.toJsonBytes(), boundary.parked.getFirst(), "parked as its claim check");
+        assertFalse(replayed.isFailed());
+        MessageAttemptResult row = boundary.rows.getFirst();
+        assertTrue(row.error().contains("does not match its reference's SHA-256"), row.error());
+        // The outcome keeps the message's claim check, so a resend after the object is restored still has it.
+        assertEquals("s3_object", row.payloadStorage());
+        assertEquals(reference.ref(), row.payloadRef());
+        assertEquals(reference.sha256(), row.payloadSha256());
 
-        // The unchanged object reaches the route complete.
+        // The restored object reaches the route complete.
         s3.putObject(PutObjectRequest.builder().bucket(BUCKET).key(key).build(), RequestBody.fromBytes(original));
         Exchange intact = exchange(reference.toJsonBytes());
         intact.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
-        policy.onExchangeBegin(route(), intact);
+        boundary.policy.onExchangeBegin(route(), intact);
         assertArrayEquals(original, intact.getMessage().getBody(InputStream.class).readAllBytes());
-        policy.onExchangeDone(route(), intact);
+        boundary.policy.onExchangeDone(route(), intact);
+    }
+
+    @Test
+    void aDeletedObjectIsParkedAndAMissingBucketIsReadAgain() throws Exception {
+        byte[] original = "a deleted object".getBytes(StandardCharsets.UTF_8);
+        PayloadReference reference = objectStore.store(
+                "large-payload-validation", "deleted-before-route", new ByteArrayInputStream(original),
+                (long) original.length, "text/plain", expiresAt(), 1024 * 1024);
+        s3.deleteObject(DeleteObjectRequest.builder().bucket(BUCKET)
+                .key(reference.ref().substring(("s3://" + BUCKET + "/").length())).build());
+
+        var deleted = new Boundary(objectStore);
+        Exchange parked = deleted.send(claimCheck(reference, "deleted-before-route"));
+
+        assertEquals(List.of("dlq", "record DLQ", "commit"), deleted.events);
+        assertFalse(parked.isFailed());
+        assertTrue(deleted.rows.getFirst().error().contains("Payload object does not exist"), deleted.rows.getFirst().error());
+
+        // A bucket that does not exist, as after a wrong deployment setting, is not the object's fault.
+        String missingBucket = "no-such-payload-bucket";
+        PayloadReference elsewhere = new PayloadReference(1, PayloadReference.STORAGE,
+                reference.ref().replace("s3://" + BUCKET + "/", "s3://" + missingBucket + "/"), reference.sizeBytes(),
+                reference.sha256(), reference.contentType(), reference.expiresAt());
+        var wrongBucket = new Boundary(new S3PayloadObjectStore(s3, missingBucket, "payloads"));
+        Exchange readAgain = wrongBucket.send(claimCheck(elsewhere, "missing-bucket"));
+
+        assertEquals(List.of("record FAILED"), wrongBucket.events, "not parked and not committed");
+        assertTrue(readAgain.isFailed());
+        assertTrue(wrongBucket.rows.getFirst().error().contains("Payload object is unavailable"),
+                wrongBucket.rows.getFirst().error());
     }
 
     @Test
@@ -366,46 +368,91 @@ class TieredPayloadIntegrationTest {
                 objectStore.verify(reference);
             }
         };
-        var reads = new java.util.concurrent.atomic.AtomicInteger();
-        var parked = new java.util.concurrent.atomic.AtomicInteger();
-        var outcomes = new java.util.concurrent.CopyOnWriteArrayList<String>();
-        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
-                row -> outcomes.add(row.status().name()),
-                "large-payload-validation",
-                new PayloadCapturePolicy(PayloadMode.TIERED, 1024, 32L * 1024 * 1024, Duration.ofDays(30), true),
-                MessageBoundaryKind.KAFKA,
-                true,
-                changedAfterUpload);
+        var boundary = new Boundary(changedAfterUpload);
         VerifiedPayloadSpool spool = new VerifiedPayloadSpool(spoolDirectory, 1024 * 1024);
-        policy.setPayloadSpool(spool);
-        try (DefaultCamelContext context = new DefaultCamelContext()) {
-            context.addRoutes(new RouteBuilder() {
-                @Override
-                public void configure() {
-                    errorHandler(deadLetterChannel("direct:parked"));
-                    from("direct:parked").process(e -> parked.incrementAndGet());
-                    from("direct:streamed").routeId("large-payload-validation").routePolicy(policy)
-                            .process(e -> {
-                                reads.incrementAndGet();
-                                e.getMessage().getBody(InputStream.class).read();
-                            });
-                }
-            });
-            context.start();
-            Exchange streamed = context.createProducerTemplate().send("direct:streamed", e -> {
-                e.getMessage().setBody(new ByteArrayInputStream(payload));
-                e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "changed-after-upload");
-            });
+        boundary.policy.setPayloadSpool(spool);
 
-            assertEquals(0, reads.get(), "the route must not see a byte of an object that does not match");
-            assertEquals(0, parked.get(), "nothing is parked");
-            assertTrue(streamed.isFailed());
-            assertTrue(streamed.getException().getMessage().contains("does not match its reference's SHA-256"),
-                    streamed.getException().getMessage());
-            assertEquals(java.util.List.of("FAILED"), outcomes);
-            assertEquals(0, spool.reservedBytes());
-            try (var left = Files.walk(spoolDirectory)) {
-                assertEquals(0, left.filter(Files::isRegularFile).count(), "no copy is left");
+        Exchange streamed = boundary.send(message -> {
+            message.setBody(new ByteArrayInputStream(payload));
+            message.setHeader(PlatformHeaders.MESSAGE_ID, "changed-after-upload");
+        });
+
+        assertEquals(0, boundary.reads.get(), "the route must not see a byte of an object that does not match");
+        // The record itself is still the source, so it is read again and stored again, not parked.
+        assertEquals(List.of("record FAILED"), boundary.events, "not parked and not committed");
+        assertTrue(streamed.isFailed());
+        assertTrue(streamed.getException().getMessage().contains("does not match its reference's SHA-256"),
+                streamed.getException().getMessage());
+        assertEquals(0, spool.reservedBytes());
+        try (var left = Files.walk(spoolDirectory)) {
+            assertEquals(0, left.filter(Files::isRegularFile).count(), "no copy is left");
+        }
+    }
+
+    private static java.util.function.Consumer<org.apache.camel.Message> claimCheck(PayloadReference reference,
+                                                                                  String messageId) {
+        return message -> {
+            message.setBody(reference.toJsonBytes());
+            message.setHeader(PlatformHeaders.MESSAGE_ID, messageId);
+            message.setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
+            message.setHeader(PlatformHeaders.PAYLOAD_REF, reference.ref());
+            message.setHeader(PlatformHeaders.PAYLOAD_SIZE, Long.toString(reference.sizeBytes()));
+            message.setHeader(PlatformHeaders.PAYLOAD_SHA256, reference.sha256());
+        };
+    }
+
+    /**
+     * A managed Kafka boundary route with the adapter's route configuration and dead-letter
+     * route, which parks into a recording route. Each record, DLQ publish and commit is an event.
+     */
+    private static final class Boundary {
+        final List<String> events = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final List<MessageAttemptResult> rows = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final List<byte[]> parked = new java.util.concurrent.CopyOnWriteArrayList<>();
+        final java.util.concurrent.atomic.AtomicInteger reads = new java.util.concurrent.atomic.AtomicInteger();
+        final MessageStoreRoutePolicy policy;
+
+        Boundary(PayloadObjectStore store) {
+            policy = new MessageStoreRoutePolicy(
+                    row -> {
+                        events.add("record " + row.status());
+                        rows.add(row);
+                    },
+                    "large-payload-validation",
+                    new PayloadCapturePolicy(PayloadMode.TIERED, 1024, 32L * 1024 * 1024, Duration.ofDays(30), true),
+                    MessageBoundaryKind.KAFKA,
+                    true,
+                    store);
+        }
+
+        Exchange send(java.util.function.Consumer<org.apache.camel.Message> input) throws Exception {
+            try (DefaultCamelContext context = new DefaultCamelContext()) {
+                var properties = new Properties();
+                properties.setProperty("basis.message-store.dlq-uri", "direct:parked");
+                context.getPropertiesComponent().setOverrideProperties(properties);
+                context.addRoutes(new PlatformRouteConfiguration());
+                context.addRoutes(new PlatformDeadLetterRoute());
+                context.addRoutes(new RouteBuilder() {
+                    @Override
+                    public void configure() {
+                        from("direct:parked").routeId("parked").errorHandler(noErrorHandler())
+                                .process(e -> {
+                                    events.add("dlq");
+                                    parked.add(e.getMessage().getBody(byte[].class));
+                                });
+                        from("direct:input").routeId("large-payload-validation").routePolicy(policy)
+                                .process(e -> {
+                                    // Reading even the first byte would be a failure of the check.
+                                    reads.incrementAndGet();
+                                    e.getMessage().getBody(InputStream.class).read();
+                                });
+                    }
+                });
+                context.start();
+                return context.createProducerTemplate().send("direct:input", e -> {
+                    e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> events.add("commit"));
+                    input.accept(e.getMessage());
+                });
             }
         }
     }

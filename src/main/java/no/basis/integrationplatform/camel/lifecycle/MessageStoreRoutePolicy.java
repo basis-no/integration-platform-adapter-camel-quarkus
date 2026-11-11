@@ -11,12 +11,14 @@ import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.payload.PayloadObjectStore;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
 import no.basis.integrationplatform.camel.payload.PayloadStorageException;
+import no.basis.integrationplatform.camel.payload.UnresolvablePayloadException;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.Exchange;
 import org.apache.camel.ExchangePropertyKey;
+import org.apache.camel.ProducerTemplate;
 import org.apache.camel.Route;
 import org.apache.camel.component.kafka.KafkaConstants;
 import org.apache.camel.component.kafka.consumer.KafkaManualCommit;
@@ -59,6 +61,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private final PayloadObjectStore objectStore;
     private TrafficSignals trafficSignals;
     private VerifiedPayloadSpool payloadSpool = VerifiedPayloadSpool.defaults();
+    private volatile ProducerTemplate deadLetter;
     // Per topic partition: the offset of the record held back last, and how often in a row.
     private final Map<String, long[]> heldBack = new ConcurrentHashMap<>();
     private Sleeper sleeper = MessageStoreRoutePolicy::sleepUnlessStopping;
@@ -165,14 +168,16 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
             StepOutcomeFailure.begin(exchange);
         }
+        // Before the capture, which makes a streamed input the adapter stores a claim check too.
+        boolean claimCheck = isPayloadReference(exchange);
         try {
             capturePayloadMetadata(exchange);
         } catch (PayloadStorageException e) {
-            failBeforeTheRoute(exchange, e);
+            failBeforeTheRoute(exchange, e, claimCheck);
         } catch (RuntimeException e) {
-            // An application's own PayloadObjectStore, or a malformed reference, may throw anything.
+            // An application's own PayloadObjectStore may throw anything.
             failBeforeTheRoute(exchange, new PayloadStorageException(
-                    "The payload could not be captured or checked: " + e.getClass().getSimpleName(), e));
+                    "The payload could not be captured or checked: " + e.getClass().getSimpleName(), e), claimCheck);
         }
         if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
             trafficSignals.recordAdmitted(exchange);
@@ -181,18 +186,80 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     /**
      * Camel ignores an exception thrown from {@code onExchangeBegin}, and runs the route. A
-     * payload that could not be captured or checked must not reach it: the exchange fails and
-     * stops, so no processor runs and nothing is parked, and its outcome is recorded FAILED
-     * without a commit, so the record is read again.
+     * payload that could not be captured or checked must not reach it: the exchange stops, so
+     * no processor runs. A failure that may pass fails the exchange, so its outcome is recorded
+     * FAILED without a commit and the record is read again. A Kafka input that arrived as a
+     * claim check that can never resolve is parked instead, and committed once the DLQ has
+     * accepted it.
      */
-    private void failBeforeTheRoute(Exchange exchange, PayloadStorageException failure) {
+    private void failBeforeTheRoute(Exchange exchange, PayloadStorageException failure, boolean claimCheck) {
+        // Not the first attempt of a streamed input: its record is the source, and is stored again.
+        boolean park = claimCheck && failure instanceof UnresolvablePayloadException
+                && boundaryKind == MessageBoundaryKind.KAFKA
+                && exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null;
+        if (park && exchange.getProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK) == null) {
+            // A claim check that could not be read is parked as it came, if it can be kept.
+            keepForParking(exchange, exchange.getMessage().getBody());
+            park = exchange.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD) != null;
+        }
         // One line: the message id and a reference's ref come from the producer.
         LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
-                + " did not reach its route: " + failure.getMessage() + rootCause(failure)));
+                + " did not reach its route: " + failure.getMessage() + rootCause(failure)
+                + (park ? "; it can never pass its check, so it is parked in the DLQ" : "")));
         closeCheckedCopy(exchange);
         exchange.getMessage().setBody(null);
-        exchange.setException(failure);
+        if (park) {
+            parkBeforeTheRoute(exchange, failure);
+        } else {
+            exchange.setException(failure);
+        }
         exchange.setRouteStop(true);
+    }
+
+    /**
+     * Parks the input through the adapter's dead-letter route, as the dead letter channel does,
+     * but without the route's error handler: a redelivery would run the route without its
+     * payload. A publish that fails leaves the exchange failed and not parked, so the record is
+     * read again.
+     */
+    private void parkBeforeTheRoute(Exchange exchange, PayloadStorageException failure) {
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, failure);
+        try {
+            deadLetter(exchange).send("direct:" + PlatformDeadLetterRoute.ROUTE_ID, exchange);
+        } catch (RuntimeException e) {
+            exchange.setException(e);
+        }
+        if (!dlqParked(exchange)) {
+            Throwable publish = exchange.getException();
+            LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
+                    + " could not be parked, so it is read again: "
+                    + (publish == null ? "the DLQ route did not publish it" : publish.toString())));
+            exchange.setException(failure);
+        }
+    }
+
+    private ProducerTemplate deadLetter(Exchange exchange) {
+        ProducerTemplate current = deadLetter;
+        if (current == null) {
+            synchronized (this) {
+                current = deadLetter;
+                if (current == null) {
+                    current = exchange.getContext().createProducerTemplate();
+                    deadLetter = current;
+                }
+            }
+        }
+        return current;
+    }
+
+    @Override
+    protected void doStop() throws Exception {
+        ProducerTemplate current = deadLetter;
+        deadLetter = null;
+        if (current != null) {
+            current.stop();
+        }
+        super.doStop();
     }
 
     /**
@@ -661,7 +728,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     }
 
     private void resolvePayloadReference(Exchange exchange, Object body) {
-        PayloadReference reference = PayloadReference.fromJson(body);
+        PayloadReference reference;
+        try {
+            reference = PayloadReference.fromJson(body);
+        } catch (PayloadStorageException e) {
+            // Its message names only the parser's exception class, never the body.
+            throw new UnresolvablePayloadException(e.getMessage());
+        }
         validateReferenceHeaders(exchange, reference);
         // Before any check that can fail: a FAILED outcome must keep the message's claim check,
         // not overwrite it with a metadata-only row.
@@ -669,7 +742,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK, reference.toJsonBytes());
         exchange.getMessage().setHeader(PlatformHeaders.CONTENT_TYPE, reference.contentType());
         if (reference.expiryInstant().isBefore(Instant.now())) {
-            throw new PayloadStorageException("Payload reference has expired: " + reference.ref());
+            throw new UnresolvablePayloadException("Payload reference has expired: " + reference.ref());
         }
         // Opening the object checks its existence and size first, so no separate verify call.
         exchange.getMessage().setBody(checkedCopy(exchange, reference));
@@ -708,7 +781,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void matchesHeader(Exchange exchange, String name, String expected) {
         String actual = exchange.getMessage().getHeader(name, String.class);
         if (actual != null && !actual.equals(expected)) {
-            throw new PayloadStorageException("Payload-reference header " + name + " does not match its document");
+            throw new UnresolvablePayloadException("Payload-reference header " + name + " does not match its document");
         }
     }
 

@@ -6,6 +6,7 @@ import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.payload.PayloadReference;
 import no.basis.integrationplatform.camel.payload.PayloadStorageException;
+import no.basis.integrationplatform.camel.payload.UnresolvablePayloadException;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -241,7 +242,7 @@ class VerifiedPayloadSpool {
             while ((read = input.read(buffer)) >= 0) {
                 count += read;
                 if (count > reference.sizeBytes()) {
-                    throw new PayloadStorageException("Object payload " + reference.ref()
+                    throw new UnresolvablePayloadException("Object payload " + reference.ref()
                             + " is larger than its reference's " + reference.sizeBytes() + " bytes");
                 }
                 digest.update(buffer, 0, read);
@@ -259,12 +260,12 @@ class VerifiedPayloadSpool {
             throw e;
         }
         if (count != reference.sizeBytes()) {
-            throw new PayloadStorageException("Object payload " + reference.ref() + " has " + count
+            throw new UnresolvablePayloadException("Object payload " + reference.ref() + " has " + count
                     + " bytes; its reference has " + reference.sizeBytes());
         }
         String actual = HexFormat.of().formatHex(digest.digest());
         if (!actual.equalsIgnoreCase(reference.sha256())) {
-            throw new PayloadStorageException("Object payload " + reference.ref()
+            throw new UnresolvablePayloadException("Object payload " + reference.ref()
                     + " does not match its reference's SHA-256");
         }
     }

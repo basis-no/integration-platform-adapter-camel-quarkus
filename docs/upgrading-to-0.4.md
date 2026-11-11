@@ -228,9 +228,10 @@ the DLQ record is usable only while the object exists and its expiry has not
 passed. The object's expiry is fixed when it is captured, at capture time plus
 `basis.message-store.payload.retention-days` (30 days by default), and a
 replay does not extend it. The adapter refuses an expired or missing object,
-so a DLQ record resent after that fails processing. The adapter does not relate
-this to the DLQ topic's retention. Keep the payload retention, and the bucket's
-lifecycle expiry, at least as long as the DLQ topic's retention.
+so a DLQ record resent after that is parked again without reaching its route.
+The adapter does not relate this to the DLQ topic's retention. Keep the payload
+retention, and the bucket's lifecycle expiry, at least as long as the DLQ
+topic's retention.
 
 When such a claim check is read again, on a resend or a replay, the adapter
 checks the whole object, its size and SHA-256, before the route reads any of
@@ -260,16 +261,17 @@ Mount a dedicated, size-limited volume at the spool directory with room for
 `spool-max-bytes`: on Linux a copy has no directory entry while it is read, and may not
 count toward a pod's ephemeral-storage accounting.
 
-A payload that cannot be captured or checked (a changed, truncated, missing or
-expired object, an object store failure, a full or unwritable spool) fails the
-input before its route runs: no processor runs, nothing is parked, the outcome
-is `FAILED` with the claim check kept, and the Kafka offset is not committed,
-so the record is read again. A changed, missing or expired object does not heal
-by itself and blocks its partition until the object is restored or the group's
-offset is moved past the record; see
-[Troubleshooting](troubleshooting.md#s3-replay-fails). On 0.3.6 and 0.4.0-rc1,
-a failure while a payload was captured or resolved was only logged by Camel and
-the route ran anyway.
+A payload that cannot be captured or checked never reaches its route. A Kafka
+claim check that can never pass (a changed, truncated or deleted object, an
+expired reference, a malformed claim check) is parked in the DLQ as its claim
+check and committed after the DLQ accepted it, so it does not hold up its
+partition. Any other failure (an object store that cannot be reached or refuses
+access, a full or unwritable spool, the first attempt of a streamed input) is
+`FAILED` with the claim check kept and not committed, so the record is read
+again; see [Payload Storage](payload-storage.md#object-metadata-and-verification)
+and [Troubleshooting](troubleshooting.md#s3-replay-fails). On 0.3.6 and
+0.4.0-rc1, a failure while a payload was captured or resolved was only logged
+by Camel and the route ran anyway.
 
 ## Not in This Build Yet
 
