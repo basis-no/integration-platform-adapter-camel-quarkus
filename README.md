@@ -478,7 +478,10 @@ no 0.3.x fix. Remove that one header before an HTTP send:
 
 The consumer's other `kafka.*` headers, such as the record key, topic,
 partition, offset and timestamp, still reach the receiver, but they hold no
-other header's value. Do not remove them all with `removeHeaders("kafka.*")`:
+other header's value. To remove every header but the adapter's, see
+[Removing headers before a tracked send](#removing-headers-before-a-tracked-send):
+`removeHeaders("*")` alone also removes `x-bip-message-id`, and with it the
+send's stable step key. Do not remove them all with `removeHeaders("kafka.*")`:
 that also removes `kafka.KEY`, which Camel's Kafka producer uses as the key of
 the record that the adapter parks in the DLQ, so a parked record loses its
 key. Alternatively, upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
@@ -805,6 +808,59 @@ step entries use the same masked endpoint, as does the warning emitted when a
 send has no stable Camel node id. This masks the endpoint field, not arbitrary
 exception messages or application logs. Existing rows, logs and backups are not
 rewritten; review their access and retention separately.
+
+### Removing headers before a tracked send
+
+A tracked send in a Kafka input route builds its step key
+`<x-bip-message-id>:<step-id>` and its `Idempotency-Key` from the exchange's
+`x-bip-message-id` header at the moment it sends. A route that removes every
+header first, for example
+`removeHeaders("*").to("https://receiver.example/orders").id("send-order")`,
+also removes that header. The send then generates a new random id and logs a
+warning (`Message missing x-bip-message-id; generated <id>`)
+([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)):
+
+- The step key and the `Idempotency-Key` change on every delivery. A
+  redelivery, a read again, a resend or a replay sends again under another key,
+  so the step store never skips the send, and even a receiver that
+  deduplicates by `Idempotency-Key` applies it twice.
+- A message whose send completes is journaled under the random id, so the
+  consumed message cannot be found or resent by its own id.
+
+Keep the adapter's headers when you remove the others:
+
+```java
+.removeHeaders("*", "x-bip-.*")
+.to("https://receiver.example/orders").id("send-order")
+```
+
+`x-bip-message-id` is the header a tracked send needs. The other `x-bip-*`
+headers are the message's envelope; the adapter reads them when the input
+arrives and journals the values it read then, but keeping the whole prefix is
+the simplest rule. The adapter sets `x-bip-idempotency-key` and
+`Idempotency-Key` itself at each tracked send, and reads a replay's
+`x-bip-redo-steps` when the input arrives, so removing those does not change
+the send.
+
+Removing every header also removes Camel's Kafka record key header,
+`kafka.KEY` on Camel 4.18.0 and `CamelKafkaKey` from camel-kafka 4.18.3. Camel's
+Kafka producer uses it as the key of a record the adapter parks in the DLQ, so
+keep it too if a parked record should keep its key:
+
+```java
+.removeHeaders("*", "x-bip-.*", "kafka.KEY", "CamelKafkaKey")
+```
+
+Both forms still remove the record's credential headers, such as
+`Authorization`, and `kafka.HEADERS` (see [Retry and DLQ](#retry-and-dlq)).
+
+Inside a `split`, do not rely on removed headers to give each part its own
+step key: the generated ids change on every delivery, so every part is sent
+again on each redelivery and resend. Use one of the safe forms in
+[Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
+
+Keeping the consumed record's id when a route removes it is tracked in #143;
+0.3.7 does not change the send.
 
 ### Splitting before a tracked send in 0.3.x
 
