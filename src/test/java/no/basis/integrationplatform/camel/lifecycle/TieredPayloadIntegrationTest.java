@@ -307,6 +307,26 @@ class TieredPayloadIntegrationTest {
     }
 
     @Test
+    void aTruncatedObjectIsParked() throws Exception {
+        byte[] original = "an object that is cut short".getBytes(StandardCharsets.UTF_8);
+        PayloadReference reference = objectStore.store(
+                "large-payload-validation", "truncated-before-route", new ByteArrayInputStream(original),
+                (long) original.length, "text/plain", expiresAt(), 1024 * 1024);
+        s3.putObject(PutObjectRequest.builder().bucket(BUCKET)
+                .key(reference.ref().substring(("s3://" + BUCKET + "/").length())).build(),
+                RequestBody.fromBytes(java.util.Arrays.copyOf(original, original.length - 4)));
+
+        var boundary = new Boundary(objectStore);
+        Exchange parked = boundary.send(claimCheck(reference, "truncated-before-route"));
+
+        // The store itself reports the other size.
+        assertEquals(List.of("dlq", "record DLQ", "commit"), boundary.events);
+        assertFalse(parked.isFailed());
+        assertTrue(boundary.rows.getFirst().error().contains("Payload object size mismatch"),
+                boundary.rows.getFirst().error());
+    }
+
+    @Test
     void aDeletedObjectIsParkedAndAMissingBucketIsReadAgain() throws Exception {
         byte[] original = "a deleted object".getBytes(StandardCharsets.UTF_8);
         PayloadReference reference = objectStore.store(

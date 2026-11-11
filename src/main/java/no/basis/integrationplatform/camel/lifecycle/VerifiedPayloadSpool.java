@@ -259,9 +259,10 @@ class VerifiedPayloadSpool {
             }
             throw e;
         }
-        if (count != reference.sizeBytes()) {
-            throw new UnresolvablePayloadException("Object payload " + reference.ref() + " has " + count
-                    + " bytes; its reference has " + reference.sizeBytes());
+        if (count < reference.sizeBytes()) {
+            // A stream can end early when its transport is cut, so it says nothing about the object.
+            throw new PayloadStorageException("Object payload " + reference.ref() + " ended after " + count
+                    + " of its reference's " + reference.sizeBytes() + " bytes");
         }
         String actual = HexFormat.of().formatHex(digest.digest());
         if (!actual.equalsIgnoreCase(reference.sha256())) {

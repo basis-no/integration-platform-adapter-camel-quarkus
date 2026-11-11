@@ -46,6 +46,7 @@ import java.util.concurrent.TimeUnit;
 public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
     private static final String HTTP_NOT_REPLAYABLE = "a synchronous HTTP boundary is not replayable";
+    private static final String MALFORMED_CLAIM_CHECK = "the claim check is malformed or does not match its headers";
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
     private static final String CHECKED_COPY = "basis.messageStore.checkedPayloadCopy";
     private static final String ENVELOPE_PREFIX = "x-bip-";
@@ -168,6 +169,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
             StepOutcomeFailure.begin(exchange);
         }
+        // Before the capture: a parking route may change the record's headers.
+        if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
+            trafficSignals.recordAdmitted(exchange);
+        }
         // Before the capture, which makes a streamed input the adapter stores a claim check too.
         boolean claimCheck = isPayloadReference(exchange);
         try {
@@ -178,9 +183,6 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             // An application's own PayloadObjectStore may throw anything.
             failBeforeTheRoute(exchange, new PayloadStorageException(
                     "The payload could not be captured or checked: " + e.getClass().getSimpleName(), e), claimCheck);
-        }
-        if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
-            trafficSignals.recordAdmitted(exchange);
         }
     }
 
@@ -199,8 +201,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 && exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null;
         if (park && exchange.getProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK) == null) {
             // A claim check that could not be read is parked as it came, if it can be kept.
-            keepForParking(exchange, exchange.getMessage().getBody());
+            Object body = exchange.getMessage().getBody();
+            keepForParking(exchange, body);
             park = exchange.getProperty(PlatformExchangeProperties.PARKING_PAYLOAD) != null;
+            if (park) {
+                metadataOnly(exchange, MALFORMED_CLAIM_CHECK);
+                exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, payloadSizeBytes(body));
+            }
         }
         // One line: the message id and a reference's ref come from the producer.
         LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)

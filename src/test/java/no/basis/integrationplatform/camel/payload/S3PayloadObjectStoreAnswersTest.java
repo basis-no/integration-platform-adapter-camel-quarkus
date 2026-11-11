@@ -133,14 +133,37 @@ class S3PayloadObjectStoreAnswersTest {
         return (NoSuchKeyException) NoSuchKeyException.builder().statusCode(404).message("The specified key does not exist.").build();
     }
 
-    /** An S3 client that answers HEAD and GET object requests as given. */
+    @Test
+    void aGetThatEndsEarlyIsNotUnresolvable() {
+        // The HEAD matches the reference; the GET's connection then closes after two bytes.
+        var store = new S3PayloadObjectStore(s3(head -> HeadObjectResponse.builder().contentLength(5L).build(),
+                get -> { throw new AssertionError("only a 404 is checked again"); },
+                full -> new ResponseInputStream<>(GetObjectResponse.builder().contentLength(5L).build(),
+                        AbortableInputStream.create(new ByteArrayInputStream(new byte[]{1, 2})))), BUCKET, "payloads");
+
+        var read = assertThrows(java.io.IOException.class, () -> store.open(REFERENCE).readAllBytes());
+
+        var failure = assertInstanceOf(PayloadStorageException.class, read.getCause());
+        assertFalse(failure instanceof UnresolvablePayloadException, failure.toString());
+        assertEquals("Object payload " + REFERENCE.ref() + " ended after 2 of its reference's 5 bytes", failure.getMessage());
+    }
+
     private static S3Client s3(Function<Object, Object> head, Function<GetObjectRequest, Object> get) {
+        return s3(head, get, full -> { throw new AssertionError("the object is not read"); });
+    }
+
+    /** An S3 client that answers HEAD, one-byte GET and full GET object requests as given. */
+    private static S3Client s3(Function<Object, Object> head, Function<GetObjectRequest, Object> get,
+                               Function<GetObjectRequest, Object> full) {
         return (S3Client) Proxy.newProxyInstance(S3Client.class.getClassLoader(), new Class<?>[]{S3Client.class},
                 (proxy, method, args) -> switch (method.getName()) {
                     case "headObject" -> head.apply(args[0]);
                     case "getObject" -> {
                         if (args.length != 1 || !(args[0] instanceof GetObjectRequest request)) {
                             throw new UnsupportedOperationException("getObject" + args.length);
+                        }
+                        if (request.range() == null) {
+                            yield full.apply(request);
                         }
                         if (!"bytes=0-0".equals(request.range())) {
                             throw new AssertionError("only one byte is asked for: " + request.range());

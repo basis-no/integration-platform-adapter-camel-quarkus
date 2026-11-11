@@ -63,7 +63,7 @@ class UnresolvableObjectInputTest {
     /** Failures that can never pass, each of a claim check that arrives on a replay or a DLQ resend. */
     enum NeverPasses {
         CHANGED("does not match its reference's SHA-256"),
-        TRUNCATED("has " + (OBJECT.length - 1) + " bytes; its reference has " + OBJECT.length),
+        SIZE_REPORTED("Payload object size mismatch"),
         LONGER("is larger than its reference's " + OBJECT.length + " bytes"),
         EXPIRED("Payload reference has expired"),
         NO_SUCH_KEY("Payload object does not exist"),
@@ -90,7 +90,8 @@ class UnresolvableObjectInputTest {
                 changed[0] ^= 1;
                 yield new ByteArrayInputStream(changed);
             }
-            case TRUNCATED -> new ByteArrayInputStream(OBJECT, 0, OBJECT.length - 1);
+            case SIZE_REPORTED -> throw new UnresolvablePayloadException("Payload object size mismatch for "
+                    + reference.ref() + ": expected " + OBJECT.length + ", got " + (OBJECT.length - 1));
             case LONGER -> new ByteArrayInputStream((new String(OBJECT, StandardCharsets.UTF_8) + " ")
                     .getBytes(StandardCharsets.UTF_8));
             case NO_SUCH_KEY -> throw new UnresolvablePayloadException("Payload object does not exist: " + reference.ref());
@@ -122,12 +123,18 @@ class UnresolvableObjectInputTest {
         if (readable) {
             assertEquals("s3_object", rows.getFirst().payloadStorage());
             assertEquals(reference.ref(), rows.getFirst().payloadRef());
+        } else {
+            assertEquals("metadata_only", rows.getFirst().payloadStorage());
+            assertFalse(rows.getFirst().replayable());
+            assertEquals("the claim check is malformed or does not match its headers",
+                    rows.getFirst().replayDisabledReason());
+            assertEquals((long) body.length, rows.getFirst().payloadSizeBytes());
         }
     }
 
     /** Failures that may pass, so the record must be read again. */
     enum MayPass {
-        STORE_UNAVAILABLE, APPLICATION_STORE_ERROR, COPY_INTERRUPTED, SPOOL_FULL
+        STORE_UNAVAILABLE, APPLICATION_STORE_ERROR, COPY_INTERRUPTED, STREAM_ENDS_EARLY, SPOOL_FULL
     }
 
     @ParameterizedTest
@@ -143,6 +150,8 @@ class UnresolvableObjectInputTest {
                     throw new IOException("Read timed out");
                 }
             };
+            // The size the store reported matched; the connection then closed after part of it.
+            case STREAM_ENDS_EARLY -> new ByteArrayInputStream(OBJECT, 0, OBJECT.length / 2);
             case SPOOL_FULL -> new ByteArrayInputStream(OBJECT);
         });
 

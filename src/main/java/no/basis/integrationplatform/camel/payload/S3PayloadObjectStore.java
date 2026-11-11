@@ -348,7 +348,12 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
             String actual = HexFormat.of().formatHex(digest.digest());
             // The cause carries the reason, so a reader that unwraps it can report why.
             PayloadStorageException mismatch = null;
-            if (count != expectedSize) {
+            if (count < expectedSize) {
+                // The HEAD before matched the reference's size: a GET whose connection closes
+                // early also ends the stream, so fewer bytes say nothing about the object.
+                mismatch = new PayloadStorageException("Object payload " + ref + " ended after " + count
+                        + " of its reference's " + expectedSize + " bytes");
+            } else if (count > expectedSize) {
                 mismatch = new UnresolvablePayloadException("Object payload " + ref + " has " + count
                         + " bytes; its reference has " + expectedSize);
             } else if (!actual.equals(expectedSha256)) {

@@ -192,7 +192,11 @@ is read again. The reasons:
 
 - `Payload object is unavailable: <ref>`: the object store cannot be reached,
   refuses access or times out, or the bucket does not exist. Check the
-  endpoint, the workload identity and the bucket setting.
+  endpoint, the workload identity and the bucket setting. On AWS S3 a missing
+  key is answered with 403 when the workload may not list the bucket
+  (`s3:ListBucket`), so a deleted object shows here too.
+- `ended after N of its reference's M bytes`: the download stopped early, for
+  example because a connection closed; the object itself may be intact.
 - `Payload reference is outside the configured bucket` or `prefix`: the
   reference names another bucket or prefix than this deployment's settings.
 - `could not be copied for checking to <directory>`: the object store failed

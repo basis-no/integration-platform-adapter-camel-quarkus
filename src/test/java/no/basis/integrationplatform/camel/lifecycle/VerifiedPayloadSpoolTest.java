@@ -2,6 +2,7 @@ package no.basis.integrationplatform.camel.lifecycle;
 
 import no.basis.integrationplatform.camel.payload.PayloadReference;
 import no.basis.integrationplatform.camel.payload.PayloadStorageException;
+import no.basis.integrationplatform.camel.payload.UnresolvablePayloadException;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
@@ -71,7 +72,7 @@ class VerifiedPayloadSpoolTest {
     }
 
     @Test
-    void aTruncatedOrLongerObjectIsRefused() {
+    void aTruncatedOrLongerObjectIsRefused() throws Exception {
         var spool = new VerifiedPayloadSpool(directory, 1024);
         byte[] shorter = java.util.Arrays.copyOf(PAYLOAD, PAYLOAD.length - 3);
         byte[] longer = java.util.Arrays.copyOf(PAYLOAD, PAYLOAD.length + 3);
@@ -81,8 +82,12 @@ class VerifiedPayloadSpoolTest {
         PayloadStorageException extended = assertThrows(PayloadStorageException.class,
                 () -> spool.checkedCopy(reference(PAYLOAD), () -> new ByteArrayInputStream(longer)));
 
-        assertTrue(truncated.getMessage().contains("bytes; its reference has"), truncated.getMessage());
+        // A stream that ends early may have lost its connection; more bytes are the object's own.
+        assertEquals("Object payload " + reference(PAYLOAD).ref() + " ended after " + shorter.length
+                + " of its reference's " + PAYLOAD.length + " bytes", truncated.getMessage());
+        assertFalse(truncated instanceof UnresolvablePayloadException);
         assertTrue(extended.getMessage().contains("larger than its reference"), extended.getMessage());
+        assertTrue(extended instanceof UnresolvablePayloadException);
         assertNothingLeft(spool);
     }
 
