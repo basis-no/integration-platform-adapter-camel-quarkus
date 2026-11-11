@@ -83,14 +83,15 @@ No Message Store schema change.
 - The 0.3 line continues as a maintained series, with its current scope (one
   input topic per integration); further 0.3.x patch releases may follow, also
   after 0.4.0. This replaces "the last 0.3 release" in the 0.3.6 notes.
-- Known limitation, documented: during a Message Store outage the consumer
-  reads an uncommitted Kafka record again and runs the route on every read (up
-  to 0.3.6 at once; from 0.3.7 with the growing wait above), and a message
-  that fails meanwhile can be parked in the DLQ more than once (with the `noop` step store, or when it fails before its first tracked
-  send). The README gives what to do: scale the integration down during a long
-  outage, set `autoOffsetReset=earliest` on the Kafka input, and check the DLQ
-  for copies of a message by `x-bip-message-id` before resending it. See
-  [Retry and DLQ](README.md#retry-and-dlq).
+- Known limitation, documented: during a Message Store outage the consumer reads
+  an uncommitted Kafka record again and runs the route on every read (up to
+  0.3.6 at once; from 0.3.7 with the growing wait above), and a message that
+  fails meanwhile can be parked in the DLQ more than once (with the `noop` step
+  store, or when it fails before its first tracked send). The README gives what
+  to do: scale the integration down during a long outage, set
+  `autoOffsetReset=earliest` on the Kafka input, and check the DLQ for copies of
+  a message by `x-bip-message-id` before resending it. See [Retry and
+  DLQ](README.md#retry-and-dlq).
 - Corrected: a tracked send is not repeated during an outage only while the
   Message Store cannot be read. When the store can be read but not written (a
   read-only database after a failover or for maintenance, a lost write
