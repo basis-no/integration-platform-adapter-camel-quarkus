@@ -18,9 +18,10 @@ GitHub release-note readback and the applicable qualification/documentation gate
 A `vX.Y.Z` tag starts `release.yml`, which builds an unsigned candidate and then
 waits for human approval in protected environments before signing, uploading and
 publishing; the alternative is offline signing on the release workstation (see
-below). CI publishes no snapshots. The release-page workflow verifies actual
-public bytes before creating notes. The synthetic CI gate does not replace full
-candidate review, the signer's receipt or portal validation before release.
+below). A reviewed snapshot is published only through the approval-gated,
+manual snapshot lane. The release-page workflow verifies actual public bytes
+before creating notes. The synthetic CI gate does not replace full candidate
+review, the signer's receipt or portal validation before release.
 Never rebuild or republish packages merely to repair missing release notes.
 Historical backfills use verified existing tags and must not replace the latest
 release. See `docs/releasing.md`.
@@ -28,7 +29,7 @@ release. See `docs/releasing.md`.
 ## Production credential boundary
 
 The primary (certify) release key never exists in GitHub, CI, agent or development
-hosts. Signing and Central upload happen in exactly one of two places:
+hosts. Signing and Central uploads happen only in these places:
 
 - `release.yml` jobs `sign-upload` and `publish`, which run in the protected
   environments `release` and `release-publish` (required reviewers, tag-only
@@ -36,11 +37,14 @@ hosts. Signing and Central upload happen in exactly one of two places:
   never run Maven, the wrapper, tests or candidate files. Only their environment
   secrets hold the CI signing subkey and a Central token. This path exists only
   once the repository is public and those settings are in place.
+- `publish-snapshot.yml` job `upload`, which runs in the protected environment
+  `snapshot` (required reviewers, deployment rule for `main` and `release/0.3`),
+  checks out only the release tools (and the root `pom.xml`) at
+  `TRUSTED_TOOLING_SHA`, never signs and uploads only an unsigned snapshot.
+  Only its environment secrets hold a snapshot Central token.
 - The trusted release workstation, where a human release manager runs
   `sign-candidate.py` and `central-recovery.py` from the reviewed tool branch:
-  `main`, or `release/0.3` for a 0.3.x release. A snapshot of a reviewed commit
-  may be published, unsigned, from that workstation with the release manager's
-  own Central token.
+  `main`, or `release/0.3` for a 0.3.x release.
 
 Never add signing or portal credentials to repository or organization secrets, to
 any other workflow or job, or to a job that builds, tests or runs candidate code;

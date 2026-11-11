@@ -153,6 +153,15 @@ No Message Store schema change.
   repository settings first: the two environments, a tag ruleset, the signer's
   public key and fingerprint, the trusted tooling commit and the environment
   secrets; see `docs/release-packaging.md`.
+- Publish a reviewed `X.Y.Z-SNAPSHOT` to Central's snapshot repository for
+  testing in another environment, through `publish-snapshot.yml`: a manual run
+  on the head of `main` or `release/0.3` builds and tests it without
+  credentials, records build provenance, and uploads the same unsigned bytes
+  only after an approval in the protected environment `snapshot`, from the
+  release tools at the trusted commit, then reads them back. A re-run never
+  uploads again. It needs repository settings first; see
+  `docs/release-packaging.md#snapshot-lane`. Otherwise acceptance uses locally
+  built artifacts.
 
 ## 0.3.6 — 2026-11-04
 

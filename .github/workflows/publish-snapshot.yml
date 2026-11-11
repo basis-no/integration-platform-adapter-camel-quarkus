@@ -1,22 +1,234 @@
-name: Snapshot publication (not from CI)
+name: Publish an approved snapshot (unsigned build, attest, approved upload)
 
-# CI publishes no snapshots. A snapshot of a reviewed commit is published,
-# unsigned, from the release manager's workstation; final releases are signed
-# in the protected tag run (release.yml) or with the offline signer. See
-# docs/release-packaging.md#snapshot-lane. Never add signing or publisher
-# credentials to a workflow.
+# Manual snapshot lane, for testing a reviewed X.Y.Z-SNAPSHOT in another
+# environment before the final. Trust boundaries, one per job, as in release.yml:
+# - build runs all project code with a read-only token, no secrets and no OIDC.
+# - attest runs no project code. It records checksums and is the only job with
+#   an OIDC token, used for GitHub build provenance.
+# - upload runs in environment `snapshot` (required reviewers). It checks out
+#   only the release tools at the admin-pinned TRUSTED_TOOLING_SHA, treats the
+#   candidate as data and uploads the same bytes, unsigned, to Central's
+#   snapshot repository. It never signs and never publishes a release.
+# See docs/releasing.md and docs/release-packaging.md#snapshot-lane.
 on:
   workflow_dispatch:
+    inputs:
+      source_commit:
+        description: Exact 40-character commit at the head of the dispatched branch
+        required: true
+        type: string
 
-permissions:
-  contents: read
+permissions: {}
+
+concurrency:
+  group: snapshot-publication
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+env:
+  SOURCE: ${{ inputs.source_commit }}
+  # Snapshots are built only from the head of one of these.
+  REVIEWED_BRANCHES: main release/0.3
 
 jobs:
-  refuse:
+  build:
+    if: github.server_url == 'https://github.com' && github.ref_type == 'branch'
     runs-on: ubuntu-latest
-    timeout-minutes: 1
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.source.outputs.version }}
+    env:
+      MAVEN_OPTS: -Xmx512m -XX:ActiveProcessorCount=2
     steps:
-      - name: Refuse; CI publishes no snapshots
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check branch, exact head and clean snapshot source
+        id: source
+        working-directory: candidate
         run: |
-          echo "CI does not publish snapshots. See docs/release-packaging.md#snapshot-lane." >&2
-          exit 1
+          set -euo pipefail
+          [[ "$SOURCE" =~ ^[a-f0-9]{40}$ ]] || { echo "source_commit must be a full commit SHA." >&2; exit 1; }
+          test "$SOURCE" = "$GITHUB_SHA" || { echo "source_commit is not the head of $GITHUB_REF_NAME at dispatch." >&2; exit 1; }
+          case " $REVIEWED_BRANCHES " in *" $GITHUB_REF_NAME "*) ;; *) echo "Snapshots come only from $REVIEWED_BRANCHES." >&2; exit 1 ;; esac
+          version="$(python3 -I -c 'import xml.etree.ElementTree as ET; print(ET.parse("pom.xml").getroot().findtext("{http://maven.apache.org/POM/4.0.0}version"))')"
+          [[ "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-SNAPSHOT$ ]] || { echo "POM version $version is not X.Y.Z-SNAPSHOT." >&2; exit 1; }
+          python3 -I .github/scripts/release-candidate.py source --snapshot --version "$version" --commit "$SOURCE" --path .
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - uses: actions/setup-java@b843ebf9b913146b38da2eaa7aeddf76074ae1ad # v6.1.0
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Build unsigned snapshot with no credentials
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          ./mvnw --batch-mode --no-transfer-progress -Prelease -Dgpg.skip=true clean verify -DforkCount=1 -DreuseForks=true -DargLine='-Xmx256m -XX:ActiveProcessorCount=2' | tee ../candidate-build.log
+          ./mvnw --batch-mode --no-transfer-progress -Prelease help:effective-pom -Doutput=../candidate-effective-pom.xml
+      - name: Collect unsigned payloads and source provenance
+        run: |
+          set -euo pipefail
+          mkdir evidence
+          python3 -I candidate/.github/scripts/release-candidate.py provenance --snapshot --version "$VERSION" --commit "$SOURCE" --path candidate --workflow-head "$GITHUB_SHA" --effective-pom candidate-effective-pom.xml --output evidence/provenance.json
+          cp candidate-effective-pom.xml evidence/effective-pom.xml
+          python3 -I candidate/.github/scripts/release-candidate.py unsigned --snapshot --version "$VERSION" --commit "$SOURCE" --path candidate --output evidence --workflow-run "$GITHUB_RUN_ID"
+      - name: Retain unsigned snapshot
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-snapshot-candidate-${{ env.VERSION }}
+          path: evidence/
+          if-no-files-found: error
+          retention-days: 30
+      - name: Retain build log
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot-build-log-${{ github.run_id }}-${{ github.run_attempt }}
+          path: candidate-build.log
+          if-no-files-found: warn
+          retention-days: 30
+
+  attest:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      id-token: write
+      attestations: write
+    env:
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Check the version reported by the build
+        run: '[[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-SNAPSHOT$ ]]'
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-snapshot-candidate-${{ env.VERSION }}
+          path: candidate
+      - name: Record candidate checksums (data only, no checkout)
+        working-directory: candidate
+        run: |
+          set -euo pipefail
+          if [ -n "$(find . ! -type f ! -type d)" ]; then echo "Links or special files in candidate." >&2; exit 1; fi
+          find . -type f -printf '%P\n' | LC_ALL=C sort | xargs -d '\n' sha256sum -- > "$RUNNER_TEMP/candidate.sha256"
+          test "$(wc -l < "$RUNNER_TEMP/candidate.sha256")" -eq 7
+          mv "$RUNNER_TEMP/candidate.sha256" "$GITHUB_WORKSPACE/candidate.sha256"
+          { echo '```'; cat "$GITHUB_WORKSPACE/candidate.sha256"; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-checksums: candidate.sha256
+      - name: Retain recorded checksums
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: snapshot-checksums-${{ env.VERSION }}
+          path: candidate.sha256
+          if-no-files-found: error
+          retention-days: 30
+
+  upload:
+    needs: [build, attest]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: snapshot
+    permissions:
+      contents: read
+      actions: read
+      attestations: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TOOLING: ${{ vars.TRUSTED_TOOLING_SHA }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - name: Check inputs, environment protection and reviewed commits
+        run: |
+          set -euo pipefail
+          [[ "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)-SNAPSHOT$ ]] || { echo "Not a snapshot version." >&2; exit 1; }
+          [[ "$SOURCE" =~ ^[a-f0-9]{40}$ ]] && test "$SOURCE" = "$GITHUB_SHA" || { echo "source_commit is not this run's commit." >&2; exit 1; }
+          [[ "$TOOLING" =~ ^[a-f0-9]{40}$ ]] || { echo "TRUSTED_TOOLING_SHA is not a full commit SHA." >&2; exit 1; }
+          repo="repos/$GITHUB_REPOSITORY"
+          # Fail closed if the environment lost its reviewers or branch rule: its
+          # Central token can write to the whole namespace, as a release token can.
+          gh api "$repo/environments/snapshot" | jq -e '
+            .can_admins_bypass == false
+            and .deployment_branch_policy.custom_branch_policies == true
+            and ([.protection_rules[] | select(.type == "required_reviewers")
+                  | select(.prevent_self_review == true and (.reviewers | length) >= 2)] | length) == 1' > /dev/null \
+            || { echo "Environment snapshot is not protected as required." >&2; exit 1; }
+          gh api "$repo/environments/snapshot/deployment-branch-policies?per_page=100" | jq -e --arg branches "$REVIEWED_BRANCHES" '
+            ($branches | split(" ")) as $allowed
+            | .total_count >= 1 and .total_count == (.branch_policies | length)
+            and all(.branch_policies[]; .type == "branch" and (.name as $n | $allowed | index($n)))' > /dev/null \
+            || { echo "Environment snapshot must allow only the reviewed branches." >&2; exit 1; }
+          reviewed() {
+            for branch in $REVIEWED_BRANCHES; do
+              status="$(gh api "$repo/compare/$1...$branch" --jq .status)" || continue
+              case "$status" in ahead|identical) return 0 ;; esac
+            done
+            return 1
+          }
+          reviewed "$SOURCE" || { echo "Snapshot commit is not on a reviewed branch." >&2; exit 1; }
+          # The build checked this at dispatch; approval may come later, so check again.
+          # The version is bound to the source commit's own POM, read from the API, not the candidate.
+          gh api -H 'Accept: application/vnd.github.raw' "$repo/contents/pom.xml?ref=$SOURCE" > "$RUNNER_TEMP/source-pom.xml"
+          tags="$(gh api "$repo/git/matching-refs/tags/v${VERSION%-SNAPSHOT}" | jq --arg ref "refs/tags/v${VERSION%-SNAPSHOT}" '[.[] | select(.ref == $ref)] | length')"
+          test "$tags" = 0 || { echo "v${VERSION%-SNAPSHOT} is tagged now; a released version gets no snapshot." >&2; exit 1; }
+          reviewed "$TOOLING" || { echo "TRUSTED_TOOLING_SHA is not on a reviewed branch." >&2; exit 1; }
+          # An upload is never repeated by a re-run, also when an earlier attempt died
+          # before it kept its state; dispatch a new run instead.
+          test "${GITHUB_RUN_ATTEMPT:-1}" = 1 || { echo "Attempt $GITHUB_RUN_ATTEMPT of this run: a re-run never uploads; dispatch a new run." >&2; exit 1; }
+          count="$(gh api "$repo/actions/runs/$GITHUB_RUN_ID/artifacts?name=central-snapshot-$VERSION" --jq .total_count)"
+          test "$count" = 0 || { echo "This run already has snapshot state; never upload again." >&2; exit 1; }
+      - name: Check out only the release tools at the pinned commit
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ vars.TRUSTED_TOOLING_SHA }}
+          path: tooling
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: unsigned-snapshot-candidate-${{ env.VERSION }}
+          path: candidate
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: snapshot-checksums-${{ env.VERSION }}
+          path: checksums
+      - name: Verify candidate bytes and build provenance (data only)
+        run: |
+          set -euo pipefail
+          test "$(git -C tooling rev-parse HEAD)" = "$TOOLING"
+          (cd candidate && sha256sum -c --strict --quiet ../checksums/candidate.sha256)
+          test "$(find candidate -type f | wc -l)" -eq "$(wc -l < checksums/candidate.sha256)"
+          # The coordinate comes from the trusted POM, never from the candidate.
+          python3 -I tooling/.github/scripts/snapshot-upload.py --check-only --pom tooling/pom.xml --source-pom "$RUNNER_TEMP/source-pom.xml" --candidate candidate --version "$VERSION" --source-commit "$SOURCE" --candidate-run "$GITHUB_RUN_ID" --state unused.json
+          while read -r _ name; do
+            gh attestation verify "candidate/$name" --repo "$GITHUB_REPOSITORY" \
+              --signer-workflow "$GITHUB_REPOSITORY/.github/workflows/publish-snapshot.yml" \
+              --signer-digest "$SOURCE" --source-ref "$GITHUB_REF" --source-digest "$SOURCE" \
+              --deny-self-hosted-runners > /dev/null
+          done < checksums/candidate.sha256
+      - name: Upload once to the Central snapshot repository and read back
+        env:
+          CENTRAL_TOKEN_USERNAME: ${{ secrets.SNAPSHOT_CENTRAL_TOKEN_USERNAME }}
+          CENTRAL_TOKEN_PASSWORD: ${{ secrets.SNAPSHOT_CENTRAL_TOKEN_PASSWORD }}
+        run: |
+          set -euo pipefail
+          mkdir state
+          python3 -I tooling/.github/scripts/snapshot-upload.py --pom tooling/pom.xml --source-pom "$RUNNER_TEMP/source-pom.xml" --candidate candidate --version "$VERSION" --source-commit "$SOURCE" --candidate-run "$GITHUB_RUN_ID" --state state/snapshot.json
+          test "$(jq -r .phase state/snapshot.json)" = verified
+          jq '{coordinate, snapshot_version, source_commit, files}' state/snapshot.json >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain snapshot state, also after a failure
+        if: always() && hashFiles('state/snapshot.json') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: central-snapshot-${{ env.VERSION }}
+          path: state/snapshot.json
+          if-no-files-found: error
+          retention-days: 90

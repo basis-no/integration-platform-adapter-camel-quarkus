@@ -1,8 +1,10 @@
 # Releasing
 
-The adapter has two lanes. Development and acceptance use `X.Y.Z-SNAPSHOT`
-artifacts, built locally or published as a snapshot; users receive only
-immutable final releases on Maven Central.
+The adapter has three lanes. Development and acceptance use locally built
+`X.Y.Z-SNAPSHOT` artifacts, or a reviewed snapshot published through the
+approval-gated [snapshot lane](#testing-a-published-snapshot) when another
+environment must test it; users receive only immutable final releases on Maven
+Central.
 
 Final releases take one of two paths with the same tools:
 
@@ -42,16 +44,45 @@ never rebuilt or replaced.
    after another local install picks up different adapter bytes; the recorded
    image digest remains reproducible.
 
-## Published snapshots
+Locally built snapshots are suitable for acceptance testing, not production
+dependencies.
 
-When acceptance runs on another machine, the release manager may publish a
-snapshot of a reviewed commit, unsigned, from the release workstation with their
-own Central token; the 0.3.6 acceptance snapshots were published this way. CI
-does not publish snapshots: `publish-snapshot.yml` refuses to run. See the
-[snapshot lane](release-packaging.md#snapshot-lane). Never add signing or portal
-credentials to a workflow, or dispatch an older workflow revision, to publish
-snapshots. Snapshots, local or published, are for acceptance testing, not
-production dependencies.
+## Testing a published snapshot
+
+When the acceptance environment cannot build against a local Maven repository,
+publish the reviewed snapshot to Central's snapshot repository and test exactly
+that build there, before the final:
+
+1. Merge the change to `release/0.3` (or `main` for the 0.4 line), with the POM
+   at `X.Y.Z-SNAPSHOT`. A version that is already tagged gets no snapshot.
+2. Dispatch the snapshot lane on that branch with its current head commit:
+
+   ```sh
+   gh workflow run publish-snapshot.yml --ref release/0.3 -f source_commit=<40-character head commit>
+   ```
+
+3. The other of the two release approvers reviews the run's `build` and `attest`
+   results and approves the `upload` job in the environment `snapshot`. The person
+   who dispatched the run cannot approve it.
+4. The run summary shows the timestamped snapshot version, for example
+   `0.3.7-20261110.123456-1`, and the SHA-256 of each uploaded file. Pin that
+   exact version in the test integration (not `0.3.7-SNAPSHOT`, which moves with
+   the next upload), with Central's snapshot repository
+   `https://central.sonatype.com/repository/maven-snapshots/` enabled for
+   snapshots only. Record the version and hashes in the acceptance evidence.
+
+What the lane guarantees: the bytes come from the reviewed branch head that was
+dispatched, built and tested in a job without credentials, with GitHub build
+provenance; the upload job runs no project code, checks the bytes against the
+recorded checksums and the provenance, uploads them once and reads them back;
+two people are involved. What it does not: a snapshot is not a release. It is not
+signed, Central may expire it, and `X.Y.Z-SNAPSHOT` resolves to the latest
+upload, so only the timestamped version identifies what was approved. A re-run
+of the upload refuses; dispatch a new run. The commit was the branch head at
+dispatch; a merge before the approval does not change what is uploaded. A
+version tagged by then gets no snapshot. See
+[snapshot lane](release-packaging.md#snapshot-lane) for the trust boundaries and
+repository settings.
 
 ## Final release in CI
 

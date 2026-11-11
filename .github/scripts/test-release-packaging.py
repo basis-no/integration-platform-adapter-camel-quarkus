@@ -32,6 +32,7 @@ evidence = load('release-evidence')
 candidate = load('release-candidate')
 public = load('verify-public-release')
 signer = load('sign-candidate')
+snapshot = load('snapshot-upload')
 GROUP, ARTIFACT, VERSION = 'org.example', 'adapter', '1.2.3'
 SIGNER = 'A' * 40
 ID = '12345678-1234-1234-1234-123456789abc'
@@ -214,7 +215,7 @@ class Fixtures(unittest.TestCase):
 
     def test_production_workflows_have_no_signing_or_portal_secret_references(self):
         workflows = Path(__file__).resolve().parents[1] / 'workflows'
-        for name in ('release-candidate.yml', 'publish-snapshot.yml'):
+        for name in ('release-candidate.yml',):
             text = (workflows / name).read_text()
             self.assertNotIn('secrets.', text)
             self.assertNotIn('gpg-private-key:', text)
@@ -233,10 +234,6 @@ class Fixtures(unittest.TestCase):
         # Dispatchable from main, and from release/0.3 until main carries the same tools.
         self.assertIn("(github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/0.3')", text)
         self.assertIn('refs/heads/main|refs/heads/release/0.3) ;; *) exit 1 ;;', text)
-        snapshot = (workflows / 'publish-snapshot.yml').read_text()
-        self.assertIn('exit 1', snapshot)
-        self.assertNotIn('checkout@', snapshot)
-        self.assertNotIn('mvnw', snapshot)
         # Post-publication readback only: public key variable, never a signer or portal token.
         # Renamed so the publish-central.yml workflow, tag-triggered in older revisions, stays disabled.
         self.assertFalse((workflows / 'publish-central.yml').exists())
@@ -262,7 +259,7 @@ class Fixtures(unittest.TestCase):
                 self.assertNotIn('secrets.' + legacy, text, name + ': repository-level release secret')
             for trigger in ('pull_request_target', 'workflow_run', 'issue_comment'):
                 self.assertNotIn(trigger, text, name)
-            if name != 'release.yml':
+            if name not in ('release.yml', 'publish-snapshot.yml'):
                 # The public content check reads its private name patterns, which are not a
                 # credential, and runs no Maven or project code.
                 allowed = ('secrets.PUBLIC_CONTENT_PATTERNS',) if name == 'public-content.yml' else ()
@@ -319,6 +316,75 @@ class Fixtures(unittest.TestCase):
         self.assertNotIn('--allow-upload', publish)
         self.assertIn('/dev/shm', sign)
 
+    def test_snapshot_workflow_keeps_project_code_away_from_the_snapshot_token(self):
+        text = (Path(__file__).resolve().parents[1] / 'workflows' / 'publish-snapshot.yml').read_text()
+        head, body = text.split('\njobs:\n')
+        self.assertIn('  workflow_dispatch:\n', head)
+        for trigger in ('push:', 'pull_request', 'schedule:'):
+            self.assertNotIn(trigger, head)
+        self.assertIn('\npermissions: {}\n', head)
+        self.assertNotRegex(text, r'(?m)^\s+tags:')
+        jobs = dict(re.findall(r'(?ms)^  ([a-z-]+):\n(.*?)(?=^  [a-z-]+:\n|\Z)', body))
+        self.assertEqual(list(jobs), ['build', 'attest', 'upload'])
+        for name, job in jobs.items():
+            self.assertIn('    permissions:\n', job, name)
+            self.assertNotIn('cache', job, name + ': no shared caches next to the upload')
+            scripts = re.findall(r'(?m)^( +)run: (.*\n(?:\1  .*\n|\s*\n)*)', job)
+            self.assertTrue(scripts, name)
+            for _, script in scripts:
+                self.assertNotIn('${{', script, name)
+        build, attest, upload = jobs.values()
+        self.assertIn('-Dgpg.skip=true', build)
+        self.assertIn('source --snapshot', build)
+        self.assertIn('test "$SOURCE" = "$GITHUB_SHA"', build)
+        self.assertIn('--workflow-run "$GITHUB_RUN_ID"', build)
+        for forbidden in ('secrets.', 'id-token', 'environment:', 'write', 'versions:set'):
+            self.assertNotIn(forbidden, build)
+        self.assertIn('id-token: write', attest)
+        for forbidden in ('secrets.', 'checkout@', 'mvnw', '.github/scripts', 'environment:'):
+            self.assertNotIn(forbidden, attest)
+        self.assertIn('    environment: snapshot\n', upload)
+        self.assertIn('environments/snapshot', upload)
+        self.assertIn('.type == "branch"', upload)
+        self.assertIn('prevent_self_review == true', upload)
+        self.assertIn('test "${GITHUB_RUN_ATTEMPT:-1}" = 1', upload)
+        self.assertIn('central-snapshot-$VERSION', upload)
+        self.assertEqual(upload.count('checkout@'), 1)
+        self.assertIn('ref: ${{ vars.TRUSTED_TOOLING_SHA }}\n          path: tooling\n'
+                      '          sparse-checkout: .github/scripts\n', upload)
+        # A snapshot is never signed and never published as a release.
+        self.assertEqual(set(re.findall(r'secrets\.([A-Z_]+)', upload)),
+                         {'SNAPSHOT_CENTRAL_TOKEN_USERNAME', 'SNAPSHOT_CENTRAL_TOKEN_PASSWORD'})
+        for forbidden in ('id-token', 'mvnw', 'contents: write', 'candidate/.github', 'python3 .github',
+                          'gpg', 'central-recovery.py', 'sign-candidate.py'):
+            self.assertNotIn(forbidden, upload)
+        for script in re.findall(r'python3 (?:-I )?(\S+)', upload):
+            self.assertEqual(script, 'tooling/.github/scripts/snapshot-upload.py')
+        # The coordinate comes from the trusted POM, and the tag is checked again at approval.
+        self.assertEqual(upload.count('snapshot-upload.py'), upload.count('snapshot-upload.py --check-only --pom tooling/pom.xml')
+                         + upload.count('snapshot-upload.py --pom tooling/pom.xml'))
+        self.assertIn('git/matching-refs/tags/v${VERSION%-SNAPSHOT}', upload)
+        self.assertIn('contents/pom.xml?ref=$SOURCE', upload)
+        self.assertEqual(upload.count('--source-pom "$RUNNER_TEMP/source-pom.xml"'), 2)
+        self.assertEqual(text.count('(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)-SNAPSHOT'), 3)
+        self.assertIn('deployment-branch-policies?per_page=100', upload)
+
+    def test_snapshot_selection_accepts_only_unsigned_snapshot_actions(self):
+        commit = 'a' * 40
+        candidate.snapshot_selection('unsigned', '1.2.3-SNAPSHOT', commit)
+        for action, version, kwargs in (('unsigned', '1.2.3', {}), ('artifact', '1.2.3-SNAPSHOT', {}),
+                                        ('selection', '1.2.3-SNAPSHOT', {}),
+                                        ('source', '1.2.3-SNAPSHOT', {'tagged': True}),
+                                        ('provenance', '1.2.3-SNAPSHOT', {'signer': SIGNER}),
+                                        ('unsigned', '1.2.3-rc1-SNAPSHOT', {})):
+            with self.assertRaises(ValueError, msg=(action, version)):
+                candidate.snapshot_selection(action, version, commit, **kwargs)
+        with self.assertRaises(ValueError):
+            candidate.snapshot_selection('unsigned', '1.2.3-SNAPSHOT', 'main')
+        # The release path still needs its pinned signer.
+        with self.assertRaises(ValueError):
+            candidate.selection('inspect', '1.2.3', commit, '')
+
     def test_candidate_selection_requires_exact_inputs_and_refuses_upload_rerun(self):
         candidate.selection('inspect', VERSION, 'a' * 40, SIGNER)
         candidate.selection('upload', VERSION, 'a' * 40, SIGNER, '123', '', 'b' * 64)
@@ -351,6 +417,24 @@ class Fixtures(unittest.TestCase):
         with patch.object(candidate.subprocess, 'check_output', side_effect=['a' * 40 + '\n', ' M pom.xml']):
             with self.assertRaises(ValueError):
                 candidate.source(self.root, VERSION, 'a' * 40)
+
+    def test_snapshot_cli_checks_the_snapshot_source_without_a_signer(self):
+        pom = next(data for name, data in self.blobs.items() if name.endswith('.pom'))
+        (self.root / 'pom.xml').write_bytes(pom.replace(VERSION.encode(), (VERSION + '-SNAPSHOT').encode()))
+        argv = ['release-candidate.py', 'source', '--snapshot', '--version', VERSION + '-SNAPSHOT',
+                '--commit', 'a' * 40, '--path', str(self.root)]
+        with patch.object(sys, 'argv', argv), \
+                patch.object(candidate.subprocess, 'check_output', side_effect=['a' * 40 + '\n', '', '']):
+            candidate.main()
+        # A version that is already tagged gets no snapshot either.
+        with patch.object(sys, 'argv', argv), \
+                patch.object(candidate.subprocess, 'check_output', side_effect=['a' * 40 + '\n', '', 'v' + VERSION]):
+            with self.assertRaises(ValueError):
+                candidate.main()
+        # Without --snapshot the release path still refuses a missing signer.
+        with patch.object(sys, 'argv', [arg for arg in argv if arg != '--snapshot']):
+            with self.assertRaises(ValueError):
+                candidate.main()
 
     def test_tagged_source_requires_the_tag_on_the_exact_commit(self):
         pom = next(data for name, data in self.blobs.items() if name.endswith('.pom'))
@@ -556,6 +640,252 @@ def synthetic_key(home, uid):
     gpg(home, '--pinentry-mode', 'loopback', '--passphrase', '', '--quick-generate-key', uid, 'ed25519', 'sign', '1d')
     listing = gpg(home, '--with-colons', '--list-secret-keys', uid).stdout.decode()
     return next(line.split(':')[9] for line in listing.splitlines() if line.startswith('fpr:'))
+
+
+class SnapshotUpload(unittest.TestCase):
+    SNAPSHOT = '1.2.3-SNAPSHOT'
+    COMMIT = 'c' * 40
+
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        self.candidate = self.root / 'candidate'
+        (self.candidate / 'unsigned').mkdir(parents=True)
+        pom = (f'<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>{GROUP}</groupId>'
+               f'<artifactId>{ARTIFACT}</artifactId><version>{self.SNAPSHOT}</version></project>').encode()
+        self.payloads = {suffix: (pom if suffix == '.pom' else b'jar' + suffix.encode()) for suffix in snapshot.PAYLOADS}
+        hashes = {}
+        for suffix, data in self.payloads.items():
+            name = f'{ARTIFACT}-{self.SNAPSHOT}{suffix}'
+            (self.candidate / 'unsigned' / name).write_bytes(data)
+            hashes[name] = hashlib.sha256(data).hexdigest()
+        (self.candidate / 'provenance.json').write_text(json.dumps({
+            'source_commit': self.COMMIT, 'version': self.SNAPSHOT, 'group': GROUP, 'artifact': ARTIFACT}))
+        (self.candidate / 'unsigned.json').write_text(json.dumps({
+            'source_commit': self.COMMIT, 'version': self.SNAPSHOT, 'candidate_run': '42',
+            'qualification': 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE', 'payload_sha256': hashes}))
+        self.state = self.root / 'snapshot.json'
+        # The trusted checkout's POM, at another version than the candidate.
+        self.trusted_pom = self.root / 'trusted-pom.xml'
+        self.trusted_pom.write_text(f'<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>{GROUP}</groupId>'
+                                    f'<artifactId>{ARTIFACT}</artifactId><version>9.9.9-SNAPSHOT</version></project>')
+        # The source commit's POM, as the workflow reads it from the repository.
+        self.source_pom = self.root / 'source-pom.xml'
+        self.source_pom.write_bytes(self.payloads['.pom'])
+        self.now = __import__('datetime').datetime(2026, 11, 10, 12, 34, 56,
+                                                    tzinfo=__import__('datetime').timezone.utc)
+
+    def repository(self, existing=None, fail_put=None):
+        stored = dict(existing or {})
+        calls = []
+
+        def call(method, url, body=None):
+            calls.append((method, url))
+            self.assertTrue(url.startswith(snapshot.REPOSITORY))
+            if method == 'PUT':
+                if fail_put and url.endswith(fail_put):
+                    return 500, b''
+                stored[url] = body
+                return 201, b''
+            return (200, stored[url]) if url in stored else (404, b'')
+        return stored, calls, call
+
+    def upload(self, call, sleep=lambda seconds: None):
+        return snapshot.upload(self.candidate, self.SNAPSHOT, self.COMMIT, '42', self.state, self.trusted_pom,
+                               self.source_pom, call=call, now=self.now, sleep=sleep)
+
+    def check_candidate(self, version=None, commit=None):
+        return snapshot.candidate_payloads(self.candidate, version or self.SNAPSHOT, commit or self.COMMIT, '42',
+                                           self.trusted_pom, self.source_pom)
+
+    def test_version_is_bound_to_the_source_commits_pom(self):
+        self.check_candidate()
+        # A candidate whose receipt, provenance and POM all claim another version is refused.
+        self.source_pom.write_text(self.source_pom.read_text().replace(self.SNAPSHOT, '1.2.4-SNAPSHOT'))
+        with self.assertRaises(ValueError):
+            self.check_candidate()
+        self.source_pom.write_text(self.source_pom.read_text().replace('1.2.4-SNAPSHOT', self.SNAPSHOT)
+                                   .replace(ARTIFACT + '<', 'other<'))
+        with self.assertRaises(ValueError):
+            self.check_candidate()
+        with self.assertRaises(ValueError):
+            snapshot.candidate_payloads(self.candidate, self.SNAPSHOT, self.COMMIT, '42', self.trusted_pom, None)
+
+    def test_version_components_have_no_leading_zeros(self):
+        for version in ('01.2.3-SNAPSHOT', '1.02.3-SNAPSHOT', '1.2.03-SNAPSHOT', '1.2.3.4-SNAPSHOT'):
+            with self.assertRaises(ValueError, msg=version):
+                snapshot.candidate_payloads(self.candidate, version, self.COMMIT, '42', self.trusted_pom,
+                                            self.source_pom)
+            with self.assertRaises(ValueError, msg=version):
+                candidate.snapshot_selection('unsigned', version, self.COMMIT)
+        candidate.snapshot_selection('unsigned', '0.10.0-SNAPSHOT', self.COMMIT)
+
+    def test_uploads_timestamped_payloads_checksums_and_metadata_then_reads_back(self):
+        stored, calls, call = self.repository()
+        state = self.upload(call)
+        self.assertEqual(state['phase'], 'verified')
+        self.assertEqual(state['snapshot_version'], '1.2.3-20261110.123456-1')
+        base = snapshot.REPOSITORY + GROUP.replace('.', '/') + '/' + ARTIFACT + '/'
+        for suffix, data in self.payloads.items():
+            url = base + self.SNAPSHOT + '/' + ARTIFACT + '-1.2.3-20261110.123456-1' + suffix
+            self.assertEqual(stored[url], data)
+            self.assertEqual(stored[url + '.sha1'], hashlib.sha1(data).hexdigest().encode())
+            self.assertEqual(stored[url + '.md5'], hashlib.md5(data).hexdigest().encode())
+        version = stored[base + self.SNAPSHOT + '/maven-metadata.xml'].decode()
+        self.assertIn('<buildNumber>1</buildNumber>', version)
+        self.assertIn('<classifier>sources</classifier><extension>jar</extension>'
+                      '<value>1.2.3-20261110.123456-1</value>', version)
+        self.assertIn('<version>1.2.3-SNAPSHOT</version>', stored[base + 'maven-metadata.xml'].decode())
+        # Nothing is uploaded before the intent is saved, and nothing outside the repository.
+        self.assertEqual(json.loads(self.state.read_text())['phase'], 'verified')
+        self.assertTrue(all(method in ('GET', 'PUT') for method, _ in calls))
+
+    def test_next_build_follows_existing_metadata_and_keeps_other_versions(self):
+        base = snapshot.REPOSITORY + GROUP.replace('.', '/') + '/' + ARTIFACT + '/'
+        existing = {
+            base + self.SNAPSHOT + '/maven-metadata.xml': snapshot.version_metadata(
+                GROUP, ARTIFACT, self.SNAPSHOT, '20261101.000000', 4, '20261101000000'),
+            base + 'maven-metadata.xml': snapshot.artifact_metadata(None, GROUP, ARTIFACT, '1.2.2-SNAPSHOT', '1')}
+        stored, _, call = self.repository(existing)
+        self.assertEqual(self.upload(call)['snapshot_version'], '1.2.3-20261110.123456-5')
+        listed = stored[base + 'maven-metadata.xml'].decode()
+        self.assertIn('<version>1.2.2-SNAPSHOT</version><version>1.2.3-SNAPSHOT</version>', listed)
+
+    def test_refuses_existing_state_tampered_payloads_and_release_versions(self):
+        _, calls, call = self.repository()
+        self.state.write_text('{}')
+        with self.assertRaises(ValueError):
+            self.upload(call)
+        self.assertEqual(calls, [])
+        self.state.unlink()
+        jar = self.candidate / 'unsigned' / f'{ARTIFACT}-{self.SNAPSHOT}.jar'
+        jar.write_bytes(b'changed')
+        with self.assertRaises(ValueError):
+            self.upload(call)
+        self.assertFalse(self.state.exists())
+        with self.assertRaises(ValueError):
+            self.check_candidate(version='1.2.3')
+        with self.assertRaises(ValueError):
+            self.check_candidate(commit='d' * 40)
+
+    def test_refuses_extra_files_and_unreadable_metadata(self):
+        (self.candidate / 'unsigned' / 'extra.jar').write_bytes(b'x')
+        with self.assertRaises(ValueError):
+            self.check_candidate()
+        (self.candidate / 'unsigned' / 'extra.jar').unlink()
+        base = snapshot.REPOSITORY + GROUP.replace('.', '/') + '/' + ARTIFACT + '/'
+        _, calls, call = self.repository({base + self.SNAPSHOT + '/maven-metadata.xml': b'<metadata/>'})
+        with self.assertRaises(ValueError):
+            self.upload(call)
+        self.assertNotIn('PUT', {method for method, _ in calls})
+
+    def test_failed_put_stops_and_keeps_state(self):
+        _, _, call = self.repository(fail_put='-sources.jar.sha1')
+        with self.assertRaises(RuntimeError):
+            self.upload(call)
+        state = json.loads(self.state.read_text())
+        self.assertEqual(state['phase'], 'uploading')
+        self.assertEqual(state['snapshot_version'], '1.2.3-20261110.123456-1')
+
+    def test_readback_mismatch_fails(self):
+        stored, _, inner = self.repository()
+
+        def call(method, url, body=None):
+            status, data = inner(method, url, body)
+            if method == 'GET' and url.endswith('-javadoc.jar'):
+                return 200, b'other'
+            return status, data
+        with self.assertRaises(RuntimeError):
+            self.upload(call)
+        self.assertEqual(json.loads(self.state.read_text())['phase'], 'uploaded')
+
+    def test_requests_only_to_the_snapshot_repository(self):
+        with self.assertRaises(ValueError):
+            snapshot.request('GET', 'https://example.org/' + ARTIFACT)
+
+    def test_self_consistent_candidate_under_a_foreign_coordinate_is_refused(self):
+        foreign_group, foreign_artifact = 'org.other', 'library'
+        unsigned = self.candidate / 'unsigned'
+        hashes = {}
+        for suffix, data in self.payloads_by_suffix(foreign_group, foreign_artifact).items():
+            for old in unsigned.iterdir():
+                if old.name.endswith(self.SNAPSHOT + suffix):
+                    old.unlink()
+            name = f'{foreign_artifact}-{self.SNAPSHOT}{suffix}'
+            (unsigned / name).write_bytes(data)
+            hashes[name] = hashlib.sha256(data).hexdigest()
+        (self.candidate / 'provenance.json').write_text(json.dumps({
+            'source_commit': self.COMMIT, 'version': self.SNAPSHOT, 'group': foreign_group,
+            'artifact': foreign_artifact}))
+        receipt = json.loads((self.candidate / 'unsigned.json').read_text())
+        receipt['payload_sha256'] = hashes
+        (self.candidate / 'unsigned.json').write_text(json.dumps(receipt))
+        _, calls, call = self.repository()
+        with self.assertRaises(ValueError):
+            self.upload(call)
+        self.assertEqual(calls, [])
+        self.assertFalse(self.state.exists())
+
+    def payloads_by_suffix(self, group, artifact):
+        pom = (f'<project xmlns="http://maven.apache.org/POM/4.0.0"><groupId>{group}</groupId>'
+               f'<artifactId>{artifact}</artifactId><version>{self.SNAPSHOT}</version></project>').encode()
+        return {suffix: (pom if suffix == '.pom' else b'jar' + suffix.encode()) for suffix in snapshot.PAYLOADS}
+
+    def test_metadata_is_read_back_too(self):
+        stored, _, inner = self.repository()
+
+        def call(method, url, body=None):
+            if method == 'GET' and url.endswith(self.SNAPSHOT + '/maven-metadata.xml') and url in stored:
+                return 200, b'<metadata/>'
+            return inner(method, url, body)
+        with self.assertRaises(RuntimeError):
+            self.upload(call)
+
+    def test_listed_versions_that_are_not_plain_text_are_dropped(self):
+        existing = (f'<metadata><groupId>{GROUP}</groupId><artifactId>{ARTIFACT}</artifactId><versioning><versions>'
+                    '<version>1.2.2</version><version>x&lt;/version&gt;&lt;version&gt;evil</version>'
+                    '</versions></versioning></metadata>').encode()
+        listed = snapshot.artifact_metadata(existing, GROUP, ARTIFACT, self.SNAPSHOT, '1').decode()
+        self.assertIn('<version>1.2.2</version><version>1.2.3-SNAPSHOT</version></versions>', listed)
+        self.assertNotIn('evil', listed)
+        __import__('xml.etree.ElementTree').etree.ElementTree.fromstring(listed)
+
+    def test_no_wait_after_the_last_readback_attempt(self):
+        stored, _, inner = self.repository()
+        waits = []
+
+        def call(method, url, body=None):
+            if method == 'GET' and url.endswith('-javadoc.jar'):
+                return 404, b''
+            return inner(method, url, body)
+        with self.assertRaises(RuntimeError):
+            self.upload(call, sleep=waits.append)
+        self.assertEqual(waits, [10] * 5)
+
+    def test_redirects_are_refused_and_never_followed(self):
+        import http.server
+        import threading
+        hits = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                hits.append(self.path)
+                self.send_response(302)
+                self.send_header('Location', '/elsewhere')
+                self.end_headers()
+
+            def log_message(self, *args):
+                pass
+        server = http.server.HTTPServer(('127.0.0.1', 0), Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        status, body = snapshot.send(__import__('urllib.request').request.Request(
+            f'http://127.0.0.1:{server.server_port}/start', headers={'Authorization': 'Basic x'}))
+        self.assertEqual((status, body), (302, b''))
+        self.assertEqual(hits, ['/start'])
 
 
 class OfflineSigner(unittest.TestCase):
