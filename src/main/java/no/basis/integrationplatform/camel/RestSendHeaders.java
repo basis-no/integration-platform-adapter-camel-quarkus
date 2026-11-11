@@ -32,9 +32,11 @@ import java.util.Map;
  * <p>
  * Covered producer components: {@code http}, {@code vertx-http} and {@code netty-http}, also
  * subclassed. Their rest filters are loaded by name, since the adapter has no compile dependency
- * on the components. A {@code rest:} send through any other component fails when the filter is
- * first put on its endpoint, or at its first request, instead of sending unfiltered. Not
- * covered: a rest producer factory that ignores the {@code headerFilterStrategy} parameter.
+ * on the components. A {@code rest:} send through any other component, with or without an own
+ * filter, fails when the filter is first put on its endpoint, or at its first request, instead
+ * of sending unfiltered. Not covered: a rest producer factory that ignores the
+ * {@code headerFilterStrategy} parameter, and a {@code rest-openapi:} send, which can replace
+ * the {@code rest:} endpoint's parameters, the view included, before its producer is created.
  */
 final class RestSendHeaders {
     static final String HEADER_FILTER_STRATEGY = "headerFilterStrategy";
@@ -69,7 +71,8 @@ final class RestSendHeaders {
         } catch (ReflectiveOperationException | RuntimeException e) {
             throw unfiltered(rest, e);
         }
-        if (parameters(rest) != view || !(view.get(HEADER_FILTER_STRATEGY) instanceof ForwardedCredentialHeaders.RecordFilter)) {
+        // The filter itself, not what this caller reads: under a consumer's creation that is the plain map.
+        if (parameters(rest) != view || !(view.sendFilter() instanceof ForwardedCredentialHeaders.RecordFilter)) {
             throw unfiltered(rest, null);
         }
     }
@@ -78,36 +81,42 @@ final class RestSendHeaders {
      * A {@code rest:} endpoint's parameters with the record filter as {@code headerFilterStrategy},
      * around the filter the parameters name, if any. Only Camel's consumer creation, which reads
      * them from {@code RestEndpoint.createConsumer}, sees them without it; every other reader,
-     * the rest producer factories included, sees the filter. A snapshot is returned for
-     * iteration, as the factories copy the parameters before they use them.
+     * the rest producer factories included, sees the filter, also a producer created while a
+     * consumer is being created. A snapshot is returned for iteration, as the factories copy the
+     * parameters before they use them.
      */
     static final class SendParameters extends java.util.AbstractMap<String, Object> {
         private final Endpoint rest;
         private final Map<String, Object> parameters;
         private RestFilter restFilter;
         private Object own;
-        private HeaderFilterStrategy composed;
+        private RestFilter composed;
 
         SendParameters(Endpoint rest, Map<String, Object> parameters) {
             this.rest = rest;
             this.parameters = parameters;
         }
 
+        /** Whether the innermost of Camel's producer and consumer creation on this thread is a consumer's. */
         private static boolean consumerCreation() {
-            return StackWalker.getInstance().walk(frames -> frames.anyMatch(
-                    frame -> frame.getClassName().equals(REST_ENDPOINT) && frame.getMethodName().equals("createConsumer")));
+            return StackWalker.getInstance().walk(frames -> frames
+                    .filter(frame -> frame.getClassName().equals(REST_ENDPOINT)
+                            && (frame.getMethodName().equals("createConsumer") || frame.getMethodName().equals("createProducer")))
+                    .findFirst()
+                    .map(frame -> frame.getMethodName().equals("createConsumer"))
+                    .orElse(false));
         }
 
-        private synchronized HeaderFilterStrategy sendFilter() {
+        private synchronized RestFilter sendFilter() {
             Object current = parameters.get(HEADER_FILTER_STRATEGY);
             if (current == null) {
                 if (restFilter == null) {
-                    restFilter = new RestFilter(rest);
+                    restFilter = new RestFilter(rest, null);
                 }
                 return restFilter;
             }
             if (composed == null || current != own) {
-                composed = ForwardedCredentialHeaders.recordFilter(resolve(rest.getCamelContext(), current));
+                composed = new RestFilter(rest, resolve(rest.getCamelContext(), current));
                 own = current;
             }
             return composed;
@@ -220,15 +229,18 @@ final class RestSendHeaders {
     }
 
     /**
-     * The record filter around the rest filter of the component the send goes through, which
-     * is known only once the rest producer factory has put this filter on its endpoint.
+     * The record filter around the application's own filter, or else the rest filter of the
+     * component the send goes through. Either is used only once the rest producer factory has put
+     * this filter on its endpoint and the component is one the adapter covers.
      */
     static final class RestFilter implements HeaderFilterStrategy, ForwardedCredentialHeaders.RecordFilter {
         private final Endpoint rest;
+        private final HeaderFilterStrategy own;
         private volatile HeaderFilterStrategy component;
 
-        RestFilter(Endpoint rest) {
+        RestFilter(Endpoint rest, HeaderFilterStrategy own) {
             this.rest = rest;
+            this.own = own;
         }
 
         @Override
@@ -278,6 +290,10 @@ final class RestSendHeaders {
                         + " is not covered: the adapter keeps a consumed Kafka record's credential headers off rest: "
                         + "sends through the http, vertx-http and netty-http components only; use one of them as the "
                         + "rest producer component");
+            }
+            if (own != null) {
+                component = own;
+                return component;
             }
             try {
                 Object uriTemplate = call(rest, "getUriTemplate");

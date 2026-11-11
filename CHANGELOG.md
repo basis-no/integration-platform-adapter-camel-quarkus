@@ -11,8 +11,12 @@
   filter, or the `rest` component's own filter if one is set, together with the
   record's headers. The path and query bind from the exchange's headers as
   before. A `rest:` send through another producer component fails when its
-  producer is created (or at its first request), instead of sending the
-  headers. A REST DSL service, a `rest:` endpoint that is a route's input, is
+  producer is created (or at its first request), also when the `rest`
+  component has its own filter, instead of sending the headers. Not covered: a
+  `rest-openapi:` send, which can replace the `rest:` endpoint's parameters and
+  with them the adapter's filter
+  ([#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158)).
+  A REST DSL service, a `rest:` endpoint that is a route's input, is
   left as it is: its consumer reads the endpoint's parameters without the
   adapter's filter, and a send through the same endpoint is filtered. See
   [Kafka Consumers](docs/ingress-and-scaling.md#kafka-consumers).
@@ -20,6 +24,7 @@
   forwarded from the record no longer gets it and may answer 401; set the
   header in the route as text to forward it deliberately. A `rest:` send
   through a producer component other than these three no longer starts.
+  Remove the headers before a `rest-openapi:` send.
 - A Kafka boundary route that holds records in memory after its input
   completes refuses to start, naming the route and node: Camel's `resequence`
   (batch or stream), or an `aggregate` on Camel's in-memory repository (the

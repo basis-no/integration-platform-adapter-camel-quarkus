@@ -89,8 +89,10 @@ parameter when the `rest:` endpoint is registered: the component's rest filter,
 or the `rest` component's own `headerFilterStrategy` if one is set, together
 with the record's headers. The path and query bind from the exchange's headers
 as before, also from a header the request leaves out. A `rest:` send through
-another producer component fails when its producer is created, or at its first
-request if it reuses an endpoint created before, instead of sending the headers.
+another producer component, also with the `rest` component's own filter, fails
+when its producer creates its endpoint, instead of sending the headers; if the
+producer reuses an endpoint registered before, the send fails at its first
+request, provided its factory put the parameter on that endpoint.
 The consumer of a `rest:` endpoint that is a route's input, a REST DSL service,
 never sees that parameter: Camel's consumer creation reads the endpoint's
 parameters as they were, so the consumer keeps the consumer component's own
@@ -105,8 +107,12 @@ no headers and is left as it is. Not covered: an endpoint that Camel creates for
 a single send without registering it, such as one from a `toD` with
 `cacheSize=-1`; an endpoint whose header filter an application replaces after
 the endpoint was registered; a rest producer factory that ignores the
-`headerFilterStrategy` producer parameter; and components other than these
-four. Remove the headers before such a send:
+`headerFilterStrategy` producer parameter; a `rest-openapi:` send, which can
+replace the parameters of the `rest:` endpoint it sends through, and with them
+the adapter's filter, when it has parameters of its own or SSL context
+parameters
+([#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158));
+and components other than these four. Remove the headers before such a send:
 Camel's header that holds the record's whole header set, under both names, with
 `removeHeader("kafka.HEADERS")` and `removeHeader("CamelKafkaHeaders")`, and
 the record's credential headers, for example with

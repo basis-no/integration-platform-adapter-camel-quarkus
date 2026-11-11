@@ -213,9 +213,15 @@ class RestSendRecordHeadersTest {
         assertOnlyTheRecordHeadersLeftOut(before);
     }
 
-    @Test
-    void aRestSendThroughAnotherComponentDoesNotStart() throws Exception {
+    @ParameterizedTest
+    @ValueSource(booleans = {false, true})
+    void aRestSendThroughAnotherComponentDoesNotStart(boolean ownFilter) throws Exception {
         context.addComponent("other-http", new OtherHttpComponent());
+        if (ownFilter) {
+            // The rest component's own filter is composed with the record's, and still refused.
+            context.getComponent("rest", org.apache.camel.component.rest.RestComponent.class)
+                    .setHeaderFilterStrategy(new DefaultHeaderFilterStrategy());
+        }
         context.addRoutes(new RouteBuilder() {
             public void configure() {
                 restConfiguration().producerComponent("other-http").host(host);
@@ -378,6 +384,42 @@ class RestSendRecordHeadersTest {
         assertEquals("r", response.headers().firstValue("X-Reply").orElse(null));
     }
 
+    @ParameterizedTest
+    @ValueSource(booleans = {true, false})
+    void aRestSendCreatedWhileARestConsumerIsCreatedIsFiltered(boolean registeredBefore) throws Exception {
+        String upstream = "rest:post:orders/{id}";
+        var gateway = new GatewayComponent(upstream);
+        context.addComponent("gateway", gateway);
+        context.getRestConfiguration().setComponent("gateway");
+        context.getRestConfiguration().setProducerComponent("http");
+        context.getRestConfiguration().setHost(host);
+        context.addRoutes(new RouteBuilder() {
+            public void configure() {
+                from("direct:record").routeId("record").setBody(constant("{}")).id("set-body");
+            }
+        });
+        context.start();
+        if (registeredBefore) {
+            context.getEndpoint(upstream);
+        }
+
+        // Camel creates a REST consumer, and the gateway creates its upstream rest: producer meanwhile.
+        context.getEndpoint("rest:post:in", RestEndpoint.class).createConsumer(exchange -> { });
+        try (Producer producer = gateway.upstreamProducer) {
+            producer.start();
+            Exchange exchange = new org.apache.camel.support.DefaultExchange(context);
+            recordInput(exchange, Map.of("Authorization", CALLER_AUTHORIZATION));
+            producer.process(exchange);
+            if (exchange.getException() != null) {
+                throw new AssertionError(exchange.getException());
+            }
+        }
+
+        Set<String> names = requests.getFirst().headerNames();
+        assertFalse(names.contains("authorization"), "The record's credential is not sent: " + names);
+        assertTrue(names.stream().noneMatch(name -> name.startsWith("kafka.") || name.startsWith("camelkafka")), names.toString());
+    }
+
     private static int freePort() throws java.io.IOException {
         try (var socket = new java.net.ServerSocket(0)) {
             return socket.getLocalPort();
@@ -457,6 +499,9 @@ class RestSendRecordHeadersTest {
             plain.start();
             RestEndpoint rest = plain.getEndpoint("rest:post:orders:{id}?queryParameters=key={apiKey}", RestEndpoint.class);
             assertInstanceOf(Map.class, RestEndpoint.class.getMethod("getParameters").invoke(rest));
+            Map<String, Object> replaced = new java.util.HashMap<>();
+            RestEndpoint.class.getMethod("setParameters", Map.class).invoke(rest, replaced);
+            assertSame(replaced, rest.getParameters());
             assertEquals("orders", RestEndpoint.class.getMethod("getPath").invoke(rest));
             assertEquals("{id}", RestEndpoint.class.getMethod("getUriTemplate").invoke(rest));
             assertEquals("key={apiKey}", RestEndpoint.class.getMethod("getQueryParameters").invoke(rest));
@@ -502,23 +547,26 @@ class RestSendRecordHeadersTest {
         return text.toString();
     }
 
-    private static void send(CamelContext target, Map<String, Object> extra) {
+    /** The headers a consumed record's exchange carries, and the route's own. */
+    private static void recordInput(Exchange e, Map<String, Object> extra) {
         var recordHeaders = new RecordHeaders();
         recordHeaders.add("Authorization", CALLER_AUTHORIZATION);
+        // As Camel 4.18.0's Kafka consumer sets them; later versions name them CamelKafka*.
+        e.getMessage().setHeader("kafka.HEADERS", recordHeaders);
+        e.getMessage().setHeader("CamelKafkaHeaders", recordHeaders);
+        e.getMessage().setHeader("kafka.TOPIC", "orders-in");
+        // A credential-like header the route binds into the query; text, as a route sets it.
+        // (The rest: producer binds a byte array as Java's array text, with or without the adapter.)
+        e.getMessage().setHeader("apiKey", ROUTE_API_KEY);
+        e.getMessage().setHeader("id", "o-1");
+        e.getMessage().setHeader("X-Route-Token", "route-own");
+        e.getMessage().getHeaders().putAll(extra);
+        e.getMessage().setBody("{}");
+    }
+
+    private static void send(CamelContext target, Map<String, Object> extra) {
         try (var producer = target.createProducerTemplate()) {
-            Exchange result = producer.send("direct:record", e -> {
-                // As Camel 4.18.0's Kafka consumer sets them; later versions name them CamelKafka*.
-                e.getMessage().setHeader("kafka.HEADERS", recordHeaders);
-                e.getMessage().setHeader("CamelKafkaHeaders", recordHeaders);
-                e.getMessage().setHeader("kafka.TOPIC", "orders-in");
-                // A credential-like header the route binds into the query; text, as a route sets it.
-                // (The rest: producer binds a byte array as Java's array text, with or without the adapter.)
-                e.getMessage().setHeader("apiKey", ROUTE_API_KEY);
-                e.getMessage().setHeader("id", "o-1");
-                e.getMessage().setHeader("X-Route-Token", "route-own");
-                e.getMessage().getHeaders().putAll(extra);
-                e.getMessage().setBody("{}");
-            });
+            Exchange result = producer.send("direct:record", e -> recordInput(e, extra));
             if (result.getException() != null) {
                 throw new AssertionError(result.getException());
             }
@@ -544,6 +592,33 @@ class RestSendRecordHeadersTest {
                 String uriTemplate, String queryParameters, String consumes, String produces,
                 RestConfiguration configuration, Map<String, Object> parameters) throws Exception {
             return camelContext.getEndpoint("other-http:" + basePath, parameters).createProducer();
+        }
+    }
+
+    /**
+     * A REST consumer component that creates the producer of its upstream {@code rest:} send while
+     * Camel creates its consumer.
+     */
+    private static final class GatewayComponent extends DefaultComponent implements org.apache.camel.spi.RestConsumerFactory {
+        private final String upstream;
+        private Producer upstreamProducer;
+
+        GatewayComponent(String upstream) {
+            this.upstream = upstream;
+        }
+
+        @Override
+        protected Endpoint createEndpoint(String uri, String remaining, Map<String, Object> parameters) {
+            throw new UnsupportedOperationException();
+        }
+
+        @Override
+        public org.apache.camel.Consumer createConsumer(CamelContext camelContext, org.apache.camel.Processor processor,
+                String verb, String basePath, String uriTemplate, String consumes, String produces,
+                RestConfiguration configuration, Map<String, Object> parameters) throws Exception {
+            Endpoint endpoint = camelContext.getEndpoint(upstream);
+            upstreamProducer = endpoint.createProducer();
+            return new org.apache.camel.support.DefaultConsumer(endpoint, processor);
         }
     }
 

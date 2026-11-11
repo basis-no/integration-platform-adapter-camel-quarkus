@@ -216,10 +216,6 @@ public final class ForwardedCredentialHeaders {
     interface RecordFilter {
     }
 
-    static HeaderFilterStrategy recordFilter(HeaderFilterStrategy own) {
-        return new RecordHeaderFilter(own);
-    }
-
     /**
      * Whether a header is Camel's Kafka consumer header or a consumed record's credential, which
      * an HTTP request must leave out.
