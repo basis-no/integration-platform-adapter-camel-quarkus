@@ -158,6 +158,33 @@ Verify bucket/prefix ownership, object existence, expiry, size, SHA-256,
 workload identity, endpoint reachability, and encryption permissions. The
 adapter intentionally fails closed when claim-check metadata does not match.
 
+An object-stored input that fails its check, or cannot be checked, is logged at
+ERROR as `Message <id> did not reach its route: <reason>`; its route does not
+run, its outcome is `FAILED` and its Kafka offset is not committed, so it is
+read again. The reasons:
+
+- `does not match its reference's SHA-256`, `has N bytes; its reference has M`,
+  `is larger than its reference`, or `Payload object size mismatch for <ref>`:
+  the object was changed or replaced after it was stored.
+- `Payload object is unavailable: <ref>`: the object is missing, or the object
+  store cannot be reached or refuses access.
+- `Payload reference has expired: <ref>`: the reference's expiry has passed.
+- `could not be copied for checking to <directory>`: the object store failed
+  while the object was read, or the spool directory is not writable or is full.
+  Check the object store and the space in
+  `basis.message-store.payload.spool-directory`.
+- `cannot be checked now: checked copies of N bytes are in use`: other inputs'
+  checked copies fill `basis.message-store.payload.spool-max-bytes`; the record
+  is read again when they are done.
+
+A changed, missing or expired object does not heal by itself: the record is
+read again, with a growing wait of up to 30 seconds, and it **blocks its
+partition**, since later records of that partition are not processed before
+it. To get past it, restore the object as it was stored, or move the consumer
+group's offset for that partition past the record (with the Kafka tools, while
+the integration is stopped) and resend another copy of the message from its
+source.
+
 ## Polling Works with One Replica but Not Several
 
 A polling route runs on the replica that holds its lease (see

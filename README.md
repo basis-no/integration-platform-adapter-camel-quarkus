@@ -82,8 +82,9 @@ Start with the [documentation index](docs/index.md).
 - 0.4.0-rc1 restores an output checkpoint from object storage as a stream
   that is checked only when the route reads it to its end. Fixed for 0.4.0;
   see [Output-Producing Side Effects](docs/steps-and-idempotency.md#output-producing-side-effects).
-  An input in object storage is still checked that way
-  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+  0.4.0-rc1 checked an input in object storage the same way; on `main` it is
+  checked in full before its route reads it; see
+  [Object Metadata and Verification](docs/payload-storage.md#object-metadata-and-verification).
 - 0.4.0-rc1 replays any stored message, also another integration's, to the
   replay topic named by its row, and does not check that the route that
   recorded it still consumes that topic. The 0.3.x releases refuse both.
@@ -170,9 +171,11 @@ Behavior and configuration changes must update the relevant local documentation.
 Changes to shared message-store semantics must stay compatible with the .NET
 adapter.
 
-Use `X.Y.Z-SNAPSHOT` builds from Sonatype's separate snapshot repository for
-remote acceptance. Create a `vX.Y.Z` tag only after local and remote acceptance
-is complete; that tag publishes the immutable final artifact to Maven Central.
+Use locally built `X.Y.Z-SNAPSHOT` artifacts for acceptance; snapshot
+publication is suspended. Create a `vX.Y.Z` tag only after acceptance is
+complete. Tags never trigger publication. Final releases are signed and uploaded
+offline by the release manager from reviewed tooling; the production key never
+exists in GitHub.
 See [Releasing](docs/releasing.md) for the full workflow and checklist.
 
 ## License

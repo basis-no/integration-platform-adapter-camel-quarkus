@@ -48,6 +48,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicy.class);
     private static final String HTTP_NOT_REPLAYABLE = "a synchronous HTTP boundary is not replayable";
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
+    private static final String CHECKED_COPY = "basis.messageStore.checkedPayloadCopy";
     private static final String ENVELOPE_PREFIX = "x-bip-";
     private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
     private static final List<String> ENVELOPE_HEADERS = List.of(PlatformHeaders.ATTEMPT, PlatformHeaders.SCHEMA_VERSION,
@@ -60,6 +61,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
     private TrafficSignals trafficSignals;
+    private VerifiedPayloadSpool payloadSpool = VerifiedPayloadSpool.defaults();
     // Per topic partition: the offset of the record held back last, and how often in a row.
     private final Map<String, long[]> heldBack = new ConcurrentHashMap<>();
     private Sleeper sleeper = MessageStoreRoutePolicy::sleepUnlessStopping;
@@ -162,6 +164,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         this.objectStore = objectStore;
     }
 
+    void setPayloadSpool(VerifiedPayloadSpool payloadSpool) {
+        this.payloadSpool = payloadSpool;
+    }
+
     void setTrafficSignals(TrafficSignals trafficSignals) {
         this.trafficSignals = trafficSignals;
     }
@@ -194,7 +200,15 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
             StepOutcomeFailure.begin(exchange);
         }
-        capturePayloadMetadata(exchange);
+        try {
+            capturePayloadMetadata(exchange);
+        } catch (PayloadStorageException e) {
+            failBeforeTheRoute(exchange, e);
+        } catch (RuntimeException e) {
+            // An application's own PayloadObjectStore, or a malformed reference, may throw anything.
+            failBeforeTheRoute(exchange, new PayloadStorageException(
+                    "The payload could not be captured or checked: " + e.getClass().getSimpleName(), e));
+        }
         if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
             trafficSignals.recordAdmitted(exchange);
         }
@@ -295,8 +309,83 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return generated;
     }
 
+    /**
+     * Camel ignores an exception thrown from {@code onExchangeBegin}, and runs the route. A
+     * payload that could not be captured or checked must not reach it: the exchange fails and
+     * stops, so no processor runs and nothing is parked, and its outcome is recorded FAILED
+     * without a commit, so the record is read again.
+     */
+    private void failBeforeTheRoute(Exchange exchange, PayloadStorageException failure) {
+        // One line: the message id and a reference's ref come from the producer.
+        LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
+                + " did not reach its route: " + failure.getMessage() + rootCause(failure)));
+        closeCheckedCopy(exchange);
+        exchange.getMessage().setBody(null);
+        exchange.setException(failure);
+        exchange.setRouteStop(true);
+    }
+
+    /**
+     * The innermost cause, so that a full disk, a refused or missing object and a timeout can be
+     * told apart. Its message is shown only for a failure while the object was copied or opened:
+     * an I/O or file system error, or the object store client's own error. Any other cause, such
+     * as a parser's or an application's, may quote payload content, so only its class is shown.
+     * The text is one line. This covers the adapter's own log line only: the failure stays the
+     * exchange's exception, with its causes, for Camel and the sink to report.
+     */
+    static String rootCause(Throwable failure) {
+        Throwable root = failure;
+        java.util.Set<Throwable> seen = java.util.Collections.newSetFromMap(new java.util.IdentityHashMap<>());
+        while (root.getCause() != null && seen.add(root)) {
+            root = root.getCause();
+        }
+        if (root == failure) {
+            return "";
+        }
+        String message = root.getMessage();
+        boolean safe = message != null && !root.getClass().getName().startsWith("com.fasterxml.")
+                && (root instanceof java.io.IOException || isObjectStoreClientError(root));
+        return oneLine(" (cause: " + root.getClass().getName() + (safe ? ": " + message : "") + ")");
+    }
+
+    /** The text with every control character and line separator replaced, so that it is one log line. */
+    static String oneLine(String text) {
+        return text.replaceAll("[\\p{Cc}\\u2028\\u2029]+", " ");
+    }
+
+    private static boolean isObjectStoreClientError(Throwable failure) {
+        for (Class<?> type = failure.getClass(); type != null; type = type.getSuperclass()) {
+            if (type.getName().equals("software.amazon.awssdk.core.exception.SdkException")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void closeCheckedCopy(Exchange exchange) {
+        InputStream copy = exchange.getProperty(CHECKED_COPY, InputStream.class);
+        if (copy == null) {
+            return;
+        }
+        exchange.removeProperty(CHECKED_COPY);
+        try {
+            copy.close();
+        } catch (Exception e) {
+            LOG.warn("{}", oneLine("Could not close the checked payload copy of message "
+                    + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID) + ": " + e));
+        }
+    }
+
+    private InputStream checkedCopy(Exchange exchange, PayloadReference reference) {
+        InputStream copy = payloadSpool.checkedCopy(reference, () -> objectStore.open(reference));
+        exchange.setProperty(CHECKED_COPY, copy);
+        return copy;
+    }
+
     @Override
     public void onExchangeDone(Route route, Exchange exchange) {
+        // The route is done with its payload; the checked copy and its file go now.
+        closeCheckedCopy(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA && parkingDidNotPublish(exchange)) {
             // Neither completed nor parked: keep the exchange failed, so that it is recorded
             // FAILED, not committed, and read again.
@@ -743,11 +832,15 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void capturePayloadMetadata(Exchange exchange) {
         Object body = exchange.getMessage().getBody();
         if (isPayloadReference(exchange)) {
-            resolvePayloadReference(exchange, body);
-            if (boundaryKind == MessageBoundaryKind.HTTP) {
-                // The route still reads the referenced object, but the row keeps no reference:
-                // nothing could replay it, and the object belongs to the caller.
-                metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+            try {
+                resolvePayloadReference(exchange, body);
+            } finally {
+                if (boundaryKind == MessageBoundaryKind.HTTP) {
+                    // The route still reads the referenced object, but the row keeps no reference,
+                    // also when the object fails its check: nothing could replay it, and the
+                    // object belongs to the caller.
+                    metadataOnly(exchange, HTTP_NOT_REPLAYABLE);
+                }
             }
             return;
         }
@@ -849,7 +942,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             }
             InputStream completePayload = new SequenceInputStream(new ByteArrayInputStream(probe), input);
             PayloadReference reference = captureObject(exchange, completePayload, null);
-            exchange.getMessage().setBody(objectStore.open(reference));
+            exchange.getMessage().setBody(checkedCopy(exchange, reference));
         } catch (PayloadStorageException e) {
             throw e;
         } catch (Exception e) {
@@ -874,14 +967,16 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private void resolvePayloadReference(Exchange exchange, Object body) {
         PayloadReference reference = PayloadReference.fromJson(body);
         validateReferenceHeaders(exchange, reference);
-        if (reference.expiryInstant().isBefore(Instant.now())) {
-            throw new PayloadStorageException("Payload reference has expired: " + reference.ref());
-        }
-        objectStore.verify(reference);
+        // Before any check that can fail: a FAILED outcome must keep the message's claim check,
+        // not overwrite it with a metadata-only row.
         applyPayloadReference(exchange, reference);
         exchange.setProperty(PlatformExchangeProperties.PAYLOAD_CLAIM_CHECK, reference.toJsonBytes());
         exchange.getMessage().setHeader(PlatformHeaders.CONTENT_TYPE, reference.contentType());
-        exchange.getMessage().setBody(objectStore.open(reference));
+        if (reference.expiryInstant().isBefore(Instant.now())) {
+            throw new PayloadStorageException("Payload reference has expired: " + reference.ref());
+        }
+        // Opening the object checks its existence and size first, so no separate verify call.
+        exchange.getMessage().setBody(checkedCopy(exchange, reference));
     }
 
     private void applyPayloadReference(Exchange exchange, PayloadReference reference) {

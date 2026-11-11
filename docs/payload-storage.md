@@ -50,18 +50,59 @@ until its exchange completes, unless it is stored as an object.
 
 For `s3_object`, Postgres stores the immutable object reference, size, SHA-256,
 content type, and expiry. Before processing or replay, the adapter validates
-the bucket, prefix, expiry and the object's size. An input's SHA-256 is checked
-when the route reads the payload stream to its end, and a mismatch fails that
-read: a route that acts on only part of an object payload can use bytes that
-were not checked yet
-([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+the bucket, prefix, expiry and the object's size.
+
+An input in object storage is checked in full before its route reads any of it,
+on a replay of a claim-checked input and on the first attempt after the adapter
+stored a streamed input. The adapter copies the object to a local file in a
+subdirectory named after the host in
+`basis.message-store.payload.spool-directory` (the JVM's temporary directory by
+default), so that replicas that share a volume never touch each other's copies,
+while it checks the object's size and SHA-256 against the reference, and only
+then gives the route a stream of that checked copy. The check holds one 64 KiB
+buffer in memory, whatever the object's size. That bound is the check's, not the
+route's: Camel's stream caching, on by default, reads the whole stream into its
+cache at the route's first node, in memory unless its spooling to disk is turned
+on (`camel.main.stream-caching-spool-enabled`). For large objects, turn that on
+or read the stream without stream caching. The copy is closed and deleted when
+the boundary exchange is done, so with stream caching off a route must read the
+stream itself before it hands the exchange to work that reads it later, such as
+a `wireTap` or a `seda:` queue. The copy is also deleted at once when the check
+fails; on Linux its directory entry is removed as soon as the copy is created,
+so no other process can open it, and the space is freed when the exchange is
+done. A copy left by a process that stopped without cleaning up, such as after a
+crash, is deleted when the application starts again.
+
+Where the file system supports POSIX permissions, the adapter creates the
+subdirectory owner-only (`rwx------`) and each copy owner-only (`rw-------`);
+a directory that already exists, such as a mounted volume, keeps its own
+permissions.
+
+The checked copies one process holds at once are bounded by
+`basis.message-store.payload.spool-max-bytes`, 10 GiB by default, the same as
+the default `object-max-bytes`, so that an object of the largest accepted size
+always fits when it is the only one. In `tiered` mode startup refuses a smaller
+value, so raise both together. Mount a dedicated, size-limited volume at the
+spool directory, with room for `spool-max-bytes`: on Linux a copy has no
+directory entry while it is read, and such a file may not count toward a pod's
+ephemeral-storage accounting.
+
 An output checkpoint is checked completely before it is restored; see
 [Output-Producing Side Effects](steps-and-idempotency.md#output-producing-side-effects).
-A missing, expired, oversized or unavailable required object, and a corrupt
-one that is detected, fails processing; success is not recorded and a consumed
-offset is not committed. While an input is checked only at its end, a corrupt
-input that the route does not read to its end can still complete and be
-committed.
+
+A missing, expired, changed, truncated or oversized object, an object store
+failure while it is read, a spool directory that is full or not writable, and
+checked copies that already fill `spool-max-bytes`, all fail the input before
+its route runs: no processor sees the payload, nothing is parked, its outcome is
+recorded `FAILED` and a consumed Kafka offset is not committed, so the record is
+read again. The `FAILED` outcome keeps the message's claim check; on an HTTP
+audit-only boundary the row stays metadata-only and not replayable, as it does
+when the check passes.
+
+A changed, truncated, missing or expired object does not heal by itself, so its
+record is read again, with a growing wait, until the object is restored, and
+it blocks its partition meanwhile. See
+[Troubleshooting](troubleshooting.md#s3-replay-fails) for how to get past it.
 
 Object storage failure during required capture also fails the message. The
 adapter never claims replayability without durable bytes.
