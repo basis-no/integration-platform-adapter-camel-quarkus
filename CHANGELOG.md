@@ -371,8 +371,15 @@
   the only signing material there is the protected tag path's dedicated CI
   subkey and environment-scoped Central token (above). Post-publication readback
   compares public bytes with the unsigned
-  receipt and the signed-entries digest. Snapshot publication stays suspended;
-  acceptance uses locally built artifacts.
+  receipt and the signed-entries digest.
+- Publish a reviewed `X.Y.Z-SNAPSHOT` to Central's snapshot repository for
+  testing in another environment, through `publish-snapshot.yml`: a manual run
+  on the head of `main` or `release/0.3` builds and tests it without
+  credentials, records build provenance, and uploads the same unsigned bytes
+  only after an approval in the protected environment `snapshot`, from the
+  release tools at the trusted commit, then reads them back. A re-run never
+  uploads again. It needs repository settings first; see
+  `docs/release-packaging.md#snapshot-lane`.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,

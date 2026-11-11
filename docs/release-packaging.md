@@ -91,10 +91,14 @@ reads the newest candidate, and a rebuilt one has other bytes. A transient
 if `build` cannot produce a candidate at all, release the next patch version
 instead.
 
-`TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
-administrators change. Set it to a reviewed commit on `main` or `release/0.3`
+`TRUSTED_TOOLING_SHA` is an environment variable on each protected environment
+that only administrators change. Set it to a reviewed commit on `main` or `release/0.3`
 whose `.github/scripts` are the tools to trust, and change it only through a
-reviewed change. The jobs never execute tools from the tag.
+reviewed change. The jobs never execute tools from the tag. Set it on each
+environment (`release`, `release-publish` and `snapshot`) and never as a
+repository or organization variable: a job whose environment lacks it silently
+uses that value, which more people can change. The same holds for the secret
+names.
 
 The CI signing subkey is a separate, passphrase-less signing subkey of the
 release key, stored only as the `RELEASE_SIGNING_SUBKEY` secret of environment
@@ -103,6 +107,24 @@ release key, stored only as the `RELEASE_SIGNING_SUBKEY` secret of environment
 environments. These names never existed as repository secrets, so a job outside
 the environments resolves them to empty values instead of a stale repository
 secret.
+
+The settings this path needs:
+
+- repository variables `RELEASE_SIGNER_FINGERPRINT`, the release key's primary
+  fingerprint in 40 uppercase hexadecimal characters (`build` reads it and has
+  no environment, so it cannot be an environment variable), and
+  `RELEASE_SIGNING_PUBLIC_KEY`, the armored public key including the CI subkey
+  (`sign-upload` checks that its primary fingerprint is
+  `RELEASE_SIGNER_FINGERPRINT`; `release-page.yml` verifies the published
+  signatures against it, so update it before the first CI-signed release);
+- environments `release` and `release-publish`, each with required reviewers
+  (at least two, "prevent self-review" on), no administrator bypass and a
+  deployment rule that allows only tags; the jobs refuse to run otherwise;
+- on both environments the variable `TRUSTED_TOOLING_SHA` and the secrets
+  `RELEASE_CENTRAL_TOKEN_USERNAME` and `RELEASE_CENTRAL_TOKEN_PASSWORD`, and on
+  `release` also the secret `RELEASE_SIGNING_SUBKEY`;
+- a tag ruleset that lets only release managers create `v*` tags and refuses
+  their update and deletion.
 
 ## Offline release signing
 
@@ -123,8 +145,8 @@ dependency can execute arbitrary code, and no step cleanup or log masking protec
 a key while that code runs. Without an enforceable protected environment no
 workflow can hold a production credential safely. Do not add signing or portal
 secrets to repository secrets or to any workflow other than the protected jobs
-of `release.yml`, and do not dispatch historical workflow revisions that used
-them.
+of `release.yml` and the `upload` job of `publish-snapshot.yml`, and do not
+dispatch historical workflow revisions that used them.
 
 | Stage | Where | Credentials | Executes |
 | --- | --- | --- | --- |
@@ -374,7 +396,9 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
   unattended. Coding agents never operate the release keyring.
 - For an offline release, Central tokens are generated per release window, live
   only in the release shell session and are revoked after publication. The
-  protected-tag path's token lives only in the release environments' secrets.
+  protected-tag path's token lives only in the release environments' secrets,
+  and the [snapshot lane](#snapshot-lane)'s only in the `snapshot`
+  environment's secrets.
 - If the key or its backup may be compromised, publish its revocation
   certificate to both keyservers below, stop releases and rotate.
 - For the [protected-tag release](#protected-tag-release-in-ci), the primary key
@@ -383,7 +407,9 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
   subkey (`gpg --armor --export-secret-subkeys CI_SUBKEY_FINGERPRINT!`) from a
   temporary copy of the keyring in which its passphrase was removed, and paste
   the export only into the `RELEASE_SIGNING_SUBKEY` secret of environment
-  `release`. Delete the temporary copy. The workflow refuses an export that
+  `release`. Delete the temporary copy, and publish the updated public key to
+  both keyservers and the `RELEASE_SIGNING_PUBLIC_KEY` repository variable,
+  also whenever the CI subkey is replaced. The workflow refuses an export that
   contains the primary secret key. Revoke and replace the CI subkey on its
   expiry, on any doubt about the environment, or when a reviewer leaves; the
   primary key and its other subkeys stay valid.
@@ -417,11 +443,80 @@ a permanent archive. Do not delete failed deployment evidence as cleanup.
 
 ## Snapshot lane
 
-Snapshot publication stays suspended: `publish-snapshot.yml` refuses to run.
-A snapshot would need a signed upload for every change, which the offline,
-human-gated signer deliberately does not provide. Acceptance uses locally built
-artifacts instead; see [Releasing](releasing.md#acceptance-with-locally-built-artifacts).
-Previously published snapshots are unchanged and expire under Sonatype policy.
+`publish-snapshot.yml` publishes a reviewed `X.Y.Z-SNAPSHOT` to Central's
+snapshot repository, so that another environment can test it before the final;
+see [Releasing](releasing.md#testing-a-published-snapshot) for how to run it. It
+starts only by `workflow_dispatch`, from the head of `main` or `release/0.3`,
+with that head commit as `source_commit`, and it has the same separation as the
+protected-tag release:
+
+| Job | Environment | Credentials | Runs |
+| --- | --- | --- | --- |
+| `build` | none | read-only token | project code: the Maven build and tests |
+| `attest` | none | OIDC token for build provenance | no project code |
+| `upload` | `snapshot` | snapshot Central token | release tools at `TRUSTED_TOOLING_SHA`: `snapshot-upload.py` |
+
+1. **`build`** checks that `source_commit` is the dispatched branch head, that
+   the branch is `main` or `release/0.3`, that the clean POM is at
+   `X.Y.Z-SNAPSHOT` and that `vX.Y.Z` is not tagged. It builds and tests the
+   unsigned jar, sources, javadoc and POM without a version change and retains
+   them with their provenance as `unsigned-snapshot-candidate-X.Y.Z-SNAPSHOT`.
+2. **`attest`** downloads the candidate without checking out the repository,
+   records the SHA-256 of its seven files and creates GitHub build provenance.
+3. **`upload`** waits for a required reviewer of `snapshot`. It first fails
+   closed unless the environment has required reviewers with self-review
+   prevented, no administrator bypass and a deployment rule for the branches
+   `main` and `release/0.3` only; the commit and `TRUSTED_TOOLING_SHA` are on a
+   reviewed branch; `vX.Y.Z` is still not tagged, since the approval can come
+   later than the build; this is the run's first attempt and the run has no
+   snapshot state. That `source_commit` was the branch head is checked at
+   dispatch only; a later merge does not stop the approved upload. It checks out
+   only `.github/scripts` (plus root files such as the trusted `pom.xml`) at
+   `TRUSTED_TOOLING_SHA`, verifies the candidate against the checksums, the
+   unsigned receipt and the build provenance, and runs `snapshot-upload.py`.
+   That script takes the group and artifact from the trusted `pom.xml`, never
+   from the candidate, which project code wrote, and refuses a candidate that
+   names another coordinate; the version must be `X.Y.Z-SNAPSHOT` and equal the
+   version in the source commit's own `pom.xml`, which the job reads through the
+   repository API, not from the candidate. It records its state before the first request, uploads the four
+   payloads once under one timestamped snapshot version with their MD5 and SHA-1
+   checksums and the version and artifact `maven-metadata.xml`, as a Maven
+   deploy would, reads every payload and both metadata files back and compares
+   their SHA-256. Requests go only to Central's snapshot repository and never
+   follow a redirect. The state is retained as
+   `central-snapshot-X.Y.Z-SNAPSHOT`, also after a failure.
+
+The lane never signs (Central does not require signatures on snapshots) and
+never calls the publisher API that releases use. A re-run of `upload` refuses;
+dispatch a new run, which uploads a new timestamped build. Repository settings
+the lane needs, next to those of the [release path](#protected-tag-release-in-ci):
+
+- snapshot publishing enabled for the namespace in the Central portal;
+- the environment `snapshot` with the same two required reviewers and "prevent
+  self-review" as `release`, no administrator bypass, and a deployment rule for
+  the branches `main` and `release/0.3`;
+- its secrets `SNAPSHOT_CENTRAL_TOKEN_USERNAME` and
+  `SNAPSHOT_CENTRAL_TOKEN_PASSWORD`, and its variable `TRUSTED_TOOLING_SHA`.
+
+The upload follows Central's documented Maven snapshot layout but was written
+without a live run. Check the first real run with a real Maven resolve of the
+timestamped version and of `X.Y.Z-SNAPSHOT` from a clean local repository before
+relying on the lane.
+
+If the readback fails on a payload, the repository does not serve the uploaded
+bytes: do not use that snapshot, and dispatch a new run once the cause is known.
+If it fails only on a `maven-metadata.xml`, the payloads were read back intact;
+Central may rewrite metadata it stores. Inspect it rather than treat it as lost
+bytes: download both metadata files, check that the version metadata lists the
+run's timestamped version for the POM, the jar and both classifiers, with the
+run's build number, and that the artifact metadata lists `X.Y.Z-SNAPSHOT`; then
+resolve the timestamped version with Maven as above. If that resolves the
+recorded hashes, the snapshot is usable; record the difference with the run.
+
+A Central portal token can write releases as well as snapshots for the whole
+namespace, so the snapshot token gets the same custody as the release token: it
+exists only as a secret of the environment `snapshot`, and the job refuses to
+run when the environment is less protected than above.
 
 ## Evidence reuse and timing
 

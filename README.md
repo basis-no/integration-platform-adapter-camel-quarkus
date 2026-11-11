@@ -171,9 +171,9 @@ Behavior and configuration changes must update the relevant local documentation.
 Changes to shared message-store semantics must stay compatible with the .NET
 adapter.
 
-Use locally built `X.Y.Z-SNAPSHOT` artifacts for acceptance; snapshot
-publication is suspended. Create a `vX.Y.Z` tag only after acceptance is
-complete. Once its repository settings exist, a `vX.Y.Z` tag starts the protected
+Use locally built `X.Y.Z-SNAPSHOT` artifacts for acceptance, or, to test in
+another environment, a reviewed snapshot published through the approval-gated
+snapshot lane. Create a `vX.Y.Z` tag only after acceptance is complete. Once its repository settings exist, a `vX.Y.Z` tag starts the protected
 release workflow, which waits for two separate approvals before it signs with a
 dedicated CI signing subkey and publishes. Without those settings, and as the
 fallback, the release manager signs and uploads offline from reviewed tooling.
