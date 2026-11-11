@@ -23,7 +23,15 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
             "authorization", "proxy-authorization", "cookie", "set-cookie", "www-authenticate", "proxy-authenticate");
     private static final List<String> CREDENTIAL_PARTS = List.of(
             "secret", "token", "password", "passwd", "credential", "session", "signature",
-            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth");
+            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth",
+            "assertion", "privatekey", "jwt", "bearer");
+    // The adapter's own envelope headers carry no credential and stay readable; any other name,
+    // also one that starts with x-bip-, is judged by the rule.
+    private static final Set<String> ENVELOPE_HEADERS = Set.of(
+            PlatformHeaders.MESSAGE_ID, PlatformHeaders.CORRELATION_ID, PlatformHeaders.SCHEMA_VERSION,
+            PlatformHeaders.CONTENT_TYPE, PlatformHeaders.IDEMPOTENCY_KEY, PlatformHeaders.SOURCE_SYSTEM,
+            PlatformHeaders.TARGET_SYSTEM, PlatformHeaders.REPLAY, PlatformHeaders.ATTEMPT, PlatformHeaders.REDO_STEPS,
+            PlatformHeaders.ERROR, PlatformHeaders.DLQ_AT, "idempotency-key");
 
     @Override
     public void configuration() {
@@ -95,10 +103,10 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (failure != null && StepOutcomeFailure.of(exchange) != null) {
             LOG.error("Message {} failed after its configured retries and is not parked: a step outcome was not "
                             + "checked or recorded, so it is consumed again",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(failure));
         } else if (failure != null) {
             LOG.error("Message {} failed after its configured retries and is being sent to the dead letter queue",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(failure));
         }
 
         // The DLQ record must carry the ORIGINAL consumed payload, not a body the route
@@ -136,7 +144,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
     static boolean isCredentialHeader(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
-        if (lower.startsWith("x-bip-") || lower.equals("idempotency-key")) {
+        if (ENVELOPE_HEADERS.contains(lower)) {
             return false;
         }
         // Names ending in -key or _key (x-functions-key, x-access-key, x-client-key) carry keys too.
@@ -149,7 +157,8 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (failure == null) {
             return "unknown failure";
         }
-        return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+        // Published on the shared DLQ topic: a receiver URI in the text keeps no credential.
+        return ErrorTextMasking.message(failure);
     }
 
     private static Throwable failure(Exchange exchange) {

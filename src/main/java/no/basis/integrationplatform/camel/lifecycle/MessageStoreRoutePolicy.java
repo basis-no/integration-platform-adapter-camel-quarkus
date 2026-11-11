@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
@@ -414,10 +415,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
     }
 
+    // Stored, published as a status event and shown to operators: URIs keep no credential.
     private String errorMessage(Throwable failure) {
-        if (failure == null) {
-            return null;
-        }
-        return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+        return ErrorTextMasking.message(failure);
     }
 }

@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.replay;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -46,7 +47,7 @@ public class MessageReplayAdminResource {
             return Response.ok(ReplayResponse.succeeded(result)).build();
         } catch (MessageReplayException e) {
             return Response.status(statusFor(e))
-                    .entity(ReplayResponse.failed(messageId, e.getMessage()))
+                    .entity(ReplayResponse.failed(messageId, ErrorTextMasking.message(e)))
                     .build();
         }
     }

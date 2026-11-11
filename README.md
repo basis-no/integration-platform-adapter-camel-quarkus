@@ -430,9 +430,30 @@ The DLQ record has the shape listed below. It also carries the other message
 headers present at failure, because the Kafka producer forwards them. From 0.3.6
 the values of credential-like headers are masked as `xxxxxx`: `Authorization`,
 `Cookie`, `Set-Cookie`, `WWW-Authenticate`, and names containing secret, token,
-password, credential, session, signature or auth, or ending in `-key` or `_key`. The
-names stay visible. Remove any other receiver header you do not want on the
-shared DLQ before the failing step.
+password, credential, session, signature or auth, or ending in `-key` or `_key`. From
+0.3.7 also names containing assertion, privatekey, jwt or bearer (such as
+`X-JWT-Assertion` or `PrivateKey`), and an application's own `x-bip-` header
+with such a name; only the adapter's own envelope headers and `Idempotency-Key`
+are exempt. The names stay visible. Remove any other receiver header you do not
+want on the shared DLQ before the failing step. The same rule decides which of
+a consumed record's credential headers an HTTP send withholds, which published
+headers the Kafka-publish warning names and which query parameters a stored
+endpoint masks.
+
+From 0.3.7 the failure text in `x-bip-error`, in the Message Store's error
+columns, in the attempt's steps and in the adapter's log lines has every URI in
+it masked by the stored-endpoint rule (see [Step Tracking](#step-tracking)): a
+receiver URL that a failed send's exception names keeps no user info, key or
+signature. A URI is a scheme followed by `://`, up to the next white space,
+quote or angle bracket; after 20 URIs in one text, each further one is replaced
+by `xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
+needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`) whose text
+names each original class, with the stack traces kept and the messages of the
+failure and its causes masked the same way. Other text
+in an exception message is stored as it is, so do not put credentials in
+exception messages of your own. Up to 0.3.6 these texts were stored, parked and
+logged as they were: rotate any credential that has appeared in the URL of a
+failed send.
 
 An HTTP intake that publishes to Kafka must remove the caller's headers first,
 for example with `removeHeaders("*")` and then setting only the headers the
@@ -813,9 +834,11 @@ both adapters store the same value for the same URI:
   the adapter uses for the headers it masks in a DLQ record: `Authorization`,
   cookies, authentication challenges, names containing secret, token, password,
   passwd, credential, session, signature, apikey, api-key, api_key,
-  subscription-key, private-key or auth (such as `Signature` or
-  `X-Amz-Credential`), or ending in `-key` or `_key` (such as
-  `subscription-key`), but not `x-bip-*` or `Idempotency-Key`; also the names
+  subscription-key, private-key, auth, assertion, privatekey, jwt or bearer
+  (such as `Signature`, `X-Amz-Credential` or `X-JWT-Assertion`), or ending in
+  `-key` or `_key` (such as `subscription-key`), but not the adapter's own
+  envelope headers (such as `x-bip-message-id` or `x-bip-idempotency-key`) or
+  `Idempotency-Key`; also the names
   `key`, `code`, `sig` and `pwd`, and names containing `passphrase`,
   `passcode`, `privatekey`, `accesskey`, `accountkey` or `connectionstring`.
   Parameter names are compared after percent-decoding (an escape that is not
