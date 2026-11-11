@@ -269,7 +269,7 @@ class DefaultStepTrackerTest {
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
-        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"notify-vendor\"]");
+        replayRecord(exchange, "[\"notify-vendor\"]");
 
         // When the adapter prepares the endpoint send.
         tracker.beforeSend(exchange);
@@ -288,7 +288,7 @@ class DefaultStepTrackerTest {
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
-        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"message-123:notify-vendor\"]");
+        replayRecord(exchange, "[\"message-123:notify-vendor\"]");
 
         tracker.beforeSend(exchange);
 
@@ -300,7 +300,7 @@ class DefaultStepTrackerTest {
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
-        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"some-other-step\"]");
+        replayRecord(exchange, "[\"some-other-step\"]");
 
         tracker.beforeSend(exchange);
 
@@ -314,8 +314,7 @@ class DefaultStepTrackerTest {
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
         exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
-        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS,
-                "[\"notify-vendor\"]".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        replayRecord(exchange, "[\"notify-vendor\"]".getBytes(java.nio.charset.StandardCharsets.UTF_8));
 
         tracker.beforeSend(exchange);
 
@@ -394,7 +393,135 @@ class DefaultStepTrackerTest {
         return exchange.getProperty(PlatformExchangeProperties.STEPS, List.class);
     }
 
+    @Test
+    void aRedoListOnAnExchangeThatIsNotAManagedKafkaInputIsDropped() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        // For example an HTTP request that carries the header.
+        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"notify-vendor\"]");
+
+        tracker.beforeSend(exchange);
+
+        assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        assertNull(exchange.getMessage().getHeader(PlatformHeaders.REDO_STEPS));
+        assertEquals(0, stepOutcomeStore.replayChecks);
+    }
+
+    @Test
+    void aRedoListOnARecordThatIsNotMarkedAsAReplayIsDropped() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"notify-vendor\"]");
+        DefaultStepTracker.acceptRedoSteps(exchange, "message-123", "order-pipeline", "bip.order-pipeline.in", 2, true);
+
+        tracker.beforeSend(exchange);
+
+        assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        assertEquals(0, stepOutcomeStore.replayChecks);
+    }
+
+    @Test
+    void aRedoListIsDroppedWhenReplayIsDisabled() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        exchange.getMessage().setHeader(PlatformHeaders.REPLAY, "true");
+        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"notify-vendor\"]");
+        DefaultStepTracker.acceptRedoSteps(exchange, "message-123", "order-pipeline", "bip.order-pipeline.in", 2, false);
+
+        tracker.beforeSend(exchange);
+
+        assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+    }
+
+    @Test
+    void aRedoListTheStoreDoesNotConfirmIsIgnored() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(exchange, "[\"notify-vendor\"]");
+        // For example a producer's copy of a replay record, or another integration's replay.
+        stepOutcomeStore.authorisedReplays.clear();
+
+        tracker.beforeSend(exchange);
+
+        assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        assertEquals(1, stepOutcomeStore.replayChecks);
+        RedoClaim claim = exchange.getProperty(PlatformExchangeProperties.REDO_CLAIM, RedoClaim.class);
+        assertEquals("message-123", claim.messageId());
+        assertEquals("order-pipeline", claim.integration());
+        assertEquals("bip.order-pipeline.in", claim.topic());
+        assertEquals(2, claim.attempt());
+        assertEquals("[\"notify-vendor\"]", claim.redoStepsJson());
+    }
+
+    @Test
+    void theStoreIsAskedOncePerAttemptAndOnlyForADeliveredListedStep() {
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(exchange, "[\"notify-vendor\", \"notify-other\"]");
+
+        tracker.beforeSend(exchange);
+        assertEquals(0, stepOutcomeStore.replayChecks, "A step that is not delivered runs anyway");
+
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-other");
+        Exchange copy = exchange.copy();
+        tracker.beforeSend(exchange);
+        exchange.setProperty(Exchange.INTERCEPTED_NODE_ID, "notify-other");
+        tracker.beforeSend(exchange);
+        copy.setProperty(Exchange.INTERCEPTED_NODE_ID, "notify-other");
+        tracker.beforeSend(copy);
+
+        assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        assertFalse(copy.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        assertEquals(1, stepOutcomeStore.replayChecks, "Copies of the exchange share the answer");
+    }
+
+    @Test
+    void aLoginThatMayNotReadTheReplayAuditGetsNoRedo() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        stepOutcomeStore.replayCheckFailure = new StepOutcomeStoreException("denied",
+                new java.sql.SQLException("permission denied for table bip_message_replay_audit", "42501"));
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(exchange, "[\"notify-vendor\"]");
+
+        tracker.beforeSend(exchange);
+
+        assertTrue(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+    }
+
+    @Test
+    void aReplayAuditThatCannotBeReadFailsTheSendLikeAnyStepOutcomeCheck() {
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        stepOutcomeStore.replayCheckFailure = new StepOutcomeStoreException("store down",
+                new java.sql.SQLException("connection refused", "08001"));
+        Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(exchange, "[\"notify-vendor\"]");
+
+        assertThrows(StepOutcomeStoreException.class, () -> tracker.beforeSend(exchange));
+        stepOutcomeStore.replayCheckFailure = null;
+        tracker.beforeSend(exchange);
+        assertFalse(exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class),
+                "Asked again on the next try, since nothing was decided");
+    }
+
+    /** A record of the adapter's own replay: managed Kafka input, marked as a replay, confirmed by the store. */
+    private void replayRecord(Exchange exchange, Object redoSteps) {
+        exchange.getMessage().setHeader(PlatformHeaders.REPLAY, "true");
+        exchange.getMessage().setHeader(PlatformHeaders.REDO_STEPS, redoSteps);
+        stepOutcomeStore.authorisedReplays.add("message-123|2");
+        DefaultStepTracker.acceptRedoSteps(exchange, "message-123", "order-pipeline", "bip.order-pipeline.in", 2, true);
+    }
+
     private static class RecordingStepOutcomeStore implements StepOutcomeStore {
+        private final Set<String> authorisedReplays = new HashSet<>();
+        private int replayChecks;
+        private RuntimeException replayCheckFailure;
         private final Set<String> alreadyDelivered = new HashSet<>();
         private final List<String> checkedKeys = new ArrayList<>();
         private final List<StepResult> delivered = new ArrayList<>();
@@ -414,6 +541,15 @@ class DefaultStepTrackerTest {
         @Override
         public void recordFailed(StepResult step) {
             failed.add(step);
+        }
+
+        @Override
+        public boolean isAuthorisedReplay(RedoClaim claim) {
+            replayChecks++;
+            if (replayCheckFailure != null) {
+                throw replayCheckFailure;
+            }
+            return authorisedReplays.contains(claim.messageId() + "|" + claim.attempt());
         }
     }
 }

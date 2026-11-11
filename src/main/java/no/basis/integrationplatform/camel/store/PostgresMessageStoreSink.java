@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.store;
 
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
 import org.slf4j.Logger;
@@ -196,7 +197,8 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                             + "id and attempt, so the two integrations can replace each other's records. {} such "
                             + "message(s) for this pair since the last warning. Mint a new x-bip-message-id per "
                             + "integration and keep continuity in x-bip-correlation-id",
-                    result.messageId(), other, result.integration(), result.attempt(), since);
+                    LogText.escape(result.messageId()), LogText.escape(other), result.integration(), result.attempt(),
+                    since);
         }
     }
 
@@ -223,7 +225,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 connection.setAutoCommit(previousAutoCommit);
             }
         } catch (Exception e) {
-            throw new MessageStoreSinkException("Failed to record message attempt " + result.messageId()
+            throw new MessageStoreSinkException("Failed to record message attempt " + LogText.escape(result.messageId())
                     + "/" + result.attempt(), e);
         }
     }

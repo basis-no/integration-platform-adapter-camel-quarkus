@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.replay;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import org.apache.camel.CamelContext;
 import org.apache.camel.component.kafka.KafkaEndpoint;
@@ -157,7 +158,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             markReplayPublished(replayId);
         } catch (Exception e) {
             markReplayFailed(replayId, e);
-            throw new MessageReplayException("Failed to replay message " + messageId + " to " + topic, e);
+            throw new MessageReplayException("Failed to replay message " + LogText.escape(messageId) + " to " + topic, e);
         }
 
         return new MessageReplayResult(replayId, message.messageId(), message.integration(), topic, nextAttempt);
@@ -169,7 +170,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             statement.setString(1, messageId);
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
-                    throw new MessageReplayException("Message " + messageId + " was not found in bip_message_log");
+                    throw new MessageReplayException("Message " + LogText.escape(messageId) + " was not found in bip_message_log");
                 }
                 ReplayableMessage message = new ReplayableMessage(
                         resultSet.getString("message_id"),
@@ -192,7 +193,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
         } catch (MessageReplayException e) {
             throw e;
         } catch (Exception e) {
-            throw new MessageReplayException("Failed to load message " + messageId + " for replay", e);
+            throw new MessageReplayException("Failed to load message " + LogText.escape(messageId) + " for replay", e);
         }
     }
 

@@ -7,6 +7,8 @@ public final class PlatformExchangeProperties {
     public static final String CURRENT_ENDPOINT_URI = "basis.messageStore.currentEndpointUri";
     public static final String STEP_SHOULD_SKIP = "basis.messageStore.stepShouldSkip";
     public static final String REDO_STEPS = "basis.messageStore.redoSteps";
+    /** The {@code RedoClaim} of a managed Kafka input that carries a redo list. */
+    public static final String REDO_CLAIM = "basis.messageStore.redoClaim";
     public static final String STEP_ALREADY_DELIVERED = "basis.messageStore.stepAlreadyDelivered";
     /** The attempt's first failure to check or record a step outcome; see {@code StepOutcomeFailure}. */
     public static final String STEP_OUTCOME_FAILURE = "basis.messageStore.stepOutcomeFailure";

@@ -32,6 +32,8 @@ class UpgradeStepIdTest {
         public boolean wasDelivered(String key) { return ledger.contains(key); }
         public void recordDelivered(StepResult step) { ledger.add(step.idempotencyKey()); }
         public void recordFailed(StepResult step) { }
+        // The redo below is the adapter's own replay.
+        public boolean isAuthorisedReplay(RedoClaim claim) { return true; }
     };
     private final List<MessageAttemptResult> rows = new ArrayList<>();
 

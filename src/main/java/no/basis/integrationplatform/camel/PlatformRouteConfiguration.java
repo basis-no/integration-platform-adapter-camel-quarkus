@@ -95,10 +95,10 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (failure != null && StepOutcomeFailure.of(exchange) != null) {
             LOG.error("Message {} failed after its configured retries and is not parked: a step outcome was not "
                             + "checked or recorded, so it is consumed again",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+                    LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)), failure);
         } else if (failure != null) {
             LOG.error("Message {} failed after its configured retries and is being sent to the dead letter queue",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+                    LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)), failure);
         }
 
         // The DLQ record must carry the ORIGINAL consumed payload, not a body the route

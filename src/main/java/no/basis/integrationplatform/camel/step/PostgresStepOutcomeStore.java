@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.step;
 
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 
@@ -63,6 +64,26 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             where bip_step_outcome.status <> 'DELIVERED'
             """;
 
+    // Only the adapter's own replay carries a redo list: the replay service writes its audit
+    // row before it publishes and marks it PUBLISHED after, so both states count. A FAILED row
+    // does not, nor does an attempt that already has an outcome: a redo runs once.
+    private static final String AUTHORISED_REPLAY_SQL = """
+            select exists (
+                       select 1
+                       from bip_message_replay_audit
+                       where message_id = ?
+                         and integration = ?
+                         and target_topic = ?
+                         and replay_attempt = ?
+                         and status in ('REQUESTED', 'PUBLISHED')
+                         and redo_steps = ?::jsonb)
+               and not exists (
+                       select 1
+                       from bip_message_attempt
+                       where message_id = ?
+                         and attempt = ?)
+            """;
+
     private final DataSource dataSource;
 
     public PostgresStepOutcomeStore(DataSource dataSource) {
@@ -78,7 +99,27 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
                 return resultSet.next();
             }
         } catch (SQLException e) {
-            throw new StepOutcomeStoreException("Failed to check step outcome for idempotency key " + idempotencyKey, e);
+            throw new StepOutcomeStoreException("Failed to check step outcome for idempotency key " + LogText.escape(idempotencyKey), e);
+        }
+    }
+
+    @Override
+    public boolean isAuthorisedReplay(RedoClaim claim) {
+        try (Connection connection = dataSource.getConnection();
+             PreparedStatement statement = connection.prepareStatement(AUTHORISED_REPLAY_SQL)) {
+            statement.setString(1, claim.messageId());
+            statement.setString(2, claim.integration());
+            statement.setString(3, claim.topic());
+            statement.setInt(4, claim.attempt());
+            statement.setString(5, claim.redoStepsJson());
+            statement.setString(6, claim.messageId());
+            statement.setInt(7, claim.attempt());
+            try (ResultSet resultSet = statement.executeQuery()) {
+                return resultSet.next() && resultSet.getBoolean(1);
+            }
+        } catch (SQLException e) {
+            throw new StepOutcomeStoreException("Failed to check the replay audit for message "
+                    + LogText.escape(claim.messageId()), e);
         }
     }
 
@@ -106,7 +147,7 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             statement.executeUpdate();
         } catch (SQLException e) {
             throw new StepOutcomeStoreException("Failed to record " + status + " step outcome for "
-                    + step.idempotencyKey(), e);
+                    + LogText.escape(step.idempotencyKey()), e);
         }
     }
 

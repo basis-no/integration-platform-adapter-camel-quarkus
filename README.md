@@ -676,6 +676,35 @@ idempotency key. A malformed header value is logged as a warning and treated as
 empty — it never fails message processing. Redo intentionally repeats an
 external side effect, so external systems still need domain idempotency for it.
 
+From 0.3.7 only the adapter's own replay can redo a step, and only once. A
+consumed record's `x-bip-redo-steps` is honoured only when all of these hold:
+
+- the record comes from a managed Kafka input; on any other input, such as an
+  HTTP request, a timer or a file, the header is dropped with a warning;
+- replay is enabled (`basis.message-store.replay.enabled`), and the record
+  carries `x-bip-replay: true`;
+- `bip_message_replay_audit` has a row for the record's `x-bip-message-id`,
+  this integration, the topic the record was consumed from and the record's
+  `x-bip-attempt`, with the same redo list (compared as JSON), in state
+  `REQUESTED` or `PUBLISHED`. Both count, because the record can be consumed
+  before the replay service marks its row `PUBLISHED`; `FAILED` does not;
+- `bip_message_attempt` has no row yet for that message id and attempt. Once
+  the replay's attempt has an outcome, its record, or a copy of it, no longer
+  redoes anything.
+
+On any other record the list is ignored with a warning, and its delivered
+steps are skipped as on any redelivery. The Message Store is asked once per
+attempt, when the list names a delivered step. If it cannot be read, the send
+fails as when a step outcome cannot be checked: the record is not committed and
+is read again. A login that may not read `bip_message_replay_audit` gets no
+redo, with a warning. A record read again before its attempt's outcome was
+recorded, for example after a crash, redoes once more.
+
+An `x-bip-attempt` or `x-bip-schema-version` that is not a whole number in the
+`int` range (ASCII digits with an optional sign; surrounding spaces, tabs and
+line breaks are ignored) is read as 1, with a warning that names the header; an
+attempt below 1 is read as 1 too.
+
 From 0.3.6 the list stays inside the integration. When an exchange enters a
 route, the adapter reads `x-bip-redo-steps`, keeps the list for the attempt's
 step tracking and removes the header: a Kafka input with the Message Store
@@ -686,9 +715,9 @@ the original message, for example with `useOriginalMessage()`, gets the header
 back; the next `to` or `toD` and DLQ parking remove it again. Before, a receiver
 got the list, and a downstream integration that consumed a published record
 with the same message id sent its own steps with the same ids again.
-`x-bip-replay` and `x-bip-attempt` are still forwarded; nothing in the adapter
-acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
-the header only, not its value.
+`x-bip-replay` and `x-bip-attempt` are still forwarded; at a Kafka input,
+`x-bip-replay` is one of the conditions above. The warning for a malformed list
+names the header only, not its value.
 
 ## Step Tracking
 
