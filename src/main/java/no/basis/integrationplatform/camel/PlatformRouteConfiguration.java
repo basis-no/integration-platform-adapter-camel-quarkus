@@ -64,6 +64,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
     @Override
     public void configuration() {
+        HttpClientRetries.disableByDefault(getContext());
         if (failureMode == MessageFailureMode.RECORD_FAILED) {
             recordFailedConfigurations();
             return;
@@ -72,7 +73,9 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration()
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
-                        .onRedelivery(this::captureRedeliveryDiagnostics)
+                        .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null)))
+                        .onRedelivery(this::timedRedelivery)
+                        .onPrepareFailure(HttpRetryAfter::clearDelay)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
                         .useExponentialBackOff()
@@ -81,7 +84,10 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         routeConfiguration(SLOW_BACKEND)
                 .errorHandler(deadLetterChannel(DLQ_URI)
                         .deadLetterHandleNewException(false)
-                        .onRedelivery(this::captureRedeliveryDiagnostics)
+                        .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(
+                                SLOW_BACKEND_REDELIVERIES, SLOW_BACKEND_FIRST_DELAY_MS, SLOW_BACKEND_MAX_DELAY_MS)))
+                        .onRedelivery(this::timedRedelivery)
+                        .onPrepareFailure(HttpRetryAfter::clearDelay)
                         .maximumRedeliveries(SLOW_BACKEND_REDELIVERIES)
                         .redeliveryDelay(SLOW_BACKEND_FIRST_DELAY_MS)
                         .useExponentialBackOff()
@@ -156,6 +162,12 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (max != null) {
             exchange.setProperty(PlatformExchangeProperties.AUTO_REDELIVERY_MAX, max);
         }
+    }
+
+    /** Runs before a redelivery whose delay the adapter may have timed by {@code Retry-After}. */
+    void timedRedelivery(Exchange exchange) {
+        HttpRetryAfter.afterTiming(exchange);
+        captureRedeliveryDiagnostics(exchange);
     }
 
     /**

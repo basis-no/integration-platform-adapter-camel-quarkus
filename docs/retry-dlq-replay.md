@@ -27,28 +27,79 @@ interval. For a route on `ip-slow-backend`, set `maxPollRecords=1` on the
 Kafka input, or raise `maxPollIntervalMs` on it to cover the records of a poll.
 With one record per poll, about 200 seconds remain for its seven attempts:
 bound each receiver call well inside that with `responseTimeout` and
-`connectTimeout` (see the table below for the forms Camel applies), and turn
-the HTTP client's own retry off, as described next, since it can double the
-requests in each attempt.
+`connectTimeout` (see the table below for the forms Camel applies). The HTTP
+client's own retry, which could double the requests in each attempt, is off by
+default, as described next.
 
-The count is Camel's redeliveries, not the requests a receiver saw. The HTTP
-client inside Camel's `http` component (Apache HttpClient 5.5 and its default
-retry strategy) also retries by itself, within one Camel attempt: it repeats a
-request answered with 503 or 429 once, POST included. Before that retry it waits
-for the receiver's `Retry-After`, given in seconds or as a date, with no upper
-limit; without `Retry-After` it waits one second. The wait runs on the Kafka
-consumer thread, so it counts against `max.poll.interval.ms` (300 seconds by
-default) together with the route's redeliveries and receiver timeouts. If
-processing takes longer, Kafka removes the consumer from its group and the
-uncommitted record is delivered again.
+Every repeated request is a Camel redelivery, so the recorded count is the
+number of requests a receiver got after the first. The HTTP client inside
+Camel's `http` component (Apache HttpClient 5) would otherwise repeat a request
+answered with 503 or 429 once by itself, POST included, within one Camel
+attempt and without the adapter seeing it. The adapter turns that off
+(`automaticRetriesDisabled`) on every instance of that component, under any
+name (`http`, `https` or an application's own) and a subclass included, unless
+the application sets `camel.component.<name>.automatic-retries-disabled` for
+that name itself. The other HTTP components (`vertx-http`, `netty-http`) do not
+repeat requests by themselves.
 
-Two 503 answers and then success can therefore record one redelivery for three
-requests; with the default policy, a receiver that keeps answering 503 can get
-eight requests before the message is parked. Set
-`camel.component.http.automatic-retries-disabled=true` to leave every retry to
-the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
-and for routes on the `ip-slow-backend` configuration, whose own redeliveries
-already use about a third of the poll interval.
+After a 429 or 503 from `http`, `https` or `vertx-http`, the adapter times the
+next redelivery by the receiver's `Retry-After`, given in seconds or as an HTTP
+date, in the `dlq` failure mode's default and `ip-slow-backend`
+configurations:
+
+- `Retry-After` is a minimum: the wait is the longer of it and the configured
+  delay. Without `Retry-After`, with a value it cannot read, with `0`, or with
+  a date that has passed (for example because of clock skew), the configured
+  delay applies.
+- The wait must fit a budget. For a Kafka input, that is the input's poll
+  interval (`additionalProperties.max.poll.interval.ms`, which Kafka applies
+  last, else `maxPollIntervalMs`, else Kafka's 300 seconds) less the time this
+  exchange has run so far, less 20 % for the rest of the attempt. For another
+  input, it is the configuration's maximum delay (Camel's 60 seconds unless the
+  configuration sets one; 20 seconds for `ip-slow-backend`).
+- A wait that does not fit is not used: the configured delay applies, and the
+  attempt goes on through the normal retries and, when they are exhausted, to
+  the configured failure mode, instead of holding the consumer past its poll
+  interval.
+- Once a `Retry-After` wait was used, later redeliveries of the same message
+  get their configured delays, not a back-off grown from that wait.
+
+Each redelivery is sent with the step's stable `Idempotency-Key`. The budget
+is per exchange only: it counts this record's own time, not the time earlier
+records of the same poll took, nor the records still waiting after it, while
+the poll interval covers all records of one poll (see above). So a long
+`Retry-After` that fits one record's budget can still make the poll as a whole
+outlast the interval. For a receiver that answers with long `Retry-After`
+values, set `maxPollRecords=1` on the Kafka input, so the budget is the poll's,
+or raise `maxPollIntervalMs` to cover the records of a poll. `ip-no-retry`,
+the `record-failed` failure mode and `bip-ingress-normalization` keep their
+configured behaviour. A `netty-http` failure carries no response headers, so a
+429 or 503 from `netty-http` gets the configured delays.
+
+For a non-Kafka input the budget is the configuration's maximum delay, so each
+redelivery can wait that long: with the default configuration up to three
+waits of 60 seconds, and with `ip-slow-backend` six of 20 seconds, on top of
+the attempts. A synchronous caller, such as an HTTP request that a route
+answers, waits for all of it. Give such a route `ip-no-retry` or its own
+configuration with short delays.
+
+An application's own `onException` with its own redelivery policy: its maximum
+number of redeliveries counts, an unlimited one included, but the configured
+delays the adapter uses as the minimum, and after a `Retry-After` wait, are the
+route configuration's, not the `onException`'s. An `onException` that sets its
+own `onExceptionOccurred` replaces the adapter's, and then `Retry-After` is not
+used.
+
+To turn the client's own retry back on, set
+`camel.component.http.automatic-retries-disabled=false` (and the `https` one,
+or the name of the application's own component). The property is the only way:
+the adapter sets the option on every instance, so a `false` set in code, in a
+`ComponentCustomizer` or on the component bean can be overwritten (the adapter cannot tell it from the default), and a retry
+strategy that an `httpClientConfigurer` installs does not run, because the
+option turns off the client's retries altogether. Its repeats are then not
+counted or timed by the adapter: a receiver can get more requests than the
+recorded redeliveries, and the client waits for any `Retry-After` without an
+upper limit on the Kafka consumer thread.
 
 On Camel 4's `http` component, bound a receiver call with `responseTimeout`
 and `connectTimeout`. Camel accepts some timeout options without applying them,

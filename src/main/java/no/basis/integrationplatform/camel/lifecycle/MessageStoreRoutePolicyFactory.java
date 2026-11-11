@@ -156,7 +156,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             return null;
         }
         if (ingressNormalizationConfig.includes(routeId)) {
-            validateIngressNormalizationRoute(routeId, route);
+            validateIngressNormalizationRoute(camelContext, routeId, route);
             seenNormalizationRoutes.add(routeId);
         }
         if (!boundarySelector.includes(routeId, route)) {
@@ -167,6 +167,9 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         validateBoundary(routeId, boundaryKind);
         if (boundaryKind == MessageBoundaryKind.KAFKA && camelContext != null) {
             validateKafkaOffsetReset(routeId, camelContext, route);
+        }
+        if (boundaryKind == MessageBoundaryKind.KAFKA) {
+            InMemoryHoldGuard.check(camelContext, routeId, route);
         }
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
                 sink, integrationName, payloadPolicy, boundaryKind, kafkaCommitEnabled, objectStore);
@@ -186,7 +189,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         }
     }
 
-    private void validateIngressNormalizationRoute(String routeId, NamedNode route) {
+    private void validateIngressNormalizationRoute(CamelContext camelContext, String routeId, NamedNode route) {
         if (boundarySelector.includes(routeId, route)) {
             throw new IllegalArgumentException(
                     "Ingress normalization route '" + routeId
@@ -200,7 +203,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
                             + PlatformRouteConfiguration.INGRESS_NORMALIZATION
                             + " so source failures propagate without adapter DLQ parking");
         }
-        ingressReplicaSafety.validate(routeId, definition);
+        ingressReplicaSafety.validate(camelContext, routeId, definition);
         if (boundarySelector.kind(route) == MessageBoundaryKind.HTTP) {
             throw new IllegalArgumentException(
                     "Synchronous HTTP route '" + routeId + "' cannot use the ingress normalization profile; "

@@ -57,6 +57,7 @@ Start with the [documentation index](docs/index.md).
 | Classify endpoint sends and prevent duplicate effects | [Steps and idempotency](docs/steps-and-idempotency.md) |
 | Understand retry, DLQ, resend, and redo | [Retry, DLQ, and replay](docs/retry-dlq-replay.md) |
 | Use Kafka, files, polls, JMS, HTTP, or multiple replicas | [Ingress and scaling](docs/ingress-and-scaling.md) |
+| Run timers and polling routes on one replica at a time | [Single-active routes](docs/single-active.md) |
 | Configure Postgres-inline and S3 payload storage | [Payload storage](docs/payload-storage.md) |
 | Run local tests or deliberately suppress commits | [Testing](docs/testing.md) |
 | Count Kafka admissions and publications for activity alerts | [Kafka activity metrics](docs/activity-metrics.md) |
@@ -96,6 +97,9 @@ Start with the [documentation index](docs/index.md).
   intercept strategy "does not return an AsyncProcessor instance", once per
   untracked processor such as `validate`. Harmless; fixed for 0.4.0. See
   [Troubleshooting](docs/troubleshooting.md#route-fails-at-startup).
+- On `main`, as on 0.3.6, the adapter warns when another integration already
+  journaled the same message id; see
+  [Troubleshooting](docs/troubleshooting.md#message-id-is-also-journaled-by-another-integration).
 - On `main`, a replay request with `redoSteps` is refused unless delivered
   steps are recorded (the `postgres` step store); see
   [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
@@ -133,6 +137,10 @@ Start with the [documentation index](docs/index.md).
   message, so a resend skips it. Resend with the step in `redoSteps`; see
   [Sends in a sub-route](docs/steps-and-idempotency.md#sends-in-a-sub-route).
   Fixed for 0.4.0.
+- Camel's `resequence`, and an `aggregate` on its in-memory repository, lose
+  held records on a restart under the adapter's commit rule, on every version.
+  From 0.4.0 a Kafka boundary route with one refuses to start; see
+  [Holding Records in Memory](docs/message-lifecycle.md#holding-records-in-memory).
 - This `0.4.0-SNAPSHOT` development stack adds safe test profiles, tiered S3
   payload storage, output-side-effect checkpoints, non-Kafka ingress
   normalization, replica-safety validation, Kafka activity counters with

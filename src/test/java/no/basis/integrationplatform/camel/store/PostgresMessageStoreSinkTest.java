@@ -168,11 +168,99 @@ class PostgresMessageStoreSinkTest {
         assertEquals(epoch(java.time.Duration.ofDays(30)), expiry("bip_message_attempt", " and attempt = 2"));
     }
 
+    @Test
+    void historyRowIsWrittenBeforeTheSummary() throws Exception {
+        // Temporary objects are per session, so the triggers and the writes share one connection.
+        try (Connection connection = dataSource.getConnection(); Statement statement = connection.createStatement()) {
+            statement.execute("create temporary table write_order (seq serial, tbl text)");
+            statement.execute("""
+                    create function pg_temp.log_write() returns trigger language plpgsql as $$
+                    begin insert into write_order (tbl) values (tg_table_name); return null; end $$""");
+            statement.execute("create trigger log_attempt after insert or update on bip_message_attempt "
+                    + "for each row execute function pg_temp.log_write()");
+            statement.execute("create trigger log_summary after insert or update on bip_message_log "
+                    + "for each row execute function pg_temp.log_write()");
+            var order = new java.util.ArrayList<String>();
+            try {
+                var sink = new PostgresMessageStoreSink(singleConnection(connection), RETENTION);
+                // Expiries carry nanoseconds, as the route policy's do; the database keeps microseconds.
+                // 600 ns would round up to the next microsecond if it were bound unchanged.
+                var nanos = java.time.Duration.ofNanos(123);
+                var roundsUp = java.time.Duration.ofNanos(600);
+                sink.record(received("inline", 1, "postgres_inline", nanos));
+                sink.record(received("object", 1, "s3_object", nanos));
+                sink.record(received("rounding", 1, "s3_object", roundsUp));
+                sink.record(received("object", 2, "s3_object", java.time.Duration.ofDays(20).plus(nanos)));
+                try (ResultSet rows = statement.executeQuery("select tbl from write_order order by seq")) {
+                    while (rows.next()) order.add(rows.getString(1));
+                }
+            } finally {
+                statement.execute("drop trigger if exists log_attempt on bip_message_attempt");
+                statement.execute("drop trigger if exists log_summary on bip_message_log");
+            }
+            // An inline write and a first object write take two statements. Only the object's replay
+            // history row takes the first expiry from the summary afterwards.
+            assertEquals(List.of("bip_message_attempt", "bip_message_log",
+                    "bip_message_attempt", "bip_message_log",
+                    "bip_message_attempt", "bip_message_log",
+                    "bip_message_attempt", "bip_message_log", "bip_message_attempt"), order);
+            assertEquals("0", singleValue("""
+                    select count(*) from bip_message_attempt a join bip_message_log l using (message_id)
+                    where a.payload_expires_at is distinct from l.payload_expires_at
+                    """));
+        }
+    }
+
+    @Test
+    void concurrentWritesOfAnObjectPayloadShowOneExpiryInHistoryAndSummary() throws Exception {
+        var objects = new PostgresMessageStoreSink(dataSource, RETENTION);
+        var pool = java.util.concurrent.Executors.newFixedThreadPool(4);
+        try {
+            for (int round = 0; round < 25; round++) {
+                var barrier = new java.util.concurrent.CyclicBarrier(4);
+                var writes = new java.util.ArrayList<java.util.concurrent.Future<?>>();
+                for (int writer = 0; writer < 4; writer++) {
+                    // Two writers per attempt: the same record read twice, and a replay, at once.
+                    int attempt = 1 + writer % 2;
+                    var row = received("message-" + round, attempt, "s3_object", java.time.Duration.ofDays(writer));
+                    writes.add(pool.submit(() -> {
+                        barrier.await(10, java.util.concurrent.TimeUnit.SECONDS);
+                        objects.record(row);
+                        return null;
+                    }));
+                }
+                for (var write : writes) write.get(30, java.util.concurrent.TimeUnit.SECONDS);
+            }
+        } finally {
+            pool.shutdownNow();
+        }
+        assertEquals("50", singleValue("select count(*) from bip_message_attempt"));
+        assertEquals("0", singleValue("""
+                select count(*) from bip_message_attempt a join bip_message_log l using (message_id)
+                where a.payload_expires_at is distinct from l.payload_expires_at
+                """));
+    }
+
+    private static DataSource singleConnection(Connection connection) {
+        return (DataSource) java.lang.reflect.Proxy.newProxyInstance(DataSource.class.getClassLoader(),
+                new Class<?>[] {DataSource.class}, (proxy, method, args) -> {
+                    if (!method.getName().equals("getConnection")) throw new UnsupportedOperationException(method.getName());
+                    // The sink closes what it gets; keep the session open for the test.
+                    return java.lang.reflect.Proxy.newProxyInstance(Connection.class.getClassLoader(),
+                            new Class<?>[] {Connection.class}, (p, m, a) -> m.getName().equals("close")
+                                    ? null : m.invoke(connection, a));
+                });
+    }
+
     private MessageAttemptResult received(int attempt, String storage, java.time.Duration after) {
+        return received("message-123", attempt, storage, after);
+    }
+
+    private MessageAttemptResult received(String messageId, int attempt, String storage, java.time.Duration after) {
         boolean inline = storage.equals("postgres_inline");
-        return new MessageAttemptResult(1, "message-123", "order-456", "application/json", "sap", "vendor", storage, 128L,
+        return new MessageAttemptResult(1, messageId, "order-456", "application/json", "sap", "vendor", storage, 128L,
                 inline ? "payload-body".getBytes(StandardCharsets.UTF_8) : null,
-                inline ? null : "s3://bucket/orders/message-123", "0".repeat(64),
+                inline ? null : "s3://bucket/orders/" + messageId, "0".repeat(64),
                 T0.plus(after).plus(RETENTION), null, true, null, "order-pipeline", "camel-route-id", attempt, false, null,
                 null, T0.plus(after), MessageStatus.COMPLETED, List.of(), null);
     }
