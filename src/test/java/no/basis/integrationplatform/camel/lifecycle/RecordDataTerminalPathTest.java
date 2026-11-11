@@ -73,8 +73,9 @@ class RecordDataTerminalPathTest {
         assertEquals(1, parked.size());
         assertEquals("message-1", parked.getFirst().getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
         String reason = parked.getFirst().getMessage().getHeader(PlatformHeaders.ERROR, String.class);
-        assertTrue(reason.contains("x-bip-correlation-id contains a NUL byte"), reason);
-        assertFalse(reason.contains("order"), "The refused value is not copied: " + reason);
+        assertTrue(reason.contains("the record's envelope: x-bip-correlation-id contains a NUL byte"), reason);
+        assertTrue(reason.endsWith("(record bip.order-pipeline.in/0@7)"), "The reason names the record: " + reason);
+        assertFalse(reason.contains("\u0000") || reason.contains("-1"), "The refused value is not copied: " + reason);
         MessageAttemptResult row = rows.getLast();
         assertEquals("message-1", row.messageId());
         assertEquals(MessageStatus.DLQ, row.status());
@@ -97,6 +98,39 @@ class RecordDataTerminalPathTest {
         assertTrue(rows.getLast().error().contains("x-bip-message-id is 2000 bytes, over the 1024-byte limit"),
                 rows.getLast().error());
         assertEquals(0, orders.received().size());
+        assertEquals(1, commits.get());
+    }
+
+    @Test
+    void aNulInTheMessageIdIsParkedUnderTheIdDerivedFromItsPosition() throws Exception {
+        start(route -> route.to("receiver:orders").id("post-order"));
+
+        read(3, "message\u0000-1", null);
+
+        String derived = KafkaRecordIdentity.derive("order-pipeline", "bip.order-pipeline.in", 0, 3);
+        assertEquals(derived, parked.getFirst().getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+        assertEquals(derived, rows.getLast().messageId());
+        assertTrue(rows.getLast().error().contains("x-bip-message-id contains a NUL byte"), rows.getLast().error());
+        assertEquals(0, orders.received().size());
+        assertEquals(1, commits.get());
+    }
+
+    @Test
+    void aRecordWhoseCommitFailsAfterItWasParkedIsNotParkedAgain() throws Exception {
+        start(route -> route.to("receiver:orders").id("post-order"));
+        AtomicInteger commitTries = new AtomicInteger();
+        KafkaManualCommit failsOnce = () -> {
+            if (commitTries.incrementAndGet() == 1) {
+                throw new IllegalStateException("commit failed");
+            }
+            commits.incrementAndGet();
+        };
+
+        Exchange first = read(7, "message-1", "order\u0000-1", java.util.Map.of(), failsOnce);
+        assertNotNull(first.getException(), "Not committed: read again");
+        read(7, "message-1", "order\u0000-1", java.util.Map.of(), failsOnce);
+
+        assertEquals(1, parked.size(), "Parked once");
         assertEquals(1, commits.get());
     }
 
@@ -254,12 +288,18 @@ class RecordDataTerminalPathTest {
     }
 
     private Exchange read(long offset, String messageId, String correlationId) {
+        return read(offset, messageId, correlationId, java.util.Map.of(), commits::incrementAndGet);
+    }
+
+    private Exchange read(long offset, String messageId, String correlationId, java.util.Map<String, Object> headers,
+            KafkaManualCommit commit) {
         try (var producer = context.createProducerTemplate()) {
             return producer.send("direct:input", e -> {
+                e.getMessage().setHeaders(new java.util.HashMap<>(headers));
                 e.getMessage().setHeader(KafkaConstants.TOPIC, "bip.order-pipeline.in");
                 e.getMessage().setHeader(KafkaConstants.PARTITION, 0);
                 e.getMessage().setHeader(KafkaConstants.OFFSET, offset);
-                e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) commits::incrementAndGet);
+                e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
                 e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, messageId.getBytes(StandardCharsets.UTF_8));
                 if (correlationId != null) {
                     e.getMessage().setHeader(PlatformHeaders.CORRELATION_ID, correlationId.getBytes(StandardCharsets.UTF_8));
