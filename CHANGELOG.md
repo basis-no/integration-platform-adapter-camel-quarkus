@@ -54,6 +54,26 @@ No Message Store schema change.
   waits, as before. No setting. See [Retry and DLQ](README.md#retry-and-dlq).
   Upgrade: recovery after an outage can take up to 30 seconds longer per
   consumer.
+- The adapter ships `camel.component.kafka.auto-offset-reset=earliest`, and a
+  managed Kafka input whose consumer uses another `auto.offset.reset`, or has
+  no `groupId`, logs a warning at startup that names the route and its endpoint
+  ([#83](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/83)).
+  It still starts. Before, the adapter left Camel's default `latest` in place:
+  after a record whose outcome was not durable, Camel's reconnect resumes from
+  the committed offset, and on a partition where the consumer group had none
+  yet it resumed at the end, so the record was never read again and a later
+  record's commit moved past it. See [Runtime Behavior](README.md#runtime-behavior).
+  Upgrade: a consumer group with committed offsets continues from them. A new
+  consumer group, such as a new integration's or a changed `groupId`, now
+  starts at the beginning of each partition's retained records instead of at
+  the end; to start one at the end, set its offsets with the Kafka tools before
+  its first start. The same holds for a group whose committed offsets expired
+  on the broker (stopped for longer than the broker's offset retention), and
+  for a Kafka input without a `groupId`, for which Camel generates a new group
+  on every start, also when `additionalProperties.group.id` is set: it now
+  reprocesses every retained record on each start.
+  Check that every Kafka input has a stable `groupId`. An input that sets
+  `autoOffsetReset=latest` itself keeps it, with the warning.
 
 ### Fixed
 
@@ -88,10 +108,10 @@ No Message Store schema change.
   0.3.6 at once; from 0.3.7 with the growing wait above), and a message that
   fails meanwhile can be parked in the DLQ more than once (with the `noop` step
   store, or when it fails before its first tracked send). The README gives what
-  to do: scale the integration down during a long outage, set
-  `autoOffsetReset=earliest` on the Kafka input, and check the DLQ for copies of
-  a message by `x-bip-message-id` before resending it. See [Retry and
-  DLQ](README.md#retry-and-dlq).
+  to do: scale the integration down during a long outage, keep
+  `auto.offset.reset` at `earliest` (the adapter's default from 0.3.7), and
+  check the DLQ for copies of a message by `x-bip-message-id` before resending
+  it. See [Retry and DLQ](README.md#retry-and-dlq).
 - Corrected: a tracked send is not repeated during an outage only while the
   Message Store cannot be read. When the store can be read but not written (a
   read-only database after a failover or for maintenance, a lost write

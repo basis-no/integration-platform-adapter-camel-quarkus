@@ -180,7 +180,24 @@ camel.component.kafka.auto-commit-enable=false
 camel.component.kafka.allow-manual-commit=true
 camel.component.kafka.break-on-first-error=true
 camel.component.kafka.poll-on-error=RECONNECT
+camel.component.kafka.auto-offset-reset=earliest
 ```
+
+From 0.3.7 the adapter ships `auto-offset-reset=earliest`. A record whose
+outcome was not durable is not committed, and Camel's reconnect resumes from
+the committed offset. On a partition where the consumer group has none yet, it
+resumes from `auto.offset.reset`: with Camel's default `latest` that is the
+end of the partition, so the record was never read again and a later record's
+commit moved past it. A managed Kafka input whose consumer uses another value
+(on the component, the endpoint's `autoOffsetReset` or
+`additionalProperties.auto.offset.reset`) still starts, with a warning at
+startup that names the route, its endpoint without options and the value. So
+does a managed Kafka input without a `groupId`: Camel then gives its consumer a
+new group on every start, which has no committed offsets, so with `earliest` it
+reads every retained record of its partitions again on each start. Give every
+Kafka input a stable `groupId`, on the endpoint or as
+`camel.component.kafka.group-id`; Camel's consumer does not use
+`additionalProperties.group.id`, it replaces it.
 
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
 processing completed or DLQ publication was confirmed. An unparked `FAILED`
@@ -423,12 +440,14 @@ What to do:
   few minutes, scale the integration down to zero replicas until the store
   accepts writes again, then scale it back up. Its uncommitted records are read
   again from the committed offsets.
-- Set `autoOffsetReset=earliest` on the Kafka input, or
-  `camel.component.kafka.auto-offset-reset=earliest`, before relying on this.
-  A partition that has no committed offset yet starts where the consumer's
-  `auto.offset.reset` says, and Camel's default is `latest`: after a restart or
-  a rebalance, the consumer would start after a record that was never
-  committed. The adapter does not set or check this in 0.3.x.
+- Keep `auto.offset.reset` at `earliest`, the adapter's default from 0.3.7, on
+  every Kafka input; on 0.3.6 and earlier, set
+  `camel.component.kafka.auto-offset-reset=earliest` yourself. A partition that
+  has no committed offset yet starts where the consumer's `auto.offset.reset`
+  says, and Camel's default is `latest`: after a restart or a rebalance, the
+  consumer would start after a record that was never committed. From 0.3.7 a
+  managed Kafka input with another value logs a warning at startup; it is not
+  refused.
 - After an outage, before resending anything from the DLQ, check it for copies
   of the same message (the same `x-bip-message-id`; for records that arrived
   without one, the same payload), check the message's latest status in the
@@ -1093,6 +1112,7 @@ basis.message-store.status-topic=bip.message.status
 basis.message-store.step-outcome-store=noop
 camel.component.kafka.auto-commit-enable=false
 camel.component.kafka.allow-manual-commit=true
+camel.component.kafka.auto-offset-reset=earliest
 basis.message-store.dlq-uri=kafka:bip.message.dlq
 basis.message-store.payload.mode=postgres-inline
 basis.message-store.payload.max-bytes=1048576
@@ -1120,6 +1140,7 @@ Configuration reference:
 | `basis.message-store.replay.input-topic-pattern` | Java format string with one `%s`, or fixed topic | `bip.%s.in` | Used by `MessageReplayService` to choose the replay target topic. |
 | `camel.component.kafka.auto-commit-enable` | `true`, `false` | `false` | Must stay false for adapter-managed commit. |
 | `camel.component.kafka.allow-manual-commit` | `true`, `false` | `true` | Must stay true for adapter-managed commit. |
+| `camel.component.kafka.auto-offset-reset` | `earliest`, `latest`, `none` | `earliest` | Must stay `earliest` for every managed Kafka input, on the component, the endpoint (`autoOffsetReset`) and `additionalProperties.auto.offset.reset`; another value is logged as a warning at startup. A new consumer group starts at the beginning of each partition's retained records. Give every Kafka input a stable `groupId`. |
 
 Direct Postgres production mode:
 
