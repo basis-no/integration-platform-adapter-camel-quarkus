@@ -414,8 +414,9 @@ each read ran the route again, so the log grew quickly.
   A restart, or a rebalance to another process, loses what was kept, so the
   next read there sends once more. Readiness stays `UP`. The ERROR log says
   that the message was not parked because a step outcome was not checked or
-  recorded, with the database's error; from 0.3.7 it ends with
-  `storeError=read-only` or `storeError=privilege` and the SQLSTATE. For a
+  recorded, with the database's error; from 0.3.7 a further ERROR line says
+  that the message is not committed and ends with `storeError=read-only` or
+  `storeError=privilege` and the SQLSTATE. For a
   record that carries `x-bip-message-id`, every repeat has the same
   `Idempotency-Key`, so only a receiver that deduplicates by that key is safe.
   A record without that header gets a new message id, and so a new key, on
