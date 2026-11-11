@@ -75,15 +75,20 @@ portal, and publish or drop the deployment there under the same approvals.
 Any re-run counts, also one of a failed `build` or `attest`: from the second
 attempt on, `sign-upload` and `publish` refuse, even when nothing was uploaded.
 The tag cannot be pushed again, and unsigned inspection refuses a version that
-is already tagged. Finish such a release on the release workstation with the
-[offline path](#offline-release-signing), from the
-`unsigned-central-candidate-X.Y.Z` artifact that this run's `build` retained:
-skip the runbook's inspect step, use the release run's ID as `RUN` from the
-download step on, and do not create the tag again. Fetch the tag into `$TOOLS`
-(`git -C "$TOOLS" fetch origin tag "v$VERSION"`) before the readback. Do not
-re-run that run again after the download: `release-page.yml` reads its newest
-candidate, and a rebuilt one has other bytes. If `build` cannot produce a
-candidate, also after another re-run, release the next patch version instead.
+is already tagged. If the Central portal shows no deployment for the version,
+finish such a release on the release workstation with the [offline
+path](#offline-release-signing), from the `unsigned-central-candidate-X.Y.Z`
+artifact that this run's `build` retained; otherwise recover as in the previous
+paragraph. Skip the runbook's inspect step, use the release run's ID as `RUN`
+from the download step on, and do not create the tag again. Fetch the tag into
+`$TOOLS` (`git -C "$TOOLS" fetch origin tag "v$VERSION"`) before the readback.
+If more than one attempt of `build` retained a candidate, download the newest by
+its artifact ID (`gh api "repos/$GH_REPO/actions/runs/$RUN/artifacts"` lists
+them), and do not re-run the run again after the download: `release-page.yml`
+reads the newest candidate, and a rebuilt one has other bytes. A transient
+`build` failure can simply be re-run, since signing is already off for the run;
+if `build` cannot produce a candidate at all, release the next patch version
+instead.
 
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
