@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import xml.etree.ElementTree as ET
 
@@ -12,7 +13,7 @@ NS = {'p': 'http://maven.apache.org/POM/4.0.0'}
 
 
 def selection(mode, version, commit, signer, candidate_run='', state_run='', bundle_hash='', attempt='1'):
-    if mode not in ('inspect', 'upload', 'resume', 'publish'):
+    if mode not in ('inspect', 'upload', 'resume', 'publish', 'readback'):
         raise ValueError('Unknown candidate action')
     if not re.fullmatch(r'\d+\.\d+\.\d+', version):
         raise ValueError('Explicit stable numeric candidate version required')
@@ -23,6 +24,11 @@ def selection(mode, version, commit, signer, candidate_run='', state_run='', bun
     if mode == 'inspect':
         if candidate_run or state_run or bundle_hash:
             raise ValueError('Inspect builds new candidate evidence; recovery inputs must be empty')
+    elif mode == 'readback':
+        # Post-publication readback: unsigned candidate run plus offline signed entries digest.
+        if (state_run or not re.fullmatch(r'[1-9][0-9]*', candidate_run)
+                or not re.fullmatch(r'[a-f0-9]{64}', bundle_hash)):
+            raise ValueError('Readback requires the candidate run and signed entries SHA-256 only')
     else:
         if not re.fullmatch(r'[1-9][0-9]*', candidate_run) or not re.fullmatch(r'[a-f0-9]{64}', bundle_hash):
             raise ValueError('Existing candidate run and reviewed bundle hash required')
@@ -82,6 +88,40 @@ def provenance(path, version, commit, workflow_head, output, effective_pom):
         handle.write('\n')
 
 
+def unsigned(path, version, commit, output, run):
+    """Copy only opaque payloads; never sign or execute them in this collector."""
+    if not re.fullmatch(r'[1-9][0-9]*', run):
+        raise ValueError('Exact candidate workflow run ID required')
+    record = json.loads((output / 'provenance.json').read_text())
+    if record['source_commit'] != commit or record['version'] != version:
+        raise ValueError('Unsigned candidate identity mismatch')
+    group, artifact = record['group'], record['artifact']
+    if (not re.fullmatch(r'[A-Za-z0-9_]+(?:\.[A-Za-z0-9_]+)+', group)
+            or not re.fullmatch(r'[A-Za-z0-9_-]+', artifact)):
+        raise ValueError('Invalid unsigned coordinate')
+    names = [artifact + '-' + version + suffix
+             for suffix in ('.pom', '.jar', '-sources.jar', '-javadoc.jar')]
+    # GPG skip need not stage a target POM; collect the versioned source POM.
+    sources = [path / 'pom.xml'] + [path / 'target' / name for name in names[1:]]
+    if any(p.is_symlink() or not p.is_file() for p in sources):
+        raise ValueError('Unsigned payload must be a regular file')
+    if any(not p.stat().st_size for p in sources) or sum(p.stat().st_size for p in sources) > 64 * 1024 * 1024:
+        raise ValueError('Unsigned payload size rejected')
+    pom = ET.parse(sources[0]).getroot()
+    if any(pom.findtext('p:' + key, namespaces=NS) != value
+           for key, value in (('groupId', group), ('artifactId', artifact), ('version', version))):
+        raise ValueError('Unsigned POM coordinate mismatch')
+    destination = output / 'unsigned'
+    destination.mkdir()
+    hashes = {}
+    for source, name in zip(sources, names):
+        shutil.copyfile(source, destination / name)
+        hashes[name] = hashlib.sha256(source.read_bytes()).hexdigest()
+    receipt = {'source_commit': commit, 'version': version, 'candidate_run': run,
+               'qualification': 'UNSIGNED_ONLY_NOT_RELEASE_ELIGIBLE', 'payload_sha256': hashes}
+    (output / 'unsigned.json').write_text(json.dumps(receipt, indent=2) + '\n')
+
+
 def check_artifact(directory, version, commit, signer, bundle_hash):
     receipt = json.loads((directory / 'candidate.json').read_text())
     record = json.loads((directory / 'provenance.json').read_text())
@@ -98,7 +138,7 @@ def check_artifact(directory, version, commit, signer, bundle_hash):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['selection', 'source', 'provenance', 'artifact'])
+    parser.add_argument('action', choices=['selection', 'source', 'provenance', 'unsigned', 'artifact'])
     parser.add_argument('--mode', default='inspect')
     parser.add_argument('--version', required=True)
     parser.add_argument('--commit', required=True)
@@ -109,6 +149,7 @@ def main():
     parser.add_argument('--attempt', default='1')
     parser.add_argument('--path', type=Path, default=Path('candidate'))
     parser.add_argument('--workflow-head', default='')
+    parser.add_argument('--workflow-run', default='')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--effective-pom', type=Path)
     args = parser.parse_args()
@@ -120,6 +161,10 @@ def main():
         if not args.output or not args.effective_pom or not re.fullmatch(r'[a-f0-9]{40}', args.workflow_head):
             parser.error('Provenance requires output, effective POM and exact workflow head')
         provenance(args.path, args.version, args.commit, args.workflow_head, args.output, args.effective_pom)
+    elif args.action == 'unsigned':
+        if not args.output:
+            parser.error('Unsigned collection requires an output directory')
+        unsigned(args.path, args.version, args.commit, args.output, args.workflow_run)
     elif args.action == 'artifact':
         print(json.dumps(check_artifact(args.path, args.version, args.commit, args.signer, args.bundle_hash)))
 

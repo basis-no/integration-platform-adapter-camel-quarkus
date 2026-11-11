@@ -347,6 +347,18 @@
 - The replay documentation says which key and partition a replay record gets,
   what order a replay keeps, and how to resend several messages. A test pins
   the replay record's key, also for a message without a correlation id.
+- Remove production signing and publisher credentials from candidate inspection.
+  Inspection now retains unsigned evidence only, and its receipt records the
+  producing workflow run. Existing artifacts remain unchanged.
+- Sign releases offline: the new `sign-candidate.py` verifies a downloaded
+  unsigned candidate against its receipt, signs exactly its four payloads through
+  the release manager's gpg-agent, verifies each signature against the pinned
+  fingerprint and assembles the validated Central bundle with a signing receipt.
+  Upload and publication run from the release workstation with
+  `central-recovery.py`; the production key and portal token never exist in
+  GitHub. Post-publication readback compares public bytes with the unsigned
+  receipt and the signed-entries digest. Snapshot publication stays suspended;
+  acceptance uses locally built artifacts.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,
