@@ -170,13 +170,14 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
                             + "earliest skips the record or stops the consumer. Remove the autoOffsetReset or "
                             + "additionalProperties.auto.offset.reset override from the endpoint and from "
                             + "camel.component.kafka.auto-offset-reset, or set it to earliest",
-                    routeId, endpoint.getEndpointBaseUri(), value);
+                    routeId, endpoint.getEndpointBaseUri(), value == null ? "latest (Kafka's default)" : value);
         }
         if (group == null || group.isBlank()) {
             LOG.warn("Kafka input route '{}' ({}) has no groupId, so its consumer gets a new consumer group on every "
                             + "start, without committed offsets: every start begins where auto.offset.reset says, "
                             + "and with earliest every retained record of its partitions is read again. Set a stable "
-                            + "groupId on the endpoint; additionalProperties.group.id is not used",
+                            + "groupId on the endpoint or camel.component.kafka.group-id; "
+                            + "additionalProperties.group.id is not used",
                     routeId, endpoint.getEndpointBaseUri());
         }
     }
