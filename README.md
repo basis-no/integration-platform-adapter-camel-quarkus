@@ -266,9 +266,11 @@ the message. To recover such a message, either:
 - check at the receiver whether it got the message.
 
 The same loss also happens without a resend. With the `postgres` step store,
-any later read of the parked record skips the send and, when the rest of the
-route succeeds, records the message `COMPLETED`, although the receiver never
-got it. Such a read comes from:
+any later read of a parked record that carries `x-bip-message-id` skips the
+send and, when the rest of the route succeeds, records the message
+`COMPLETED`, although the receiver never got it. A record without that header
+gets a new message id on every read, so its send is tried again. Such a read
+comes from:
 
 - a commit that fails after the DLQ publish, for example because a receiver
   that accepts the connection and never answers kept the route busy for longer
@@ -286,7 +288,7 @@ To find the messages this happened to:
    (`bip.message.dlq` unless `basis.message-store.dlq-uri` names another), as
    far back as its retention reaches, with a Kafka tool that prints headers,
    for example
-   `kafka-console-consumer.sh --bootstrap-server <host:port> --topic bip.message.dlq --from-beginning --property print.headers=true --timeout-ms 10000`.
+   `kafka-console-consumer.sh --bootstrap-server <host:port> --topic bip.message.dlq --from-beginning --property print.headers=true --property print.value=false --timeout-ms 10000`.
 2. Look up those ids in the Message Store. The ones to check are `COMPLETED`
    although they have a DLQ record:
 
@@ -299,8 +301,8 @@ To find the messages this happened to:
    ```
 
    A message that was parked and later resent with success is listed too. A
-   row with `last_attempt` = 1 was never resent, so it was read again by
-   itself.
+   row with `last_attempt` = 1 was not resent through the adapter's replay;
+   step 3 tells whether it is this case.
 
 3. For each of them, read its attempts in `bip_message_attempt` (see
    [Read Model](#read-model)). A sub-route step listed as `SKIPPED` in
