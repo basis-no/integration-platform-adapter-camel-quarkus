@@ -338,7 +338,8 @@ record, starts again at once. The consumer waits for it, also when the route
 completes on another thread, so the consumer's other partitions wait too, as
 they do after any record that is read again. The wait ends early when the
 application stops. A record whose topic, partition and offset the adapter did
-not see at the start is read again at once. Up to 0.3.6 every record was read
+not see at the start, or one without the adapter's manual commit, is read again
+at once. Up to 0.3.6 every record was read
 again at once, about twice a second, for as long as the failure lasted, and
 each read ran the route again, so the log grew quickly.
 
@@ -358,9 +359,9 @@ each read ran the route again, so the log grew quickly.
   - the next read sends again. The route's redeliveries can also repeat the
     send within one read.
 
-  From 0.3.7 the reads are spaced out as described above, up to 30 seconds
-  apart, but each read still sends; up to 0.3.6 one message could be sent
-  dozens of times a minute. Readiness stays `UP`. The
+  From 0.3.7 the reads are spaced out as described above, with waits of up to
+  30 seconds between reads, but each read still sends; up to 0.3.6 one message
+  could be sent dozens of times a minute. Readiness stays `UP`. The
   ERROR log says that the message was not parked because a step outcome was
   not checked or recorded, with the database's error. For a record that
   carries `x-bip-message-id`, every repeat has the same `Idempotency-Key`, so

@@ -11,7 +11,7 @@ No Message Store schema change.
   ([#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66),
   part 1). Before, while the outcome write, a step outcome or the DLQ publish
   kept failing, for example during a Message Store outage, the record was read
-  again at once, several times a second, and every read ran the route again: a
+  again at once, about twice a second, and every read ran the route again: a
   send the step store did not skip (with the default `noop` store, or for a
   record without `x-bip-message-id`) reached its receiver again, and a parked
   message got another DLQ record. Now the first read again is at once, then
@@ -19,10 +19,10 @@ No Message Store schema change.
   most half the consumer's `max.poll.interval.ms` less the time its poll has
   already taken; a committed outcome resets it. Without
   `break-on-first-error=true` there is no wait. The consumer's other partitions
-  wait with it. The outcome is still not committed and the partition still
+  wait with it. The record is still not committed and the partition still
   waits, as before. No setting. See [Retry and DLQ](README.md#retry-and-dlq).
   Upgrade: recovery after an outage can take up to 30 seconds longer per
-  partition.
+  consumer.
 
 ### Documentation
 
@@ -30,8 +30,8 @@ No Message Store schema change.
   input topic per integration); further 0.3.x patch releases may follow, also
   after 0.4.0. This replaces "the last 0.3 release" in the 0.3.6 notes.
 - Known limitation, documented: during a Message Store outage the consumer
-  reads an uncommitted Kafka record again and runs the route on every read
-  (0.3.6 at once; from 0.3.7 with the growing wait above), and a message that fails meanwhile can be parked in the DLQ more than
+  reads an uncommitted Kafka record again and runs the route on every read (up
+  to 0.3.6 at once; from 0.3.7 with the growing wait above), and a message that fails meanwhile can be parked in the DLQ more than
   once (with the `noop` step store, or when it fails before its first tracked
   send). The README gives what to do: scale the integration down during a long
   outage, set `autoOffsetReset=earliest` on the Kafka input, and check the DLQ

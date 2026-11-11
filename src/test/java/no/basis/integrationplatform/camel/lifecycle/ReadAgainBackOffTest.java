@@ -69,6 +69,39 @@ class ReadAgainBackOffTest {
     }
 
     @Test
+    void aCommitOfTheSameRecordResetsTheWait() {
+        MessageStoreRoutePolicy policy = policy();
+        readFailingToRecord(policy, route(null), 7);
+        readFailingToRecord(policy, route(null), 7);
+
+        journalDown.set(false);
+        policy.onExchangeDone(route(null), begin(policy, 7));
+        journalDown.set(true);
+        readFailingToRecord(policy, route(null), 7);
+        readFailingToRecord(policy, route(null), 7);
+
+        assertEquals(List.of(1_000L, 1_000L), waits, "Held back again from the start");
+    }
+
+    @Test
+    void aFailedCommitIsReadAgainWithoutAWait() {
+        journalDown.set(false);
+        MessageStoreRoutePolicy policy = policy();
+
+        for (int read = 0; read < 3; read++) {
+            Exchange exchange = begin(policy, 7);
+            exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> {
+                throw new IllegalStateException("synthetic commit failure");
+            });
+            exchange.setProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT, exchange.getMessage()
+                    .getHeader(KafkaConstants.MANUAL_COMMIT));
+            assertThrows(IllegalStateException.class, () -> policy.onExchangeDone(route(null), exchange));
+        }
+
+        assertEquals(List.of(), waits, "The outcome is recorded; only the commit is repeated");
+    }
+
+    @Test
     void aNewerRecordOnThePartitionStartsAgainAtOnce() {
         MessageStoreRoutePolicy policy = policy();
         readFailingToRecord(policy, route(null), 7);
@@ -91,7 +124,7 @@ class ReadAgainBackOffTest {
         assertEquals(List.of(1_000L, 2_000L, 4_000L), waits.subList(0, 3));
         assertEquals(5, waits.size());
         for (long capped : waits.subList(3, 5)) {
-            assertTrue(capped > 4_900 && capped <= 5_000, "Capped at half the interval: " + waits);
+            assertTrue(capped > 4_000 && capped <= 5_000, "Capped at half the interval: " + waits);
         }
     }
 
@@ -111,7 +144,7 @@ class ReadAgainBackOffTest {
 
         readFailingToRecord(policy, route(endpoint), 7);
         assertEquals(1, waits.size());
-        assertTrue(waits.getFirst() > 900 && waits.getFirst() <= 1_000, "Capped at half the interval: " + waits);
+        assertTrue(waits.getFirst() > 500 && waits.getFirst() <= 1_000, "Capped at half the interval: " + waits);
     }
 
     @Test

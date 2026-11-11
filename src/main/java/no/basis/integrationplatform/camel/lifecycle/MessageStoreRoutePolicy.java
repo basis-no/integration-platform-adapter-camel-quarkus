@@ -266,6 +266,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         exchange.setProperty(POLL_STARTED, pollStarted.getOrDefault(thread, now));
         exchange.setProperty(POLL_THREAD, thread);
+        // camel-kafka 4.18.3 and later name the header CamelKafkaLastPollRecord; 4.18.0, which
+        // 0.3 also supports, names it kafka.LAST_POLL_RECORD.
         Object last = exchange.getMessage().getHeader("CamelKafkaLastPollRecord");
         if (last == null) {
             last = exchange.getMessage().getHeader("kafka.LAST_POLL_RECORD");
