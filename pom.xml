@@ -45,6 +45,9 @@
     <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
     <quarkus.platform.version>3.33.4</quarkus.platform.version>
     <compiler-plugin.version>3.15.0</compiler-plugin.version>
+    <dependency-plugin.version>3.8.1</dependency-plugin.version>
+    <upgrade-test.released-version>0.3.6</upgrade-test.released-version>
+    <upgrade-test.skip>false</upgrade-test.skip>
     <surefire-plugin.version>3.5.4</surefire-plugin.version>
     <jandex-plugin.version>3.5.0</jandex-plugin.version>
     <javadoc-plugin.version>3.12.0</javadoc-plugin.version>
@@ -198,6 +201,12 @@
     <dependency>
       <groupId>org.apache.camel</groupId><artifactId>camel-file</artifactId><scope>test</scope>
     </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-timer</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-master</artifactId><scope>test</scope>
+    </dependency>
     <!-- The Camel Quarkus BOM drops these from camel-jms; outside Quarkus its listener needs them.
          test.spring.version must equal the spring-jms version the BOM manages. -->
     <dependency>
@@ -238,11 +247,41 @@
         </executions>
       </plugin>
       <plugin>
+        <!-- The released 0.3.6 adapter, for the rolling-upgrade test only: it runs on its own
+             class loader next to this build, never on the test or runtime classpath. -->
+        <artifactId>maven-dependency-plugin</artifactId>
+        <version>${dependency-plugin.version}</version>
+        <executions>
+          <execution>
+            <id>released-adapter-for-upgrade-test</id>
+            <phase>process-test-resources</phase>
+            <goals>
+              <goal>copy</goal>
+            </goals>
+            <configuration>
+              <artifactItems>
+                <artifactItem>
+                  <groupId>no.basis.integrationplatform</groupId>
+                  <artifactId>integration-platform-adapter-camel-quarkus</artifactId>
+                  <version>${upgrade-test.released-version}</version>
+                  <type>jar</type>
+                </artifactItem>
+              </artifactItems>
+              <outputDirectory>${project.build.directory}/released-adapter</outputDirectory>
+              <stripVersion>true</stripVersion>
+              <skip>${upgrade-test.skip}</skip>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+      <plugin>
         <artifactId>maven-surefire-plugin</artifactId>
         <version>${surefire-plugin.version}</version>
         <configuration>
           <useModulePath>false</useModulePath>
           <systemPropertyVariables>
+            <released.adapter.jar>${project.build.directory}/released-adapter/integration-platform-adapter-camel-quarkus.jar</released.adapter.jar>
+            <released.adapter.version>${upgrade-test.released-version}</released.adapter.version>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
           </systemPropertyVariables>
         </configuration>
@@ -260,6 +299,33 @@
   </build>
 
   <profiles>
+    <!-- A build that skips tests does not download the released adapter for the upgrade test.
+         -DskipTests and -Dmaven.test.skip without a value set "true"; "=false" keeps the
+         download. A negated value (!false) would also match an unset property. -->
+    <profile>
+      <id>skip-upgrade-test-download</id>
+      <activation>
+        <property>
+          <name>skipTests</name>
+          <value>true</value>
+        </property>
+      </activation>
+      <properties>
+        <upgrade-test.skip>true</upgrade-test.skip>
+      </properties>
+    </profile>
+    <profile>
+      <id>skip-upgrade-test-download-without-test-build</id>
+      <activation>
+        <property>
+          <name>maven.test.skip</name>
+          <value>true</value>
+        </property>
+      </activation>
+      <properties>
+        <upgrade-test.skip>true</upgrade-test.skip>
+      </properties>
+    </profile>
     <!-- Signed, source+javadoc-complete publication to Maven Central via the
          Sonatype Central Portal. Activated by the publish workflow;
          plain builds never need GPG. -->

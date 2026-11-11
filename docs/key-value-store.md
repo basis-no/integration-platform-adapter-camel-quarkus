@@ -114,9 +114,17 @@ would be dropped.
   fails; updates of existing keys pass. Concurrent inserts can overshoot the
   threshold, so it is not a strict serialized quota.
 
-A rejected write throws `KeyValueLimitException`; repeating it fails the
-same way. An unavailable store throws `KeyValueStoreException`, as does a
-Message Store without `bip_key_value`, with a message that the Message Store has no `bip_key_value` table.
+A rejected write throws `KeyValueLimitException`; repeating it fails the same
+way. An application without a Key-Value Store (no Message Store datasource, an
+inactive one, or no `app.name`) gets `KeyValueStoreNotConfiguredException`, an
+`IllegalStateException`, on its first call, since the store is created then. An
+unavailable store throws `KeyValueStoreException`, as does a Message Store
+without `bip_key_value`, with a message that the Message Store has no
+`bip_key_value` table.
+
+The adapter keeps the lease of each polling route under `lease/<routeId>` (see
+[Single-Active Routes](single-active.md)). These keys count toward the limits
+above; the application must not write keys under `lease/`.
 
 ## Expiry and Environments
 

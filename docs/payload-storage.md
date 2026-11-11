@@ -104,7 +104,11 @@ adapter never claims replayability without durable bytes.
 With the `postgres` sink, a replay captures an inline payload again and resets
 its expiry, capped at first receipt plus twice the retention. First receipt is
 the earliest outcome this integration recorded for the message. An S3 object
-payload keeps its first expiry together with its object.
+payload keeps its first expiry together with its object: the summary row holds
+it, and an object attempt row written by this version takes it from the summary
+in the same transaction, so history and summary show the same expiry for its
+object attempts. A message whose earlier attempts were inline, or written by an
+older adapter version, keeps those attempt rows' own expiries.
 
 The cap counts from the earliest outcome still recorded. Recording the same
 attempt again replaces that attempt's outcome time, for example when the

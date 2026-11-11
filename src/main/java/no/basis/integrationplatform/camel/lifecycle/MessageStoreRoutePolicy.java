@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.KafkaPollInterval;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
@@ -64,7 +65,6 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     static final long FIRST_BACK_OFF_MS = 1_000;
     static final long MAX_BACK_OFF_MS = 30_000;
-    private static final long DEFAULT_MAX_POLL_INTERVAL_MS = 300_000;
     private static final int MAX_HELD_BACK_PARTITIONS = 1_024;
     private static final String RECORD_POSITION = "basis.messageStore.recordPosition";
     private static final String POLL_STARTED = "basis.messageStore.pollStarted";
@@ -483,26 +483,9 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
 
     /** The consumer's effective poll interval: an additional property overrides the named option. */
     static long maxPollIntervalMs(Route route) {
-        try {
-            if (route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka) {
-                var configuration = kafka.getConfiguration();
-                Object override = configuration.getAdditionalProperties() == null ? null
-                        : configuration.getAdditionalProperties().get("max.poll.interval.ms");
-                if (override != null) {
-                    long value = Long.parseLong(override.toString().trim());
-                    if (value > 0) {
-                        return value;
-                    }
-                }
-                Integer configured = configuration.getMaxPollIntervalMs();
-                if (configured != null && configured > 0) {
-                    return configured;
-                }
-            }
-        } catch (RuntimeException unavailable) {
-            // Not a Kafka route the policy can inspect: Kafka's default applies.
-        }
-        return DEFAULT_MAX_POLL_INTERVAL_MS;
+        return route.getEndpoint() instanceof org.apache.camel.component.kafka.KafkaEndpoint kafka
+                ? KafkaPollInterval.of(kafka.getConfiguration())
+                : KafkaPollInterval.DEFAULT_MS;
     }
 
     static void sleepUnlessStopping(Route route, long millis) {

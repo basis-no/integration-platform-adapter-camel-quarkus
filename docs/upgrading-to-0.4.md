@@ -16,6 +16,14 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
   `bip_message_replay_audit` as well when replay is enabled, and
   `bip_step_outcome` with the Postgres step store. The schema ships in
   `src/main/resources/db/message-store/`; the database operator applies it.
+- **No in-memory holds on a Kafka boundary.** A Kafka boundary route, or a
+  `direct:` route it sends to, that holds records in memory after its input
+  completes refuses to start, naming the route and node: Camel's `resequence`,
+  or an `aggregate` on Camel's in-memory repository. A restart would lose the
+  held records, whose offsets are already committed. Give such an `aggregate`
+  a persistent `aggregationRepository`. A `resequence` on a Kafka boundary has
+  no replacement yet; a durable resequencer is planned (#36). See
+  [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
 - **Kafka header names on the newer Quarkus line.** This branch builds against
   Quarkus 3.33.4 (Camel 4.18.4), whose camel-kafka exchange headers are named
   `CamelKafka*` instead of `kafka.*`. An integration that moves to this line
@@ -177,6 +185,35 @@ route on another topic is refused before any replay audit row is written.
 Leave `boundary-routes` at `auto` unless the application needs the HTTP
 preview.
 
+### Polling routes run on one replica at a time
+
+0.3.x ran a timer, cron or Quartz trigger, and every scheduled poll (file,
+FTP/SFTP, SQL, object stores, polled queues), on every replica. 0.4.0 runs each
+such route only on the replica that holds its lease, the Key-Value Store key
+`lease/<routeId>`; see [Single-Active Routes](single-active.md).
+
+- **List a route that must run on every replica** in
+  `basis.message-store.single-active.excluded-routes`, such as a timer that
+  refreshes a per-replica cache. A polled queue (`aws2-sqs:`,
+  `azure-storage-queue:`) becomes single-active too; list it, or use a broker
+  consumer, where several replicas should share the queue.
+- **A `timer:` with a finite `repeatCount`** (a one-shot initialization timer)
+  is not leased and still runs on every replica, with a startup WARN: under a
+  lease its tick could be dropped for good on the new pod of a rolling update.
+  Make such work idempotent across replicas.
+- **Give polling routes stable ids.** The lease is named after the route id;
+  a generated id can differ between image versions.
+- **A polling endpoint whose consumer the adapter cannot gate** (neither a
+  scheduled-poll consumer nor a timer, Quartz or cron trigger) refuses to
+  start; list it in `basis.message-store.single-active.excluded-routes`.
+- **Without `bip_key_value`**, or without a Key-Value Store (no Message Store
+  datasource or `app.name`), polling routes run on every replica as in 0.3.x,
+  with one warning per route. An ingress normalization route that the replica
+  check accepted only because of its lease (several or no declared replicas)
+  does no work then, and logs an ERROR, instead of duplicating its source.
+- **Expect the first ticks after startup to wait** for the Message Store check
+  and the lease, and a standby replica to start its consumers without polling.
+
 ### Object-backed inputs are parked as their claim check
 
 Object storage (`tiered` payload mode) is new in 0.4. A Kafka input whose
@@ -242,10 +279,6 @@ Until then the 0.3.x limitations for splits and shared message ids apply; see
 
 Also not on this branch yet:
 
-- **The shared message-id warning.** 0.3.6 warns when a message id was already
-  journaled by another integration, which then takes over that row; this
-  branch does not warn yet
-  ([#100](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/100)).
 - **Delivery audit** (`basis.delivery-audit.*`)
   ([#93](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/93));
   startup refuses the setting, see [Before You Upgrade](#before-you-upgrade).
@@ -277,6 +310,26 @@ The changelog's Unreleased section has the details; in short:
   poll, so for a route on `ip-slow-backend` set `maxPollRecords=1` on its Kafka
   input or raise `maxPollIntervalMs`. See
   [Automatic Retry](retry-dlq-replay.md#automatic-retry).
+- **The HTTP client's own retries are off.** On every instance of Camel's
+  `http` component (`http`, `https` or the application's own name) the adapter
+  sets `automaticRetriesDisabled`, so the client no longer repeats a request
+  answered with 503 or 429 by itself, POST included, outside the step ledger;
+  every repeat is a recorded Camel redelivery. After a 429 or 503, in the
+  default and `ip-slow-backend` configurations, the next redelivery waits for
+  the longer of the receiver's `Retry-After` and the configured delay when it
+  fits the budget (for a Kafka input, its poll interval less the time the
+  exchange has run and a 20 % margin; otherwise the configuration's maximum
+  delay); a longer `Retry-After` gets the configured delays. A receiver that
+  answered 503 once and then succeeded now records one more redelivery. To
+  keep the client's own retries, set
+  `camel.component.<name>.automatic-retries-disabled=false` for the component's
+  name; it is the only way, so an application that turns them on in code, in a
+  `ComponentCustomizer` or with a retry strategy through `httpClientConfigurer`
+  must set it too, or the adapter turns them off. A non-Kafka input, such as an
+  HTTP request a route answers, can hold its caller for up to each
+  redelivery's maximum delay (3 × 60 s with the default configuration) when the
+  receiver asks for it; give such a route `ip-no-retry` or short delays. See
+  [Automatic Retry](retry-dlq-replay.md#automatic-retry).
 - **Spaced re-reads of a record whose outcome is not durable.** 0.3.6 read
   such a record again at once, several times a second. Now the first read
   again is at once, then each further read of the same record waits 1 s,
@@ -284,6 +337,19 @@ The changelog's Unreleased section has the details; in short:
   time its poll has already taken; a committed outcome resets the wait. The
   consumer's other partitions wait with it. The outcome is still not committed.
   Without `break-on-first-error=true` there is no wait.
+- **History first, as in 0.3.6.** The `postgres` sink writes the attempt row
+  and then the summary row, so 0.3.6 and 0.4 pods can write the same message
+  during a rolling upgrade without deadlocking each other. Released .NET adapter
+  versions still write the summary first: a Camel 0.4 writer and a released .NET
+  writer on the same message id and attempt can deadlock (PostgreSQL aborts one
+  write and its record is read again) until the .NET adapter is upgraded to a
+  version that writes history first. See
+  [Message lifecycle](message-lifecycle.md#read-model).
+- **The shared message-id warning**, as in 0.3.6: the adapter warns, once per
+  pair of integrations and then at most every ten minutes with a count, when it
+  journals a message id that another integration already journaled. Give each
+  integration its own `x-bip-message-id`. See
+  [Troubleshooting](troubleshooting.md#message-id-is-also-journaled-by-another-integration).
 - **Requests on exchanges of their own fail back to their caller**, as in
   0.3.6: only a managed Kafka input is parked. Unlike 0.3.6, such a failure no
   longer logs the parking ERROR. A route that sends requests on exchanges of its
