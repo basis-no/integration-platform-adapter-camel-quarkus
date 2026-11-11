@@ -90,10 +90,8 @@ or the `rest` component's own `headerFilterStrategy` if one is set, together
 with the record's headers. The path and query bind from the exchange's headers
 as before, also from a header the request leaves out. A `rest:` send through
 another producer component, also with the `rest` component's own filter, fails
-when its producer creates its endpoint, instead of sending the headers; if the
-producer reuses an endpoint registered before, the send fails at its first
-request, provided its factory put the parameter on that endpoint.
-The consumer of a `rest:` endpoint that is a route's input, a REST DSL service,
+when its producer is created or at its first request, instead of sending the
+headers. The consumer of a `rest:` endpoint that is a route's input, a REST DSL service,
 never sees that parameter: Camel's consumer creation reads the endpoint's
 parameters as they were, so the consumer keeps the consumer component's own
 header filter. (A `netty-http` consumer's endpoint is a `netty-http` endpoint
