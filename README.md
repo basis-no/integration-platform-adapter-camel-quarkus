@@ -263,9 +263,12 @@ publish when a receiver that accepts the connection and never answers kept the
 route busy for longer than the consumer's `max.poll.interval.ms` (5 minutes by
 default; with the `http` component's default timeouts, four tries take about
 12 minutes). The record is then read again, its route runs again and parks one
-more copy, for as long as the receiver hangs. Keep a receiver call's timeouts
-times its tries well under the poll interval, as described below for the
-processing time budget and the `http` component's timeout options.
+more copy, for as long as the receiver hangs. When the receiver answers again,
+that read delivers the message and records it `COMPLETED`; the copies already
+parked stay on the DLQ topic, and a resend of one skips the delivered step. Keep
+a receiver call's timeouts times its tries well under the poll interval, as
+described below for the processing time budget and the `http` component's
+timeout options.
 
 Adapter 0.3.5 and 0.3.6 also recorded the sub-route's step when the calling
 send completed
@@ -282,7 +285,7 @@ recorded the message `COMPLETED`. Such a read came from:
 - a rebalance that took the partition away before the commit;
 - a crash between the DLQ publish and the commit.
 
-A message that 0.3.6 or earlier recorded this way keeps its `DELIVERED` step
+A message that 0.3.5 or 0.3.6 recorded this way keeps its `DELIVERED` step
 after the upgrade, so it is still skipped. To find these messages:
 
 1. Read the `x-bip-message-id` header of the records on the DLQ topic
@@ -312,8 +315,11 @@ after the upgrade, so it is still skipped. To find these messages:
 4. Resend a message the receiver did not get with the step in `redoSteps`,
    together with any step whose output it uses (see
    [Redo behavior](#redo-behavior)). Redo repeats the call with the same
-   `Idempotency-Key`. The same applies to a parked message that 0.3.6 recorded
-   this way and that is still in the DLQ.
+   `Idempotency-Key`.
+
+Every message that 0.3.5 or 0.3.6 parked after a failed send in a sub-route
+has that step recorded `DELIVERED`, also when it is still in the DLQ: resend it
+with the step in `redoSteps`.
 
 Known Message Store outage limitation in 0.3.x
 ([#84](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/84),

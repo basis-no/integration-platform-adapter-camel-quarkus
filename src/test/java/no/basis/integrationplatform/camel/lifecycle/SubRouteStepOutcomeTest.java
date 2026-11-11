@@ -127,6 +127,8 @@ class SubRouteStepOutcomeTest {
         assertEquals(List.of("order"), parked);
         assertEquals(0, commits.get(), "The commit after parking failed");
         assertEquals(Map.of(KEY, "FAILED"), outcomes);
+        assertEquals(List.of(StepStatus.FAILED, StepStatus.FAILED, StepStatus.FAILED, StepStatus.FAILED),
+                statuses(rows.getLast()));
 
         commitFails = false;
         sendKafka();
@@ -135,6 +137,8 @@ class SubRouteStepOutcomeTest {
         assertEquals(List.of("order", "order"), parked);
         assertEquals(MessageStatus.DLQ, rows.getLast().status());
         assertEquals(Map.of(KEY, "FAILED"), outcomes);
+        assertEquals(List.of(StepStatus.FAILED, StepStatus.FAILED, StepStatus.FAILED, StepStatus.FAILED),
+                statuses(rows.getLast()), "The read sent the step, not skipped it");
 
         receiverStatus = 200;
         sendKafka();
@@ -142,6 +146,7 @@ class SubRouteStepOutcomeTest {
         assertEquals(9, calls.get());
         assertEquals(MessageStatus.COMPLETED, rows.getLast().status());
         assertEquals(Map.of(KEY, "DELIVERED"), outcomes);
+        assertEquals(List.of(StepStatus.DELIVERED), statuses(rows.getLast()));
     }
 
     @ParameterizedTest

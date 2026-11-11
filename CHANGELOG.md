@@ -21,7 +21,7 @@ No Message Store schema change.
   retried the call instead, each failed try was listed twice as `FAILED`. A
   calling send now records only its own step, and a `direct:` send records
   none. Adapter 0.3.5 and 0.3.6 have the fault.
-  Upgrade: a message that 0.3.6 or earlier recorded this way keeps its
+  Upgrade: a message that 0.3.5 or 0.3.6 recorded this way keeps its
   `DELIVERED` step and is still skipped. The README gives a way to find such
   messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);
   resend each one the receiver did not get with the step in `redoSteps`. See
