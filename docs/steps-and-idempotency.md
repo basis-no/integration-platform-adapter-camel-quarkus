@@ -176,10 +176,11 @@ parked nor committed. It is recorded `FAILED`, and its exchange stays failed, so
 the consumer reads the record again once Camel's retries are done. This also
 holds when the route catches the failure, and when it happens in a split part,
 loop iteration or branch, which run on copies of the input's exchange. A store
-failure ends the attempt: every tracked send after it in the same attempt fails
-before it sends, with the same failure, including a redelivery of the same send
-and a later send after a `doCatch`. Sends already running in parallel parts
-still finish. During a Message Store outage the partition therefore waits at
+failure ends the attempt: every send through `to` or `toD` after it in the same
+attempt fails before it sends, with the same failure, tracked or not (such as a
+`direct:` call), including a redelivery of the same send and a later send after
+a `doCatch`. Other processing goes on as the route says, but nothing is
+committed. Sends already running in parallel parts still finish. During a Message Store outage the partition therefore waits at
 that input, as it does when parking fails, and reads it again with a growing
 wait; see [Reading a record again](retry-dlq-replay.md#reading-a-record-again).
 Alert on inputs that stay `FAILED`.
@@ -207,7 +208,10 @@ write privilege, the send is not made again only because its outcome was lost:
 
 A step whose output could not be captured for its checkpoint has no outcome to
 keep: it gets no retry in place and no mark, its ERROR line says
-`storeError=checkpoint`, and the record is read again as before.
+`storeError=checkpoint`, and the record is read again as before. The send has
+returned by then, so while the capture keeps failing, for example for an output
+above the inline checkpoint threshold, every read sends again: fix the cause, or
+park the record.
 
 A record without `x-bip-message-id` keeps the id generated for it while the
 same offset is read again in the process, so its marks match. Split parts with
@@ -218,7 +222,11 @@ when a record at or after their offset is committed, or when a record at any
 other offset of the partition begins. A restart, or a rebalance to another
 process, loses them, so the next read there can send once more with the same
 `Idempotency-Key`. A mark whose step the next read does not reach, because the
-route takes another path, is not written.
+route takes another path, is not written. When parts of one attempt share a
+step key, only the part that reaches it first is written from the mark; the
+others are skipped and reported as not delivered, as for a ledger skip. Marks
+and kept ids match by offset only, so after a topic is deleted and created
+again, restart the integrations that consume it.
 
 The adapter's ERROR lines for a record that is not committed end with
 `storeError=<class>` and the SQLSTATE, so an alert can tell these cases apart:

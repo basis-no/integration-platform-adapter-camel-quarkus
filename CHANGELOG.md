@@ -14,7 +14,8 @@
   is read again. A store failure also ends the attempt: no later tracked send of
   it, nor a redelivery of the failed one, is made. The ERROR lines for a record
   that is not committed name the store error's class (`storeError=read-only`,
-  `privilege`, `schema`, `record-data` or `unavailable`) and its SQLSTATE. See
+  `privilege`, `schema`, `record-data`, `checkpoint` or `unavailable`) and its
+  SQLSTATE. See
   [Steps and idempotency](docs/steps-and-idempotency.md#a-send-whose-delivered-outcome-could-not-be-written).
   Upgrade: a restart or a rebalance still loses the kept outcomes, so the next
   read in another process can send once more; a step can take up to about 25

@@ -25,9 +25,11 @@ public final class UnrecordedDeliveries {
     private static final Map<CamelContext, UnrecordedDeliveries> BY_CONTEXT = new WeakHashMap<>();
 
     /** The outcome the write would have stored, and the record it belongs to. */
-    record Mark(String route, String position, StepResult step, StepOutputCheckpoint checkpoint) {
-        long checkpointBytes() {
-            return checkpoint == null || checkpoint.bodyBytes() == null ? 0 : checkpoint.bodyBytes().length;
+    record Mark(String route, String position, StepResult step, StepOutputCheckpoint checkpoint, long checkpointBytes) {
+        // Counted once: bodyBytes() returns a copy.
+        static Mark of(String route, String position, StepResult step, StepOutputCheckpoint checkpoint) {
+            byte[] body = checkpoint == null ? null : checkpoint.bodyBytes();
+            return new Mark(route, position, step, checkpoint, body == null ? 0 : body.length);
         }
     }
 
@@ -60,7 +62,7 @@ public final class UnrecordedDeliveries {
         if (position == null) {
             return;
         }
-        of(exchange).put(new Mark(route(exchange), position, step, checkpoint));
+        of(exchange).put(Mark.of(route(exchange), position, step, checkpoint));
     }
 
     /** The mark of this record and step key, if an earlier read left one. */

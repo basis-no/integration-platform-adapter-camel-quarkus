@@ -96,7 +96,6 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                     return size() > MAX_HELD_BACK_PARTITIONS;
                 }
             }));
-    private volatile ProducerTemplate parking;
 
     /** Above this many bytes, a stored text envelope value is refused at the boundary. */
     static final int MAX_ENVELOPE_VALUE_BYTES = 1_024;
@@ -187,6 +186,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             // On the record's own bytes, before an id is assigned or the payload captured.
             refuseUnstorableEnvelope(exchange);
         }
+        boolean refused = exchange.getProperty(ENVELOPE_REFUSAL) != null;
+        if (refused) {
+            // At once: Camel ignores a failure thrown below, and the route must not run.
+            // onExchangeDone parks and records the record.
+            exchange.setRouteStop(true);
+        }
         normalizeKafkaEnvelopeHeaders(exchange);
         // A replay's redo list is for this attempt only; the route must not forward it.
         DefaultStepTracker.captureRedoSteps(exchange);
@@ -210,18 +215,38 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         // Before the capture, which makes a streamed input the adapter stores a claim check too.
         boolean claimCheck = isPayloadReference(exchange);
+        Object received = exchange.getMessage().getBody();
         try {
             capturePayloadMetadata(exchange);
         } catch (PayloadStorageException e) {
-            failBeforeTheRoute(exchange, e, claimCheck);
+            if (refused) {
+                keepRefusedAsItCame(exchange, received, e);
+            } else {
+                failBeforeTheRoute(exchange, e, claimCheck);
+            }
         } catch (RuntimeException e) {
             // An application's own PayloadObjectStore may throw anything.
-            failBeforeTheRoute(exchange, new PayloadStorageException(
-                    "The payload could not be captured or checked: " + e.getClass().getSimpleName(), e), claimCheck);
+            if (refused) {
+                keepRefusedAsItCame(exchange, received, e);
+            } else {
+                failBeforeTheRoute(exchange, new PayloadStorageException(
+                        "The payload could not be captured or checked: " + e.getClass().getSimpleName(), e), claimCheck);
+            }
         }
-        if (exchange.getProperty(ENVELOPE_REFUSAL) != null) {
-            // The route does not run; onExchangeDone parks and records the record.
-            exchange.setRouteStop(true);
+    }
+
+    /**
+     * A refused record whose payload could not be captured is still refused: its route does not
+     * run, so it needs no payload, and it is parked as it came, with a metadata-only outcome.
+     */
+    private void keepRefusedAsItCame(Exchange exchange, Object received, Exception failure) {
+        closeCheckedCopy(exchange);
+        exchange.getMessage().setBody(received);
+        metadataOnly(exchange, "the payload could not be captured: " + failure.getClass().getSimpleName());
+        keepForParking(exchange, received);
+        Long sizeBytes = payloadSizeBytes(received);
+        if (sizeBytes != null) {
+            exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, sizeBytes);
         }
     }
 
@@ -256,8 +281,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, derived);
             }
         }
-        exchange.setProperty(ENVELOPE_REFUSAL, "The Message Store cannot hold the record's " + String.join(", ", refused)
-                + "; the route did not run");
+        exchange.setProperty(ENVELOPE_REFUSAL, "The Message Store cannot hold the record's envelope: "
+                + String.join(", ", refused) + "; the route did not run");
     }
 
     private static boolean containsNul(byte[] bytes) {
@@ -660,7 +685,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                     + MAX_RECORD_DATA_IN_A_ROW + " such records in a row"));
             return;
         }
-        if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, reason)) {
+        // The parked copy and the row name the record: the DLQ copy carries no Kafka position,
+        // and a derived id is traced back to the record only through it.
+        String stored = position == null ? reason : reason + " (record " + position + ")";
+        if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, stored)) {
             LOG.error("Message {} at {} is not committed: it could not be parked for its own data; {} storeError=record-data",
                     messageId, position, reason);
             readAgain(route, exchange, new IllegalStateException("Not parked: " + reason));
@@ -672,7 +700,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 full.payloadSha256(), full.payloadExpiresAt(), full.payloadDeletedAt(), full.replayable(),
                 full.replayDisabledReason(), full.integration(), full.routeId(), full.attempt(), full.autoRedelivered(),
                 full.autoRedeliveryCount(), full.autoRedeliveryMax(), full.occurredAt(),
-                completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), reason);
+                completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), stored);
         if (!completed) {
             parkedForData.add(parkedKey);
         }
@@ -684,15 +712,16 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             readAgain(route, exchange, new IllegalStateException("Failed to record the reduced outcome", e));
             return;
         }
-        parkedForData.remove(parkedKey);
         try {
             commitKafkaOffsetIfPresent(exchange);
         } catch (Exception e) {
+            // The key stays, so that the next read records and commits without parking again.
             IllegalStateException failure = new IllegalStateException(
                     "Message outcome was recorded but Kafka offset commit failed", e);
             exchange.setException(failure);
             throw failure;
         }
+        parkedForData.remove(parkedKey);
         committed(exchange);
         if (position != null && refusedByStore) {
             recordDataInARow.merge(partition(position), 1, Integer::sum);
@@ -741,7 +770,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         copy.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException(reason));
         StepOutcomeFailure.begin(copy);
         try {
-            producer(route).send("direct:" + PlatformDeadLetterRoute.ROUTE_ID, copy);
+            deadLetter(exchange).send("direct:" + PlatformDeadLetterRoute.ROUTE_ID, copy);
         } catch (RuntimeException e) {
             return false;
         }
@@ -751,20 +780,6 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, true);
         }
         return parked;
-    }
-
-    private ProducerTemplate producer(Route route) {
-        ProducerTemplate current = parking;
-        if (current == null) {
-            synchronized (this) {
-                current = parking;
-                if (current == null) {
-                    current = route.getCamelContext().createProducerTemplate();
-                    parking = current;
-                }
-            }
-        }
-        return current;
     }
 
     private void commitKafkaOffsetIfPresent(Exchange exchange) {

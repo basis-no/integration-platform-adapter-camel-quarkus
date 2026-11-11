@@ -218,8 +218,11 @@ its partition: every write for it fails, so it is neither recorded nor parked.
 Before the route runs, the adapter checks the raw bytes of the headers the
 store keeps as text, `x-bip-message-id`, `x-bip-correlation-id`,
 `x-bip-content-type`, `x-bip-source-system` and `x-bip-target-system`, and
-refuses a value that contains a NUL byte or is longer than 1,024 bytes. A
-refused record's route does not run, so nothing is sent.
+refuses a value that contains a NUL byte or is longer than 1,024 bytes. Header
+names are matched ignoring case. A refused record's route does not run, so
+nothing is sent. A refused record whose payload cannot be captured, for example
+a claim check that cannot be read, is still refused, and is parked as it came
+with a metadata-only outcome.
 
 The same terminal path runs when the step outcomes that failed all failed with
 a SQLSTATE of class `22` or `54000` for the record's own data, for example an id
@@ -230,7 +233,8 @@ record is read again instead:
 
 1. The record is parked, unless it was parked already or, for the outcome
    write, its route completed. `x-bip-error` gives the reason, which header was
-   refused and why or the SQLSTATE, and says whether a send had returned; the
+   refused and why or the SQLSTATE, says whether a send had returned, and ends
+   with the record's position as `(record <topic>/<partition>@<offset>)`; the
    refused value is not copied into it.
 2. A reduced outcome is recorded under the record's own `x-bip-message-id`,
    with its own attempt, `DLQ` (or `COMPLETED` when its route completed), the
@@ -251,8 +255,11 @@ name-based UUID. The .NET adapter derives the same id.
 After three records in a row on a partition took this path because the store
 refused their data (records the boundary check refused do not count), the next
 one is held back, not committed, with `storeError=schema`, so that a setting or
-column that fails every record does not drain the topic into the DLQ. A normal
-commit on the partition resets the count, and a restart does too.
+column that fails every record does not drain the topic into the DLQ. The
+held-back record is read again with the growing wait and goes on once the store
+takes it, for example after the setting or column is fixed. A normal commit on
+the partition resets the count, and a restart does too: if the records really
+carry data the store cannot hold, each restart parks three more of them.
 
 A failure text the adapter stores has U+0000 replaced with U+FFFD, so that a
 failure's own message cannot make its step or record unstorable.
