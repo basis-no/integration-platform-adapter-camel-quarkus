@@ -1,8 +1,8 @@
 name: Snapshot publication (not from CI)
 
-# CI holds no publishing credentials. A snapshot of a reviewed commit is
-# published, unsigned, from the release manager's workstation, and final
-# releases are signed with the offline signer. See
+# CI publishes no snapshots. A snapshot of a reviewed commit is published,
+# unsigned, from the release manager's workstation; final releases are signed
+# in the protected tag run (release.yml) or with the offline signer. See
 # docs/release-packaging.md#snapshot-lane. Never add signing or publisher
 # credentials to a workflow.
 on:
@@ -16,7 +16,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 1
     steps:
-      - name: Refuse; CI holds no publishing credentials
+      - name: Refuse; CI publishes no snapshots
         run: |
           echo "CI does not publish snapshots. See docs/release-packaging.md#snapshot-lane." >&2
           exit 1

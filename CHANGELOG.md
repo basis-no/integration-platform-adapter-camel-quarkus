@@ -139,6 +139,21 @@ No Message Store schema change.
   while coverage is reported as supported. See
   [Kafka activity metrics](docs/activity-metrics.md).
 
+### Release process
+
+- Final releases can be signed and published from a protected `vX.Y.Z` tag in
+  CI, in four separate jobs: `build` runs Maven and the tests with no secret and
+  no identity token, `attest` runs no project code, and `sign-upload` and
+  `publish` each wait for an approval in a protected environment, check out only
+  the release tools at a trusted commit, sign with a CI signing subkey and
+  publish exactly the uploaded deployment. Every action is pinned by commit SHA.
+  The release-page workflow (`release-page.yml`, formerly
+  `publish-central.yml`) only verifies the published artifacts before it writes
+  the GitHub Release. Offline signing stays as the fallback. The path needs
+  repository settings first: the two environments, a tag ruleset, the signer's
+  public key and fingerprint, the trusted tooling commit and the environment
+  secrets; see `docs/release-packaging.md`.
+
 ## 0.3.6 — 2026-11-04
 
 Maintenance release on the 0.3 line. The Kafka recovery baseline remains Message

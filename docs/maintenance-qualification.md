@@ -84,11 +84,11 @@ parking and consumer progress; record the exact image and adapter versions.
 
 ## Snapshot publication
 
-CI holds no publishing credentials. A snapshot of a reviewed commit is
-published, unsigned, from the release manager's workstation with their own
-Central token (see the [snapshot lane](release-packaging.md#snapshot-lane)); the
-0.3.6 acceptance snapshots were published this way. Final releases are signed
-with the offline signer.
+CI publishes no snapshots. A snapshot of a reviewed commit is published,
+unsigned, from the release manager's workstation with their own Central token
+(see the [snapshot lane](release-packaging.md#snapshot-lane)); the 0.3.6
+acceptance snapshots were published this way. Final releases are signed in the
+protected tag run or with the offline signer.
 
 The maintenance line uses the same snapshot publishing mechanism as development;
 snapshot support is not restricted to the highest version. `0.3.4-SNAPSHOT` and
