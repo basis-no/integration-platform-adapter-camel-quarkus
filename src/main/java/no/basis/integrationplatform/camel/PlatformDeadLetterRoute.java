@@ -140,7 +140,8 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
             if (unrecorded != null) {
                 // The input is consumed again once step outcomes can be recorded; a parked copy would repeat it.
                 exchange.setException(new IllegalStateException("Not parked: a step outcome was not checked or "
-                        + "recorded, so the Kafka offset is not committed and the input is consumed again", unrecorded));
+                        + "recorded, so the Kafka offset is not committed and the input is consumed again",
+                        ErrorTextMasking.forLog(unrecorded)));
                 maskCaughtFailure(exchange);
                 callback.done(true);
                 return true;

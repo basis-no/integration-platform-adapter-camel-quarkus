@@ -189,8 +189,9 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             String consequence = boundaryKind == MessageBoundaryKind.KAFKA
                     ? "Kafka offset was not committed"
                     : "source response was not completed";
+            // Camel logs the failure a route policy throws; a store's text may name a URI.
             IllegalStateException failure = new IllegalStateException(
-                    "Failed to record message outcome; " + consequence, e);
+                    "Failed to record message outcome; " + consequence, ErrorTextMasking.forLog(e));
 
             // Camel logs and otherwise ignores exceptions thrown by
             // RoutePolicy#onExchangeDone. Mark the exchange failed as well so
@@ -281,7 +282,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             if (exchange.getException() == null) {
                 // The route handled the failure; the Kafka consumer reads the record again only from a failed exchange.
                 exchange.setException(new IllegalStateException(
-                        "A step outcome was not checked or recorded; Kafka offset was not committed", unrecorded));
+                        "A step outcome was not checked or recorded; Kafka offset was not committed",
+                        ErrorTextMasking.forLog(unrecorded)));
             }
             backOffBeforeReadingAgain(route, exchange);
             return;

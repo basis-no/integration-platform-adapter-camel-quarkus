@@ -191,7 +191,10 @@ class, with the stack traces kept and the messages of the failure, its causes
 and its suppressed failures masked the same way. The lines of Camel's error
 handlers that the adapter installs are masked too, and so is the failure that
 Camel's `FatalFallbackErrorHandler` logs when parking a managed Kafka input
-fails. Not covered: for an input that is not a managed Kafka input, which gets
+fails, as are the causes of the adapter's own not-parked and not-committed
+failures. Not covered: a failure of the parking endpoint or route itself, whose
+text Camel logs as it is (keep credentials out of a `direct:` parking route's
+exceptions and out of `basis.message-store.dlq-uri`); for an input that is not a managed Kafka input, which gets
 its original failure back, Camel's `FatalFallbackErrorHandler` line and the
 consumer's own failure line (for example a timer's or file consumer's
 `LoggingExceptionHandler`, or camel-kafka's line for an exchange that ends
