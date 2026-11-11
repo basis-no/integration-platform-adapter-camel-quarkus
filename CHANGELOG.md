@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Documentation: the query in `docs/steps-and-idempotency.md` (Replay Roles)
+  that lists an integration's step ids now also masks `code`, `sig`, `key`,
+  `pwd` and other credential parameters, such as `passwd`, `session` and
+  `cookie`, that rows recorded before the stored-endpoint masking rule kept in
+  clear. Before, it printed them.
 - A Kafka input that arrives as a claim check, on a replay or a DLQ resend, and
   whose object can never pass its check is parked in the DLQ as its claim check
   and committed after the DLQ accepted it, instead of being read again forever
