@@ -101,6 +101,21 @@ class RecordDataTerminalPathTest {
         assertEquals(1, commits.get());
     }
 
+    @org.junit.jupiter.params.ParameterizedTest
+    @org.junit.jupiter.params.provider.ValueSource(strings = {
+            PlatformHeaders.CONTENT_TYPE, PlatformHeaders.SOURCE_SYSTEM, PlatformHeaders.TARGET_SYSTEM})
+    void aNulInAnyOtherStoredHeaderIsParkedWithoutRunningTheRoute(String header) throws Exception {
+        start(route -> route.to("receiver:orders").id("post-order"));
+
+        read(7, "message-1", null, java.util.Map.of(header, "a\u0000b".getBytes(StandardCharsets.UTF_8)),
+                commits::incrementAndGet);
+
+        assertEquals(0, orders.received().size(), "The route did not run");
+        assertEquals(1, parked.size());
+        assertTrue(rows.getLast().error().contains(header + " contains a NUL byte"), rows.getLast().error());
+        assertEquals(1, commits.get());
+    }
+
     @Test
     void aNulInTheMessageIdIsParkedUnderTheIdDerivedFromItsPosition() throws Exception {
         start(route -> route.to("receiver:orders").id("post-order"));

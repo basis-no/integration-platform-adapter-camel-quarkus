@@ -364,9 +364,11 @@ Message Store outages in 0.3.x
 [#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66)):
 while the Message Store cannot be written, a Kafka record's outcome cannot be
 recorded, so its offset is not committed and the consumer reads the record
-again, for as long as the outage lasts. Every read runs the route with its
-redeliveries (by default 3, after 1, 2 and 4 seconds) and logs the failure at
-ERROR with its stack trace. The partition waits; no record is committed early.
+again, for as long as the outage lasts. Up to 0.3.6 every read runs the route
+with its redeliveries (by default 3, after 1, 2 and 4 seconds) and logs the
+failure at ERROR with its stack trace. From 0.3.7 a failed step outcome check
+or write ends the read at once, without redeliveries. The partition waits; no
+record is committed early.
 
 From 0.3.7 the record is read again with a growing wait. This applies to every
 record whose outcome could not be made durable, because the outcome write, a
@@ -393,8 +395,10 @@ each read ran the route again, so the log grew quickly.
   checks the store before it runs. While the store cannot be read, that check
   fails before the send reaches its receiver, so the send is not repeated. A
   send that ran just before the store went down, whose `DELIVERED` outcome could
-  not be recorded, can run once more after the store is back. With the `noop`
-  step store, every read runs the route's sends again.
+  not be recorded, can run once more after the store is back; from 0.3.7 only
+  after a restart or a rebalance to another process, since the outcome is kept
+  in memory until it can be written. With the `noop` step store, every read
+  runs the route's sends again.
 - **When the store can be read but not written, 0.3.6 and earlier repeat a
   tracked send on every read, without end.** Examples: the database is
   read-only (after a failover onto a standby, or for maintenance), or the
@@ -412,11 +416,13 @@ each read ran the route again, so the log grew quickly.
   no redelivery repeats the send. See
   [A send whose `DELIVERED` outcome could not be written](#a-send-whose-delivered-outcome-could-not-be-written).
   A restart, or a rebalance to another process, loses what was kept, so the
-  next read there sends once more. Readiness stays `UP`. The ERROR log says
-  that the message was not parked because a step outcome was not checked or
-  recorded, with the database's error; from 0.3.7 a further ERROR line says
-  that the message is not committed and ends with `storeError=read-only` or
-  `storeError=privilege` and the SQLSTATE. For a
+  next read there sends once more. Readiness stays `UP`. Up to 0.3.6 the ERROR
+  log says that the message was not parked because a step outcome was not
+  checked or recorded, with the database's error. From 0.3.7 that line is gone,
+  since the dead letter channel no longer runs for such an attempt; the ERROR
+  line is `Message <id> is not committed: a step outcome was not checked or
+  recorded, so it is consumed again`, with the database's error, and it ends
+  with `storeError=read-only` or `storeError=privilege` and the SQLSTATE. For a
   record that carries `x-bip-message-id`, every repeat has the same
   `Idempotency-Key`, so only a receiver that deduplicates by that key is safe.
   A record without that header gets a new message id, and so a new key, on
@@ -424,9 +430,11 @@ each read ran the route again, so the log grew quickly.
   0.3.7 it keeps its generated id while it is read again in the same process,
   and gets a new one after a restart or a rebalance.
 - With the `postgres` step store, a message that fails at a tracked send's
-  store check is not parked: the adapter logs at ERROR that it was not parked
-  because a step outcome was not checked or recorded, and the record is read
-  again.
+  store check is not parked, and the record is read again. Up to 0.3.6 the
+  adapter logs at ERROR that it was not parked because a step outcome was not
+  checked or recorded; from 0.3.7 it logs the `is not committed` line above,
+  and neither the dead letter channel nor an application's own `onException`
+  runs for that attempt.
 - With the `noop` step store, or when the route fails before its first tracked
   send (in a processor, a validation or an internal endpoint), a failing message
   is parked in the DLQ on each read, before its outcome write fails again, so

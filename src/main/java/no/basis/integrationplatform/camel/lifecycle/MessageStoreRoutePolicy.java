@@ -291,16 +291,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                         + StoreErrorClass.sqlState(e) + ")", result.status() == MessageStatus.COMPLETED, true);
                 return;
             }
-            LOG.error("Message {} is not committed: its outcome could not be recorded, so it is consumed again{}",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e), e);
+            if (managed(exchange)) {
+                LOG.error("Message {} is not committed: its outcome could not be recorded, so it is consumed again{}",
+                        exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e), e);
+            }
             readAgain(route, exchange, "Failed to record message outcome; Kafka offset was not committed", e);
             return;
         }
         Throwable unrecorded = StepOutcomeFailure.of(exchange);
         if (unrecorded != null) {
-            LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed again{}",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(unrecorded),
-                    unrecorded);
+            if (managed(exchange)) {
+                LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed "
+                        + "again{}", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID),
+                        StoreErrorClass.logSuffix(unrecorded), unrecorded);
+            }
             readAgain(route, exchange, "A step outcome was not checked or recorded; Kafka offset was not committed",
                     unrecorded);
             return;
