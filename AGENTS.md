@@ -29,7 +29,7 @@ release. See `docs/releasing.md`.
 ## Production credential boundary
 
 The primary (certify) release key never exists in GitHub, CI, agent or development
-hosts. Signing and Central upload happen in exactly one of two places:
+hosts. Signing and Central uploads happen only in these places:
 
 - `release.yml` jobs `sign-upload` and `publish`, which run in the protected
   environments `release` and `release-publish` (required reviewers, tag-only
@@ -37,6 +37,11 @@ hosts. Signing and Central upload happen in exactly one of two places:
   never run Maven, the wrapper, tests or candidate files. Only their environment
   secrets hold the CI signing subkey and a Central token. This path exists only
   once the repository is public and those settings are in place.
+- `publish-snapshot.yml` job `upload`, which runs in the protected environment
+  `snapshot` (required reviewers, deployment rule for `main` and `release/0.3`),
+  checks out only the release tools at `TRUSTED_TOOLING_SHA`, never signs and
+  uploads only an unsigned snapshot. Only its environment secrets hold a
+  snapshot Central token.
 - The trusted release workstation, where a human release manager runs
   `sign-candidate.py` and `central-recovery.py` from the reviewed tool branch:
   `main`, or `release/0.3` for a 0.3.x release.

@@ -90,7 +90,7 @@ see [Testing a published snapshot](releasing.md#testing-a-published-snapshot)
 and [Snapshot lane](release-packaging.md#snapshot-lane). The build runs without
 credentials, and the upload, after an approval in the environment `snapshot`,
 runs only the release tools at the trusted commit; no signing secret is
-involved, and no Central token exists outside that environment.
+involved, and the snapshot token exists only in that environment.
 
 The maintenance line uses the same lane as development; snapshot support is not
 restricted to the highest version. `0.3.7-SNAPSHOT` and `0.4.0-SNAPSHOT` are
