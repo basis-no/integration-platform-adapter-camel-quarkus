@@ -171,9 +171,13 @@ Behavior and configuration changes must update the relevant local documentation.
 Changes to shared message-store semantics must stay compatible with the .NET
 adapter.
 
-Use `X.Y.Z-SNAPSHOT` builds from Sonatype's separate snapshot repository for
-remote acceptance. Create a `vX.Y.Z` tag only after local and remote acceptance
-is complete; that tag publishes the immutable final artifact to Maven Central.
+Use locally built `X.Y.Z-SNAPSHOT` artifacts for acceptance; snapshot
+publication is suspended. Create a `vX.Y.Z` tag only after acceptance is
+complete. Once its repository settings exist, a `vX.Y.Z` tag starts the protected
+release workflow, which waits for two separate approvals before it signs with a
+dedicated CI signing subkey and publishes. Without those settings, and as the
+fallback, the release manager signs and uploads offline from reviewed tooling.
+The primary release key never exists in GitHub.
 See [Releasing](docs/releasing.md) for the full workflow and checklist.
 
 ## License
