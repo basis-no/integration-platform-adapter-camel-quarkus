@@ -85,8 +85,8 @@ No Message Store schema change.
   after 0.4.0. This replaces "the last 0.3 release" in the 0.3.6 notes.
 - Known limitation, documented: during a Message Store outage the consumer
   reads an uncommitted Kafka record again and runs the route on every read (up
-  to 0.3.6 at once; from 0.3.7 with the growing wait above), and a message that fails meanwhile can be parked in the DLQ more than
-  once (with the `noop` step store, or when it fails before its first tracked
+  to 0.3.6 at once; from 0.3.7 with the growing wait above), and a message
+  that fails meanwhile can be parked in the DLQ more than once (with the `noop` step store, or when it fails before its first tracked
   send). The README gives what to do: scale the integration down during a long
   outage, set `autoOffsetReset=earliest` on the Kafka input, and check the DLQ
   for copies of a message by `x-bip-message-id` before resending it. See
