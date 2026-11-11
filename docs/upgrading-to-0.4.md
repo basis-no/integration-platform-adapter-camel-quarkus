@@ -232,6 +232,45 @@ so a DLQ record resent after that fails processing. The adapter does not relate
 this to the DLQ topic's retention. Keep the payload retention, and the bucket's
 lifecycle expiry, at least as long as the DLQ topic's retention.
 
+When such a claim check is read again, on a resend or a replay, the adapter
+checks the whole object, its size and SHA-256, before the route reads any of
+it; see [Object-stored inputs are checked in full first](#object-stored-inputs-are-checked-in-full-first).
+
+### Object-stored inputs are checked in full first
+
+An input whose payload is in object storage is copied to a local file and
+checked in full against its reference before its route reads any of it, on a
+replay or resend of a claim check and on the first attempt after the adapter
+stored a streamed input. The route then reads the checked copy, which is
+closed when the boundary exchange is done: a route that hands the stream to
+work that reads it later, such as a `wireTap` without stream caching, must read
+it first. The check holds one 64 KiB buffer in memory; Camel's stream caching,
+on by default, still reads the whole stream into memory at the route's first
+node unless its spooling to disk is turned on. Two new deployment settings:
+
+- `basis.message-store.payload.spool-directory`, by default
+  `<java.io.tmpdir>/basis-payload-spool` (a per-host subdirectory is used
+  inside it, owner-only where the file system supports POSIX permissions);
+- `basis.message-store.payload.spool-max-bytes`, by default `10737418240`
+  (10 GiB, as `object-max-bytes`): the checked copies one process holds at
+  once. In `tiered` mode startup refuses a value below `object-max-bytes`, so
+  raise both together.
+
+Mount a dedicated, size-limited volume at the spool directory with room for
+`spool-max-bytes`: on Linux a copy has no directory entry while it is read, and may not
+count toward a pod's ephemeral-storage accounting.
+
+A payload that cannot be captured or checked (a changed, truncated, missing or
+expired object, an object store failure, a full or unwritable spool) fails the
+input before its route runs: no processor runs, nothing is parked, the outcome
+is `FAILED` with the claim check kept, and the Kafka offset is not committed,
+so the record is read again. A changed, missing or expired object does not heal
+by itself and blocks its partition until the object is restored or the group's
+offset is moved past the record; see
+[Troubleshooting](troubleshooting.md#s3-replay-fails). On 0.3.6 and 0.4.0-rc1,
+a failure while a payload was captured or resolved was only logged by Camel and
+the route ran anyway.
+
 ## Not in This Build Yet
 
 The 0.3.6 notes say that 0.4 gives each split part, loop iteration and branch

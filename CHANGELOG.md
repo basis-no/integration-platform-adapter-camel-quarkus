@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+- An input whose payload is in object storage is checked in full, its size and
+  SHA-256 against its reference, before its route reads any of it: on a replay
+  of a claim-checked input and on the first attempt after the adapter stored a
+  streamed input. The adapter copies the object to a local file while checking
+  it, holding one 64 KiB buffer whatever the object's size, and hands the route
+  a stream of the checked copy; the copy is deleted when the exchange is done,
+  and a copy left by a crashed process is deleted at the next start. Before, the
+  SHA-256 was checked only when the route read the stream to its end, so a route
+  that read part of a changed object used bytes that were never checked. A
+  changed, truncated, missing or expired object, an object store failure, and a
+  spool that is full or not writable now fail the input before its route runs:
+  its outcome is `FAILED`, nothing is parked and its Kafka offset is not
+  committed. Before, such a failure during capture or resolution was only logged
+  by Camel at WARN and the route ran anyway. New deployment settings:
+  `basis.message-store.payload.spool-directory` (default
+  `<java.io.tmpdir>/basis-payload-spool`) and
+  `basis.message-store.payload.spool-max-bytes` (default `10737418240`, at least
+  `object-max-bytes` in `tiered` mode). See
+  [Object Metadata and Verification](docs/payload-storage.md#object-metadata-and-verification).
+  Upgrade: in `tiered` mode, give the spool directory room for `spool-max-bytes`
+  (a pod's ephemeral storage, or a mounted volume); startup refuses a
+  `spool-max-bytes` below `object-max-bytes`. A route now gets the checked
+  copy's stream instead of the object store's, and the stream is closed when the
+  boundary exchange is done: a route that hands it to work that reads it later,
+  such as a `wireTap` without stream caching, must read it first.
 - A `rest:` send through `http`, `vertx-http` or `netty-http` leaves a consumed
   Kafka record's credential headers and Camel's `kafka.*` / `CamelKafka*`
   consumer headers out of its request, whichever EIP sends, as other HTTP sends
@@ -388,10 +413,9 @@
   an `InputStream`, and the whole object is held in memory during the restore.
   An output larger than 2 GiB less a few bytes, which a restore cannot check in
   memory, can no longer be checkpointed; its capture fails as one above
-  `basis.message-store.payload.object-max-bytes` does.
-  Not changed: an input whose payload is in object storage is still checked
-  against its SHA-256 only when the route reads it to its end
-  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+  `basis.message-store.payload.object-max-bytes` does. An input whose payload
+  is in object storage is checked in full before its route reads it too (see
+  the entry for #60).
 - A replay sends a message again only to the integration that recorded it,
   through the Kafka input route that recorded it. Before, `main` republished
   any message in the store to the replay topic of the integration named in its
