@@ -40,15 +40,25 @@ def selection(mode, version, commit, signer, candidate_run='', state_run='', bun
             raise ValueError('Existing state artifact run required; never start a fresh upload')
 
 
-def source(path, version, commit):
+def source(path, version, commit, tagged=False):
+    """Untagged: manual inspection before the tag. Tagged: the protected tag's own
+    release run, where the tag must already point at exactly this commit."""
     actual = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=path, text=True).strip()
     if actual != commit or subprocess.check_output(['git', 'status', '--porcelain'], cwd=path, text=True):
         raise ValueError('Candidate source must be the exact clean approved commit')
     pom = ET.parse(path / 'pom.xml').getroot()
     if pom.findtext('p:version', namespaces=NS) != version + '-SNAPSHOT':
         raise ValueError('Candidate must match the source snapshot; published stable sources are not rebuilt')
-    if subprocess.check_output(['git', 'tag', '--list', 'v' + version], cwd=path, text=True).strip():
-        raise ValueError('Candidate version already has a tag; reuse its artifacts, never rebuild')
+    tag = 'v' + version
+    listed = subprocess.check_output(['git', 'tag', '--list', tag], cwd=path, text=True).strip()
+    if not tagged:
+        if listed:
+            raise ValueError('Candidate version already has a tag; reuse its artifacts, never rebuild')
+        return pom
+    target = subprocess.check_output(['git', 'rev-parse', '--verify', f'refs/tags/{tag}^{{commit}}'],
+                                     cwd=path, text=True).strip() if listed else ''
+    if target != commit:
+        raise ValueError('Release tag must exist and point at the exact source commit')
     return pom
 
 
@@ -152,11 +162,12 @@ def main():
     parser.add_argument('--workflow-run', default='')
     parser.add_argument('--output', type=Path)
     parser.add_argument('--effective-pom', type=Path)
+    parser.add_argument('--tagged', action='store_true', help='Source check inside the release tag run')
     args = parser.parse_args()
     selection(args.mode, args.version, args.commit, args.signer, args.candidate_run,
               args.state_run, args.bundle_hash, args.attempt)
     if args.action == 'source':
-        source(args.path, args.version, args.commit)
+        source(args.path, args.version, args.commit, args.tagged)
     elif args.action == 'provenance':
         if not args.output or not args.effective_pom or not re.fullmatch(r'[a-f0-9]{40}', args.workflow_head):
             parser.error('Provenance requires output, effective POM and exact workflow head')
