@@ -159,16 +159,46 @@ workload identity, endpoint reachability, and encryption permissions. The
 adapter intentionally fails closed when claim-check metadata does not match.
 
 An object-stored input that fails its check, or cannot be checked, is logged at
-ERROR as `Message <id> did not reach its route: <reason>`; its route does not
-run, its outcome is `FAILED` and its Kafka offset is not committed, so it is
-read again. The reasons:
+ERROR as `Message <id> did not reach its route: <reason>`, and its route does
+not run.
 
-- `does not match its reference's SHA-256`, `has N bytes; its reference has M`,
-  `is larger than its reference`, or `Payload object size mismatch for <ref>`:
-  the object was changed or replaced after it was stored.
-- `Payload object is unavailable: <ref>`: the object is missing, or the object
-  store cannot be reached or refuses access.
+A Kafka claim check that can never pass ends the line with `; it can never pass
+its check, so it is parked in the DLQ`. It is parked as its claim check (one
+that could not be read, as it came), its outcome is `DLQ`, and its offset is
+committed after the DLQ accepted it. The reasons:
+
+- `does not match its reference's SHA-256`, `is larger than its reference`, or
+  `Payload object size mismatch for <ref>`: the object was changed or replaced
+  after it was stored.
+- `Payload object does not exist: <ref>`: the object store answered that the
+  key does not exist; the object was deleted, or its lifecycle expiry removed it.
 - `Payload reference has expired: <ref>`: the reference's expiry has passed.
+- `Invalid payload-reference document`, `Invalid S3 payload reference`, or
+  `Payload-reference header <name> does not match its document`: the claim
+  check is malformed.
+
+Restore the object as it was stored and resend the parked record, or send the
+message again from its source; an expired reference can only be sent again
+from its source. If the DLQ refuses the record, the ERROR `Message <id> could
+not be parked, so it is read again: <reason>` follows, and the record is read
+again like any input that is not parked.
+
+Any other reason may pass: the outcome is `FAILED`, the Kafka offset is not
+committed, and the record is read again, with a growing wait of up to 30
+seconds; it **blocks its partition** meanwhile, since later records of that
+partition are not processed before it. This is also the case for every failure
+on the first attempt of a streamed input, whose record is stored again when it
+is read again. The reasons:
+
+- `Payload object is unavailable: <ref>`: the object store cannot be reached,
+  refuses access or times out, or the bucket does not exist. Check the
+  endpoint, the workload identity and the bucket setting. On AWS S3 a missing
+  key is answered with 403 when the workload may not list the bucket
+  (`s3:ListBucket`), so a deleted object shows here too.
+- `ended after N of its reference's M bytes`: the download stopped early, for
+  example because a connection closed; the object itself may be intact.
+- `Payload reference is outside the configured bucket` or `prefix`: the
+  reference names another bucket or prefix than this deployment's settings.
 - `could not be copied for checking to <directory>`: the object store failed
   while the object was read, or the spool directory is not writable or is full.
   Check the object store and the space in
@@ -177,13 +207,10 @@ read again. The reasons:
   checked copies fill `basis.message-store.payload.spool-max-bytes`; the record
   is read again when they are done.
 
-A changed, missing or expired object does not heal by itself: the record is
-read again, with a growing wait of up to 30 seconds, and it **blocks its
-partition**, since later records of that partition are not processed before
-it. To get past it, restore the object as it was stored, or move the consumer
-group's offset for that partition past the record (with the Kafka tools, while
-the integration is stopped) and resend another copy of the message from its
-source.
+To get past a record that keeps failing this way, fix its cause, or move the
+consumer group's offset for that partition past the record (with the Kafka
+tools, while the integration is stopped) and resend another copy of the message
+from its source.
 
 ## Polling Works with One Replica but Not Several
 

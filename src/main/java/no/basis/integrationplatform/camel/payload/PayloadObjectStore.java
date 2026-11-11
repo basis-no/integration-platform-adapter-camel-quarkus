@@ -27,10 +27,13 @@ public interface PayloadObjectStore {
             long maxBytes);
 
     /**
-     * Opens a verified payload stream.
+     * Opens a verified payload stream. A stream whose transport is cut must fail, not end.
      *
      * @param reference immutable payload reference
      * @return payload stream
+     * @throws UnresolvablePayloadException only when the store answered that the object does not
+     *         exist or has another size than the reference
+     * @throws PayloadStorageException for any other failure, which may pass
      */
     InputStream open(PayloadReference reference);
 
@@ -38,6 +41,9 @@ public interface PayloadObjectStore {
      * Verifies object existence and reference metadata without returning the body.
      *
      * @param reference immutable payload reference
+     * @throws UnresolvablePayloadException only when the store answered that the object does not
+     *         exist or has another size than the reference
+     * @throws PayloadStorageException for any other failure, which may pass
      */
     void verify(PayloadReference reference);
 
