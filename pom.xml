@@ -189,6 +189,9 @@
       <groupId>org.apache.camel</groupId><artifactId>camel-rest</artifactId><scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-platform-http-vertx</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.apache.camel</groupId><artifactId>camel-yaml-dsl</artifactId><scope>test</scope>
     </dependency>
     <!-- A JMS queue input in the per-input-type failure test; the broker runs in a container. -->
