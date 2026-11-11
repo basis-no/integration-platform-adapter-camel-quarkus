@@ -205,8 +205,10 @@ Kafka input a stable `groupId`, on the endpoint or as
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
 processing completed or DLQ publication was confirmed. An unparked `FAILED`
 outcome, failed journal write or failed commit leaves the exchange failed. A
-step outcome that cannot be checked or recorded fails the send's exchange after
-Camel's retries; the input is then recorded as `FAILED` and neither parked nor
+step outcome that cannot be checked or recorded fails the send's exchange (up
+to 0.3.6 after Camel's retries; from 0.3.7 at once, without redeliveries, the
+dead letter channel or an application's own `onException`); the input is then
+recorded as `FAILED` and neither parked nor
 committed, also when the route catches the failure or it happens in a split
 part. A separate request, such as one sent with a `ProducerTemplate`, fails in
 the same case but does not hold back the input that sent it: an input that
@@ -367,9 +369,11 @@ Message Store outages in 0.3.x
 [#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66)):
 while the Message Store cannot be written, a Kafka record's outcome cannot be
 recorded, so its offset is not committed and the consumer reads the record
-again, for as long as the outage lasts. Every read runs the route with its
-redeliveries (by default 3, after 1, 2 and 4 seconds) and logs the failure at
-ERROR with its stack trace. The partition waits; no record is committed early.
+again, for as long as the outage lasts. Up to 0.3.6 every read runs the route
+with its redeliveries (by default 3, after 1, 2 and 4 seconds) and logs the
+failure at ERROR with its stack trace. From 0.3.7 a failed step outcome check
+or write ends the read at once, without redeliveries. The partition waits; no
+record is committed early.
 
 From 0.3.7 the record is read again with a growing wait. This applies to every
 record whose outcome could not be made durable, because the outcome write, a
@@ -396,31 +400,49 @@ each read ran the route again, so the log grew quickly.
   checks the store before it runs. While the store cannot be read, that check
   fails before the send reaches its receiver, so the send is not repeated. A
   send that ran just before the store went down, whose `DELIVERED` outcome could
-  not be recorded, can run once more after the store is back. With the `noop`
-  step store, every read runs the route's sends again.
-- **When the store can be read but not written, a tracked send is repeated on
-  every read, without end.** Examples: the database is read-only (after a
-  failover onto a standby, or for maintenance), or the integration's database
-  role has lost its write privilege; a full disk probably does the same. With
-  the `postgres` step store, on every read:
+  not be recorded, can run once more after the store is back; from 0.3.7 only
+  after a restart or a rebalance to another process, since the outcome is kept
+  in memory until it can be written. With the `noop` step store, every read
+  runs the route's sends again.
+- **When the store can be read but not written, 0.3.6 and earlier repeat a
+  tracked send on every read, without end.** Examples: the database is
+  read-only (after a failover onto a standby, or for maintenance), or the
+  integration's database role has lost its write privilege; a full disk
+  probably does the same. With the `postgres` step store, on every read:
   - the store check passes, and the send reaches its receiver;
   - its `DELIVERED` outcome cannot be written, so the offset is not committed;
   - the next read sends again. The route's redeliveries can also repeat the
     send within one read.
 
-  From 0.3.7 the reads are spaced out as described above, with waits of up to
-  30 seconds between reads, but each read still sends; up to 0.3.6 one message
-  could be sent dozens of times a minute. Readiness stays `UP`. The
-  ERROR log says that the message was not parked because a step outcome was
-  not checked or recorded, with the database's error. For a record that
-  carries `x-bip-message-id`, every repeat has the same `Idempotency-Key`, so
-  only a receiver that deduplicates by that key is safe. A record without that
-  header gets a new message id, and so a new key, on every read; deduplication
-  by key does not stop its repeats.
+  Up to 0.3.6 one message could be sent dozens of times a minute. From 0.3.7
+  the outcome write is tried again in place, and an outcome that still cannot
+  be written is kept in memory, so the record's next read in the same process
+  writes it and does not send again; a store failure also ends the attempt, so
+  no redelivery repeats the send. See
+  [A send whose `DELIVERED` outcome could not be written](#a-send-whose-delivered-outcome-could-not-be-written).
+  A restart, or a rebalance to another process, loses what was kept, so the
+  next read there sends once more. Readiness stays `UP`. Up to 0.3.6 the ERROR
+  log says that the message was not parked because a step outcome was not
+  checked or recorded, with the database's error. From 0.3.7 that line no
+  longer appears for an attempt that a store failure ended, since the dead
+  letter channel does not run for it (it can still appear when the route caught
+  the store failure and a later step that is not a send failed); alert on the
+  ERROR line `Message <id> is not committed: a step outcome was not checked or
+  recorded, so it is consumed again`, which is logged in every case, with the
+  database's error, and it ends
+  with `storeError=read-only` or `storeError=privilege` and the SQLSTATE. For a
+  record that carries `x-bip-message-id`, every repeat has the same
+  `Idempotency-Key`, so only a receiver that deduplicates by that key is safe.
+  A record without that header gets a new message id, and so a new key, on
+  every read up to 0.3.6; deduplication by key does not stop its repeats. From
+  0.3.7 it keeps its generated id while it is read again in the same process,
+  and gets a new one after a restart or a rebalance.
 - With the `postgres` step store, a message that fails at a tracked send's
-  store check is not parked: the adapter logs at ERROR that it was not parked
-  because a step outcome was not checked or recorded, and the record is read
-  again.
+  store check is not parked, and the record is read again. Up to 0.3.6 the
+  adapter logs at ERROR that it was not parked because a step outcome was not
+  checked or recorded; from 0.3.7 it logs the `is not committed` line above,
+  and neither the dead letter channel nor an application's own `onException`
+  runs for that attempt.
 - With the `noop` step store, or when the route fails before its first tracked
   send (in a processor, a validation or an internal endpoint), a failing message
   is parked in the DLQ on each read, before its outcome write fails again, so
@@ -433,11 +455,13 @@ each read ran the route again, so the log grew quickly.
 What to do:
 
 - When the store can be read but not written, scale the integrations that use
-  it down to zero replicas at once, without waiting. Every read until then
-  repeats their outside sends. The ERROR log shows a database error such as
-  `cannot execute INSERT in a read-only transaction` or
-  `permission denied for table bip_step_outcome`. Scale them back up once writes
-  work again. Receivers should deduplicate by `Idempotency-Key`; this helps
+  it down to zero replicas at once, without waiting. Up to 0.3.6 every read
+  until then repeats their outside sends; from 0.3.7 their partitions wait, and
+  a restart or a rebalance can repeat a send once. The ERROR log shows a
+  database error such as `cannot execute INSERT in a read-only transaction` or
+  `permission denied for table bip_step_outcome`, and from 0.3.7
+  `storeError=read-only` or `storeError=privilege`. Scale them back up once
+  writes work again. Receivers should deduplicate by `Idempotency-Key`; this helps
   only for records that carry `x-bip-message-id`.
 - When the store cannot be read either, and the outage lasts longer than a
   few minutes, scale the integration down to zero replicas until the store
@@ -593,6 +617,111 @@ changelog.
   them; see [Redo behavior](#redo-behavior).
 - the attempt is recorded with status `DLQ`, and the Kafka offset is committed
   only after the outcome record (and DLQ publish) succeeded.
+
+### A send whose `DELIVERED` outcome could not be written
+
+From 0.3.7, with the `postgres` step store, when a send returned but its
+`DELIVERED` outcome cannot be written, for example because the Message Store is
+read-only after a failover or the login lost its write privilege, the send is
+not made again only because its outcome was lost:
+
+1. On the thread that processes the record, and outside an application
+   transaction, the adapter writes the same outcome again in place, up to 3
+   more times after 0.5, 1 and 2 seconds, starting no try more than 10 seconds
+   after the first failure. A write that succeeds lets the attempt go on.
+2. If it still fails, the adapter keeps a mark in memory for the input route,
+   the record's topic, partition and offset, and the step key. The attempt
+   fails, and the record is not committed and is read again with the growing
+   wait above.
+3. When the same record is read again, a step whose step key has a mark gets
+   its outcome written from the mark before the store check. If that
+   succeeds, the send is skipped, the step is listed as `DELIVERED` with the
+   time of the send, and a WARN says so. If it fails, nothing is sent and the
+   record is read again later. A mark wins over a redo list: the earlier read
+   of the same record already made that send.
+
+A failed store call ends the attempt: every send through `to` or `toD` after it
+in the same attempt fails before it sends, with the same failure, tracked or not
+(such as a `direct:` call), including a redelivery of the same send and a later
+send after a `doCatch`. Other processing goes on as the route says, but nothing
+is committed. Sends already running in parallel parts still finish.
+
+A record without `x-bip-message-id` keeps the id generated for it while the
+same offset is read again in the process, so its marks match. Split parts with
+their own `x-bip-message-id` have their own marks; a part whose id is random on
+every read never matches. Marks are kept in memory only, at most 10,000 of
+them (a dropped one is logged), and are dropped when a record at or after their
+offset is committed, or when a record at any other offset of the partition
+begins. A restart, or a rebalance to another process, loses them, so the next
+read there can send once more with the same `Idempotency-Key`. A mark whose
+step the next read does not reach, because the route takes another path, is
+not written. When parts of one attempt share a step key, only the part that
+reaches it first is written from the mark; the others are skipped and reported
+as not delivered, as for a ledger skip. Marks and kept ids match by offset only,
+so after a topic is deleted and created again, restart the integrations that
+consume it.
+
+The adapter's ERROR lines for a record that is not committed end with
+`storeError=<class>` and the SQLSTATE, so an alert can tell these cases apart:
+`read-only` (`25006`), `privilege` (`42501`, class `28`), `schema` (another
+class `42`, class `23`, `3D000`, `3F000`), `record-data` (class `22`, `54000`;
+see [A record whose own values the store cannot hold](#a-record-whose-own-values-the-store-cannot-hold))
+and `unavailable` (everything else, including timeouts).
+
+### A record whose own values the store cannot hold
+
+A record whose envelope values PostgreSQL cannot store would otherwise block
+its partition: every write for it fails, so it is neither recorded nor parked.
+From 0.3.7, before the route runs, the adapter checks the raw bytes of the
+headers the store keeps as text, `x-bip-message-id`, `x-bip-correlation-id`,
+`x-bip-content-type`, `x-bip-source-system` and `x-bip-target-system`, and
+refuses a value that contains a NUL byte or is longer than 1,024 bytes. Header
+names are matched ignoring case. A refused record's route does not run, so
+nothing is sent. This applies to a managed Kafka input, one with the adapter's
+manual commit.
+
+The same terminal path runs when the step outcomes that failed all failed with
+a SQLSTATE of class `22` or `54000` for the record's own data, for example an id
+the route set itself that is too long for the step ledger's index, also when
+the route caught the failure, or when the outcome write fails so while every
+step outcome was written. When a step outcome failed for another reason, the
+record is read again instead:
+
+1. The record is parked, unless it was parked already or, for the outcome
+   write, its route completed. `x-bip-error` gives the reason, which header was
+   refused and why or the SQLSTATE, says whether a send had returned, and ends
+   with the record's position as `(record <topic>/<partition>@<offset>)`; the
+   refused value is not copied into it.
+2. A reduced outcome is recorded under the record's own `x-bip-message-id`,
+   with its own attempt, `DLQ` (or `COMPLETED` when its route completed), the
+   payload as captured, the reason as its error, and no correlation id, content
+   type, source or target system or steps. No step outcome is written. If the
+   store refuses that too, it is written without the payload, not replayable,
+   and the record is not parked again on its next reads in the process.
+3. The offset is committed only after both are durable; otherwise the record is
+   read again and the path runs again. The consumer then goes on with the next
+   record, and an ERROR line says `Message <id> from record <position> was
+   parked: <reason> storeError=record-data`, or, when the route completed and
+   nothing was parked, `... was recorded without its envelope values: <reason>
+   storeError=record-data`.
+
+When `x-bip-message-id` itself is refused, the record is parked and recorded
+under an id derived from its position: the UUID made from the first 16 bytes of
+SHA-256 over `kafka-record`, the integration name, the topic, the partition and
+the offset, joined by line feeds, with the version and variant bits of a
+name-based UUID. The .NET adapter derives the same id.
+
+After three records in a row on a partition took this path because the store
+refused their data (records the boundary check refused do not count), the next
+one is held back, not committed, with `storeError=schema`, so that a setting or
+column that fails every record does not drain the topic into the DLQ. The
+held-back record is read again with the growing wait and goes on once the store
+takes it, for example after the setting or column is fixed. A normal commit on
+the partition resets the count, and a restart does too: if the records really
+carry data the store cannot hold, each restart parks three more of them.
+
+A failure text the adapter stores has U+0000 replaced with U+FFFD, so that a
+failure's own message cannot make its step or record unstorable.
 
 ## Read Model
 
