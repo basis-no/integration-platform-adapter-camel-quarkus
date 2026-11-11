@@ -82,8 +82,9 @@ class MarkKeyTest {
         assertEquals(1, commits.get());
     }
 
-    @Test
-    void aSecondPartWithTheSameStepKeyIsNotListedAsDeliveredFromTheMark() throws Exception {
+    @org.junit.jupiter.params.ParameterizedTest(name = "parallel: {0}")
+    @org.junit.jupiter.params.provider.ValueSource(booleans = {false, true})
+    void aSecondPartWithTheSameStepKeyIsNotListedAsDeliveredFromTheMark(boolean parallel) throws Exception {
         firstLineFails = false;
         deliveredWriteFailsFor = "message-1:post-line";
         StepOutcomeStore store = new StepOutcomeStore() {
@@ -104,22 +105,28 @@ class MarkKeyTest {
         context.addRoutes(new RouteBuilder() {
             public void configure() {
                 // Both parts keep the input's message id, so they share one step key.
-                from("direct:input").routeId("input").errorHandler(noErrorHandler())
+                var split = from("direct:input").routeId("input").errorHandler(noErrorHandler())
                         .routePolicy(new MessageStoreRoutePolicy(result -> { }, "order-pipeline"))
-                        .split(body().tokenize(","))
-                            .to("receiver:lines").id("post-line")
-                        .end();
+                        .split(body().tokenize(","));
+                if (parallel) {
+                    // Both parts reach the mark at once: only one may take it.
+                    split.parallelProcessing();
+                }
+                split.to("receiver:lines").id("post-line").end();
             }
         });
         context.start();
 
         read();
-        assertEquals(List.of("a"), bodies(), "Part a was sent; part b was not, after the failed write");
+        if (!parallel) {
+            assertEquals(List.of("a"), bodies(), "Part a was sent; part b was not, after the failed write");
+        }
+        List<String> sent = bodies();
         deliveredWriteFailsFor = null;
         try (var logs = no.basis.integrationplatform.camel.LogCapture.of(DefaultStepTracker.class)) {
             read();
 
-            assertEquals(List.of("a"), bodies(), "Nothing is sent again");
+            assertEquals(sent, bodies(), "Nothing is sent again");
             List<String> warnings = logs.at(java.util.logging.Level.WARNING).stream()
                     .map(no.basis.integrationplatform.camel.LogCapture::text).toList();
             List<String> errors = logs.at(java.util.logging.Level.SEVERE).stream()

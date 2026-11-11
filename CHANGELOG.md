@@ -152,10 +152,12 @@ No Message Store schema change.
   The ERROR line for such a record is now `Message <id> is not committed: a step
   outcome was not checked or recorded, so it is consumed again` with
   `storeError=<class>`; the 0.3.6 line "failed after its configured retries and
-  is not parked: a step outcome was not checked or recorded" no longer appears,
-  since neither the dead letter channel nor an application's own `onException`
-  runs for an attempt that a store failure ended. Update alerts that match the
-  old line.
+  is not parked: a step outcome was not checked or recorded" no longer appears
+  for an attempt that a store failure ended, since neither the dead letter
+  channel nor an application's own `onException` runs for it; it can still
+  appear when the route caught the store failure and a later step that is not
+  a send failed. Update alerts that match the old line to the new one, which is
+  logged in every case.
 - A Kafka record whose envelope values the Message Store cannot hold is parked
   and recorded without them, and committed, instead of blocking its partition
   ([#138](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/138)).
