@@ -14,9 +14,12 @@ final class MaskingCamelLogger extends CamelLogger {
         super(LoggerFactory.getLogger(logName), LoggingLevel.ERROR);
     }
 
+    // Masks only a line that is written: a DEBUG retry line costs nothing while DEBUG is off.
     @Override
     public void log(String message, LoggingLevel loggingLevel) {
-        super.log(ErrorTextMasking.mask(message), loggingLevel);
+        if (shouldLog(getLog(), loggingLevel)) {
+            super.log(ErrorTextMasking.mask(message), loggingLevel);
+        }
     }
 
     @Override
@@ -31,7 +34,9 @@ final class MaskingCamelLogger extends CamelLogger {
 
     @Override
     public void log(String message, Throwable exception, LoggingLevel loggingLevel) {
-        super.log(ErrorTextMasking.mask(message), ErrorTextMasking.forLog(exception), loggingLevel);
+        if (shouldLog(getLog(), loggingLevel)) {
+            super.log(ErrorTextMasking.mask(message), ErrorTextMasking.forLog(exception), loggingLevel);
+        }
     }
 
     @Override

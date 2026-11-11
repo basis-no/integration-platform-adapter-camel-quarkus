@@ -10,9 +10,11 @@
   stored-endpoint rule (user info, and parameters such as `code`, `sig`, `key`
   or a credential-like name), also in the failures the adapter logs, whose class
   names and stack traces stay, and in the lines of Camel's error handlers the
-  adapter installs. Not covered: Camel's `FatalFallbackErrorHandler` line for an
-  input that is not a managed Kafka input, the Kafka client's own logs, and
-  credentials that are not in a `scheme://` URI. See
+  adapter installs, including the failure logged when parking fails. Not
+  covered: for an input that is not a managed Kafka input, Camel's
+  `FatalFallbackErrorHandler` line and the consumer's own failure line; the
+  Kafka client's own logs; and credentials that are not in a `scheme://` URI.
+  See
   [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
   Upgrade: error texts show `xxxxxx` where they showed credentials; a DLQ reader
   or alert that matched an unmasked value in `x-bip-error` must match the

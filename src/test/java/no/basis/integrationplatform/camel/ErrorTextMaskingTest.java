@@ -105,6 +105,22 @@ class ErrorTextMaskingTest {
     }
 
     @Test
+    void aFailureThatAddsAUriInItsToStringIsMaskedToo() {
+        // A logger prints toString(); an exception such as SAXParseException adds its systemId there.
+        RuntimeException failure = new RuntimeException("parse failed") {
+            @Override
+            public String toString() {
+                return "ParseFailure: parse failed in https://h/schema.xsd?sig=secret-1";
+            }
+        };
+
+        Throwable logged = ErrorTextMasking.forLog(failure);
+
+        assertTrue(logged != failure, "Copied, since its text names a URI");
+        assertEquals("ParseFailure: parse failed in https://h/schema.xsd?sig=xxxxxx", logged.toString());
+    }
+
+    @Test
     void aFailureWithNothingToMaskIsLoggedAsItIs() {
         var failure = new IllegalArgumentException("synthetic receiver rejection", new java.io.IOException("reset"));
         assertSame(failure, ErrorTextMasking.forLog(failure));
