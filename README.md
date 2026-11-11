@@ -271,39 +271,43 @@ once and records `DLQ`. Per-part identity is not part of 0.3.x; 0.4 adds it. See
 [split step identity advisory](docs/split-step-identity.md) for the exact
 conditions under which a part is not sent, and the safe configuration.
 
-Known sub-route limitation in 0.3.x, found after the 0.3.6 release
-([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)):
-a tracked send in a route that another send calls, such as a `direct:`
-sub-route, is recorded twice. The calling send records the sub-route's step
-again when it completes, so a successful call is listed twice as `DELIVERED`.
-When the sub-route's dead letter channel parks the message after the send
-failed, the calling send sees no failure and records the step `DELIVERED` with
-no error. A resend or replay then skips the send, and the receiver never gets
-the message. To recover such a message, either:
+Sends in a sub-route: from 0.3.7, a tracked send in a route that another send
+calls, such as a `direct:` sub-route, records its outcome once per try, like a
+send in the input route. The calling `to("direct:…")` is internal and records
+nothing. When the sub-route's dead letter channel parks the message after the
+send failed, the step stays `FAILED`, so a later read of the record, a resend
+or a replay sends it again. The same holds when the sub-route has no error
+handler of its own and the input route's handler retries the call.
 
-- resend it with the step in `redoSteps`, together with any step whose output
-  it uses (see [Redo behavior](#redo-behavior)); redo repeats the call with the
-  same `Idempotency-Key`; or
-- check at the receiver whether it got the message.
+A later read can still follow a parked message. A commit fails after the DLQ
+publish when a receiver that accepts the connection and never answers kept the
+route busy for longer than the consumer's `max.poll.interval.ms` (5 minutes by
+default; with the `http` component's default timeouts, four tries take about
+12 minutes). The record is then read again, its route runs again and parks one
+more copy, for as long as the receiver hangs. When the receiver answers again,
+that read delivers the message and records it `COMPLETED`; the copies already
+parked stay on the DLQ topic, and a resend of one skips the delivered step. Keep
+a receiver call's timeouts times its tries well under the poll interval, as
+described below for the processing time budget and the `http` component's
+timeout options.
 
-The same loss also happens without a resend. With the `postgres` step store,
-any later read of a parked record that carries `x-bip-message-id` skips the
-send and, when the rest of the route succeeds, records the message
-`COMPLETED`, although the receiver never got it. A record without that header
-gets a new message id on every read, so its send is tried again. Such a read
-comes from:
+Adapter 0.3.5 and 0.3.6 also recorded the sub-route's step when the calling
+send completed
+([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)).
+A successful call was listed twice as `DELIVERED`. When the sub-route's dead
+letter channel parked the message after the send failed, the calling send saw
+no failure and recorded the step `DELIVERED` with no error. A resend or replay
+then skipped the send, and the receiver never got the message. With the
+`postgres` step store, any later read of a parked record that carries
+`x-bip-message-id` skipped it too and, when the rest of the route succeeded,
+recorded the message `COMPLETED`. Such a read came from:
 
-- a commit that fails after the DLQ publish, for example because a receiver
-  that accepts the connection and never answers kept the route busy for longer
-  than the consumer's `max.poll.interval.ms` (5 minutes by default; with the
-  `http` component's default timeouts, four tries take about 12 minutes);
-- a rebalance that takes the partition away before the commit;
+- a commit that failed after the DLQ publish, as above;
+- a rebalance that took the partition away before the commit;
 - a crash between the DLQ publish and the commit.
 
-The Message Store then shows `COMPLETED`, so there is no parked message to
-resend.
-
-To find the messages this happened to:
+A message that 0.3.5 or 0.3.6 recorded this way keeps its `DELIVERED` step
+after the upgrade, so it is still skipped. To find these messages:
 
 1. Read the `x-bip-message-id` header of the records on the DLQ topic
    (`bip.message.dlq` unless `basis.message-store.dlq-uri` names another), as
@@ -328,11 +332,15 @@ To find the messages this happened to:
 3. For each of them, read its attempts in `bip_message_attempt` (see
    [Read Model](#read-model)). A sub-route step listed as `SKIPPED` in
    `steps_json` points to this case. Check at the receiver whether it got the
-   message, and if not, resend it with that step in `redoSteps`, as above.
+   message.
+4. Resend a message the receiver did not get with the step in `redoSteps`,
+   together with any step whose output it uses (see
+   [Redo behavior](#redo-behavior)). Redo repeats the call with the same
+   `Idempotency-Key`.
 
-The 0.4.0 development line, not yet released, records the send once per try.
-A message that 0.3.x parked keeps its `DELIVERED` step after the upgrade, so
-its resend needs the redo too.
+Every message that 0.3.5 or 0.3.6 parked after a failed send in a sub-route
+has that step recorded `DELIVERED`, also when it is still in the DLQ: resend it
+with the step in `redoSteps`.
 
 Known Message Store outage limitation in 0.3.x
 ([#84](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/84),
