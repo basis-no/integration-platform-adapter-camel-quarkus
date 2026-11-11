@@ -146,7 +146,7 @@ eight requests before the message is parked. Set
 `camel.component.http.automatic-retries-disabled=true` to leave every retry to
 the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
 and for routes on the `ip-slow-backend` configuration, whose own redeliveries
-already use much of the poll interval.
+already use about a third of the poll interval.
 
 - `COMPLETED`: route processing finished and the outcome was safely recorded.
 - `DLQ`: retries were exhausted and the message was parked for operator action.
@@ -217,9 +217,30 @@ within-attempt event-ordering guarantee.
 The global route configuration applies to all routes unless a route opts into a
 named variant:
 
-- default: 3 redeliveries, 1 second initial delay, exponential backoff.
-- `ip-slow-backend`: 6 redeliveries, 5 second initial delay, exponential backoff.
+- default: 3 redeliveries after 1, 2 and 4 seconds, 7 seconds of waiting in
+  all.
+- `ip-slow-backend`: 6 redeliveries after 5, 10, 20, 20, 20 and 20 seconds, 95
+  seconds in all. From 0.3.7 each delay is capped at 20 seconds; before, the
+  delays doubled up to Camel's default cap of 60 seconds and waited 195
+  seconds.
 - `ip-no-retry`: no redelivery before DLQ.
+
+On a Kafka input the waits run on the consumer thread, between attempts that
+take their own time. `max.poll.interval.ms` (300 seconds by default) bounds the
+time between two polls, and the consumer processes every record of a poll
+before it polls again (up to 500 records, Camel's default `maxPollRecords`), so
+the budget covers all records of one poll, not one record. If they take longer,
+Kafka removes the consumer from its group and the uncommitted records are
+delivered again, so a record can run, and be parked, more than once. With
+`ip-slow-backend`, one record that exhausts its retries waits 95 seconds, so
+three such records in one poll already take most of the interval. For a route
+on `ip-slow-backend`, set `maxPollRecords=1` on the Kafka input, or raise
+`maxPollIntervalMs` on it to cover the records of a poll. With one record per
+poll, about 200 seconds remain for its seven attempts: bound each receiver call
+well inside that with `responseTimeout` and `connectTimeout` (see the timeout
+table below for the forms Camel applies), and turn the HTTP client's own retry
+off with `camel.component.http.automatic-retries-disabled=true`, since it can
+double the requests in each attempt.
 
 All variants use `basis.message-store.dlq-uri`, defaulting to
 `kafka:bip.message.dlq`. When the dead letter channel parks a message, the
@@ -486,7 +507,10 @@ no 0.3.x fix. Remove that one header before an HTTP send:
 
 The consumer's other `kafka.*` headers, such as the record key, topic,
 partition, offset and timestamp, still reach the receiver, but they hold no
-other header's value. Do not remove them all with `removeHeaders("kafka.*")`:
+other header's value. To remove every header but the adapter's, see
+[Removing headers before a tracked send](#removing-headers-before-a-tracked-send):
+`removeHeaders("*")` alone also removes `x-bip-message-id`, and with it the
+send's stable step key. Do not remove the `kafka.*` headers with `removeHeaders("kafka.*")`:
 that also removes `kafka.KEY`, which Camel's Kafka producer uses as the key of
 the record that the adapter parks in the DLQ, so a parked record loses its
 key. Alternatively, upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
@@ -813,6 +837,67 @@ step entries use the same masked endpoint, as does the warning emitted when a
 send has no stable Camel node id. This masks the endpoint field, not arbitrary
 exception messages or application logs. Existing rows, logs and backups are not
 rewritten; review their access and retention separately.
+
+### Removing headers before a tracked send
+
+A tracked send in a Kafka input route builds its step key
+`<x-bip-message-id>:<step-id>` and its `Idempotency-Key` from the exchange's
+`x-bip-message-id` header at the moment it sends. A route that removes every
+header first, for example
+`removeHeaders("*").to("https://receiver.example/orders").id("send-order")`,
+also removes that header. The send then generates a new random id and logs a
+warning (`Message missing x-bip-message-id; generated <id>`)
+([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)):
+
+- The step key and the `Idempotency-Key` change on every delivery. A
+  redelivery, a read again, a resend or a replay sends again under another key,
+  so the step store never skips the send, and even a receiver that
+  deduplicates by `Idempotency-Key` applies it twice.
+- A message whose send completes is journaled under the random id, so the
+  consumed message cannot be found or resent by its own id. The fallback to
+  the consumed input's id that 0.3.6 added applies only when no tracked send
+  follows the removal: the send sets the generated id as the header, and that
+  value is journaled. A message that fails and is parked is still parked and
+  journaled under the consumed input's id.
+
+Keep the adapter's headers when you remove the others:
+
+```java
+.removeHeaders("*", "x-bip-.*")
+.to("https://receiver.example/orders").id("send-order")
+```
+
+`x-bip-message-id` is the header a tracked send needs. The other `x-bip-*`
+headers are the message's envelope; the adapter reads them when the input
+arrives and journals the values it read then, but keeping the whole prefix is
+the simplest rule. The adapter sets `x-bip-idempotency-key` and
+`Idempotency-Key` itself at each tracked send, and reads a replay's
+`x-bip-redo-steps` when the input arrives, so removing those does not change
+the send.
+
+Removing every header also removes Camel's Kafka record key header:
+`kafka.KEY` on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0, such as
+4.18.0, and `CamelKafkaKey` from those versions, which rename the `kafka.*`
+headers. Camel's Kafka producer uses it as the key of a record the adapter
+parks in the DLQ, so keep it too if a parked record should keep its key:
+
+```java
+.removeHeaders("*", "x-bip-.*", "kafka.KEY", "CamelKafkaKey")
+```
+
+Both forms still remove the record's credential headers, such as
+`Authorization`, and `kafka.HEADERS` (see [Retry and DLQ](#retry-and-dlq)). A
+record parked after the removal carries only the headers that were kept, so
+also keep any application header a parked record must carry.
+
+Inside a `split`, do not rely on removed headers to give each part its own
+step key: the generated ids change on every delivery, so every part is sent
+again on each redelivery and resend. Use one of the safe forms in
+[Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
+
+Keeping the consumed record's id when a route removes it is tracked in
+[#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143);
+0.3.7 does not change the send.
 
 ### Splitting before a tracked send in 0.3.x
 

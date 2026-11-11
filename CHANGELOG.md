@@ -4,6 +4,23 @@
 
 No Message Store schema change.
 
+### Changed
+
+- The `ip-slow-backend` route configuration caps each redelivery delay at 20
+  seconds
+  ([#80](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/80)):
+  it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before the
+  message is parked. Before, the delays doubled up to Camel's default cap of
+  60 seconds and waited 195 seconds, which together with seven attempts could
+  outlast the Kafka consumer's 300-second `max.poll.interval.ms`; Kafka then
+  removed the consumer from its group and delivered the record again, so it
+  could run, and be parked, more than once. The number of redeliveries and the
+  first delay are unchanged.
+  Upgrade: a route on `ip-slow-backend` gives up sooner, after 95 seconds of
+  waiting instead of 195. The interval covers all records of one poll: for
+  such a route, set `maxPollRecords=1` on its Kafka input or raise
+  `maxPollIntervalMs`. See [Retry and DLQ](README.md#retry-and-dlq).
+
 ### Fixed
 
 - A tracked send in a route that another send calls, such as a `direct:`
@@ -49,6 +66,17 @@ No Message Store schema change.
   says to scale the integrations to zero at once in that case. Receivers should
   deduplicate by `Idempotency-Key`
   ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
+- Documented which headers a tracked send needs
+  ([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)).
+  A route that removes every header before a tracked send, such as
+  `removeHeaders("*")`, also removes `x-bip-message-id`: the send then uses a
+  new random id on every delivery, so a redelivery, a read again or a resend
+  sends again under another `Idempotency-Key`, and the message is journaled
+  under that random id. Keep the adapter's headers with
+  `removeHeaders("*", "x-bip-.*")`, and also keep `kafka.KEY` (camel-kafka
+  before 4.14.8, 4.18.3 and 4.21.0) or `CamelKafkaKey` (those versions and
+  later) for a parked record to keep its key. See
+  [Removing headers before a tracked send](README.md#removing-headers-before-a-tracked-send).
 - Known limitation, documented: a `toD` that chooses its component only when
   it sends, through a literal scheme other than `kafka`, such as
   `language:header:receiverUrl`, does not invalidate the
