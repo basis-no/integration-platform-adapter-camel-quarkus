@@ -1,7 +1,6 @@
 # Optional Kafka activity metrics
 
-This is an **unreleased source candidate**, pending adapter and installed
-platform qualification. It is disabled by default. No integration version,
+New and opt-in in 0.3.6. It is disabled by default. No integration version,
 route, Kafka setting or alert policy is changed automatically.
 
 ## Choose an actual event
@@ -42,6 +41,15 @@ destination is outside the allowlist, because per-record topic overrides are
 possible. Dynamic Kafka destinations, unknown dynamic schemes, ACK0 or disabled
 metadata make publication coverage unsupported for that process. A successful
 send without fresh assigned-offset metadata also invalidates coverage.
+
+Known limitation in 0.3.x: a `toD` whose component is chosen only when it
+sends, through a literal scheme other than `kafka` (one without `${`), such as
+`toD("language:header:receiverUrl")`, does not invalidate publication coverage.
+If it ends up publishing to Kafka, that record is not counted while coverage is
+still reported as supported. Do not select `record_published` for an
+application that has such a send. `main` treats such a send as a possible Kafka
+destination and reports publication coverage as unsupported
+([#64](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/pull/64)).
 
 The exporter snapshots existing metadata identities before each send and counts
 only new, unique records after producer completion. It preserves application

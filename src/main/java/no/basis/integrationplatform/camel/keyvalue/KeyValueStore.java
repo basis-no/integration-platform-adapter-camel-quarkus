@@ -33,7 +33,7 @@ import java.util.OptionalLong;
  *
  * <p>A key or value outside the limits, or a new key beyond the live-key limit,
  * throws {@link KeyValueLimitException}. An unavailable store, or a
- * Message Store without key-value store (before contract 1.2), throws
+ * Message Store without the {@code bip_key_value} table, throws
  * {@link KeyValueStoreException}.</p>
  */
 public interface KeyValueStore {

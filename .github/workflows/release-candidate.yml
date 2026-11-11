@@ -50,7 +50,8 @@ env:
 
 jobs:
   request:
-    if: github.server_url == 'https://github.com' && github.ref == 'refs/heads/main'
+    # main, or release/0.3 for 0.3.x releases until main carries the same tools.
+    if: github.server_url == 'https://github.com' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/release/0.3')
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -66,7 +67,7 @@ jobs:
       - name: Refuse portal actions; signing and upload happen only on the offline release workstation
         run: |
           test "$MODE" = inspect
-          test "$GITHUB_REF" = refs/heads/main
+          case "$GITHUB_REF" in refs/heads/main|refs/heads/release/0.3) ;; *) exit 1 ;; esac
 
   inspect:
     needs: request

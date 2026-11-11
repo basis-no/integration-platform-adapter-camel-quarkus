@@ -26,7 +26,7 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
 import java.util.concurrent.TimeUnit;
 
-/** Key-Value Store in the Message Store table {@code bip_key_value} (contract section 13). */
+/** Key-Value Store in the Message Store table {@code bip_key_value}. */
 final class PostgresKeyValueStore implements KeyValueStore, AutoCloseable {
     static final String TABLE_NAME = "bip_key_value";
     static final int MAX_KEY_CHARACTERS = 256;
@@ -257,7 +257,7 @@ final class PostgresKeyValueStore implements KeyValueStore, AutoCloseable {
 
     /**
      * Deletes this integration's expired keys in bounded batches. A Message Store
-     * before contract 1.2 has no state table; the sweep then stays idle.
+     * without the state table leaves the sweep idle.
      */
     int sweepExpired() {
         boolean provisioned = query("check for " + TABLE_NAME, TABLE_EXISTS_SQL, statement -> {
@@ -365,8 +365,8 @@ final class PostgresKeyValueStore implements KeyValueStore, AutoCloseable {
     private static RuntimeException failure(String operation, SQLException e) {
         String sqlState = e.getSQLState();
         if (UNDEFINED_TABLE.equals(sqlState)) {
-            return new KeyValueStoreException("Key-Value Store needs Message Store contract 1.2: this"
-                    + " Message Store has no " + TABLE_NAME + " table (" + operation + ")", e);
+            return new KeyValueStoreException("Key-Value Store needs a provisioned " + TABLE_NAME
+                    + " table: this Message Store has no " + TABLE_NAME + " table (" + operation + ")", e);
         }
         // Constraint and data errors repeat on every retry; they are not an unavailable store.
         if (KEY_LIMIT.equals(sqlState) || CHECK_VIOLATION.equals(sqlState)

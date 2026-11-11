@@ -146,7 +146,7 @@ class CorrelationContinuityTest {
         var receiver = new ReceiverComponent(exchange -> {
             if (calls.incrementAndGet() == 1) throw new IllegalStateException("synthetic vendor timeout");
         });
-        // The platform default configuration retries after one second.
+        // The adapter's default route configuration retries after one second.
         start(receiver, new RouteBuilder() {
             public void configure() {
                 from("direct:input").routeId("input").routePolicy(policy())

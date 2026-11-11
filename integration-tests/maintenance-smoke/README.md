@@ -3,9 +3,10 @@
 The default profile is a local startup test with a stopped Kafka input and no
 database. The explicitly selected `acceptance` profile consumes synthetic input
 from operator-provisioned Kafka and records outcomes in PostgreSQL. It has no
-connection to a business receiver. This is a test application, not a template or
-a production integration. Its internal receiver accepts `PASS ` and rejects all
-other payloads. Errors propagate to the Kafka input's platform recovery handler.
+connection to a business receiver. This is a test application, not a starting
+point for integrations or a production integration. Its internal receiver accepts
+`PASS ` and rejects all other payloads. Errors propagate to the Kafka input's
+adapter recovery handler.
 
 ## Build the published candidate
 
@@ -33,7 +34,7 @@ Publishing an image and deploying it are separate authorized operations.
 
 An authorized operator provisions a dedicated, disposable input topic (one
 partition), DLQ topic, consumer group and database/schema before deployment.
-Use the normal platform path and its approved Kafka authentication bindings.
+Use the normal deployment path and its approved Kafka authentication bindings.
 Do not reuse business topics/groups or the ongoing development validation app.
 No public ingress is needed. Restrict the inherited admin resend endpoint to the
 approved operator path; the test image adds no authentication layer.

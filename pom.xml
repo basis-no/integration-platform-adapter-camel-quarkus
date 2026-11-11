@@ -9,11 +9,10 @@
   <version>0.3.6-SNAPSHOT</version>
   <packaging>jar</packaging>
 
-  <name>Basis Integration Platform Camel Quarkus Adapter</name>
-  <description>Camel Quarkus runtime adapter for the Basis integration platform
-    message store: Kafka consume with manual commit, retry/DLQ, step and
-    idempotency ledger, journaling and message resend, per message-store
-    contract v1.</description>
+  <name>Basis Camel Quarkus Adapter</name>
+  <description>Camel Quarkus runtime adapter for message-store integration:
+    Kafka consume with manual commit, retry/DLQ, step and
+    idempotency ledger, journaling and message resend.</description>
   <url>https://github.com/basis-no/integration-platform-adapter-camel-quarkus</url>
 
   <licenses>
@@ -141,6 +140,9 @@
       <groupId>org.apache.camel</groupId><artifactId>camel-core-languages</artifactId><scope>test</scope>
     </dependency>
     <dependency>
+      <groupId>org.apache.camel</groupId><artifactId>camel-http</artifactId><scope>test</scope>
+    </dependency>
+    <dependency>
       <groupId>org.apache.camel.quarkus</groupId>
       <artifactId>camel-quarkus-direct</artifactId>
     </dependency>
@@ -183,7 +185,7 @@
 
   <profiles>
     <!-- Signed, source+javadoc-complete publication to Maven Central via the
-         Sonatype Central Portal (ADR-003). Activated by the publish workflow;
+         Sonatype Central Portal. Activated by the publish workflow;
          plain builds never need GPG. -->
     <profile>
       <id>release</id>

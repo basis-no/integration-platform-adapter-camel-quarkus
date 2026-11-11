@@ -1,7 +1,8 @@
 # Maintenance adapter configuration
 
-This maintenance line retains the audit options introduced in 0.3.5. The local
-0.3.6 candidate adds Kafka poll recovery and safety fixes; it remains unqualified.
+This maintenance line retains the audit options introduced in 0.3.5. 0.3.6, the
+current maintenance release, adds Kafka poll recovery and safety fixes, and the
+opt-in Key-Value Store and Kafka activity counters.
 It does not include 0.4 service, object-storage or new delivery-identity settings.
 Existing supported defaults and Kafka/security bindings are listed in the
 [README configuration reference](../README.md#configuration).
@@ -30,9 +31,9 @@ databases remain supported and need no migration to adopt this adapter.
 
 | Property | Environment mapping | Values | Default | Ownership |
 | --- | --- | --- | --- | --- |
-| `basis.traffic.signals` | `BASIS_TRAFFIC_SIGNALS` | Comma-separated `record_admitted`, `record_published`; empty disables | empty | Explicit integration event selection; candidate only |
+| `basis.traffic.signals` | `BASIS_TRAFFIC_SIGNALS` | Comma-separated `record_admitted`, `record_published`; empty disables | empty | Explicit integration event selection; opt-in |
 | `basis.traffic.input-topics` | `BASIS_TRAFFIC_INPUT_TOPICS` | Exact comma-separated Kafka producer destination input topics; no wildcards | empty | Required for publication export; does not change routes or Kafka settings |
 
 [Activity metrics](activity-metrics.md) defines admission and broker-ACK semantics,
 static-producer requirements, fixed metrics and unknown coverage. Empty selection
-preserves existing behavior. Export alone does not enable a platform alert policy.
+preserves existing behavior. Export alone does not enable an alert policy.
