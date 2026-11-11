@@ -4,11 +4,11 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.EndpointUriMasking;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.StepResult;
 import org.apache.camel.Exchange;
-import org.apache.camel.util.URISupport;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -60,7 +60,7 @@ public class DefaultStepTracker implements StepTracker {
         // The journal keeps the endpoint without credentials: a resolved password or
         // token in the URI must never reach the Message Store. Step ids still derive
         // from the exact URI, so existing step identities are unchanged.
-        exchange.setProperty(PlatformExchangeProperties.CURRENT_ENDPOINT_URI, URISupport.sanitizeUri(endpointUri));
+        exchange.setProperty(PlatformExchangeProperties.CURRENT_ENDPOINT_URI, EndpointUriMasking.mask(endpointUri));
 
         if (isInternalEndpoint(endpointUri)) {
             exchange.setProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, true);
@@ -249,7 +249,7 @@ public class DefaultStepTracker implements StepTracker {
 
         String routeId = exchange.getFromRouteId() == null ? "unknown-route" : exchange.getFromRouteId();
         String fallback = routeId + ":" + scheme(endpointUri) + ":" + shortHash(endpointUri);
-        LOG.warn("Endpoint {} has no stable Camel node id; using generated step id {}", URISupport.sanitizeUri(endpointUri), fallback);
+        LOG.warn("Endpoint {} has no stable Camel node id; using generated step id {}", EndpointUriMasking.mask(endpointUri), fallback);
         return fallback;
     }
 

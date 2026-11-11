@@ -20,6 +20,23 @@ No Message Store schema change.
   waiting instead of 195. The interval covers all records of one poll: for
   such a route, set `maxPollRecords=1` on its Kafka input or raise
   `maxPollIntervalMs`. See [Retry and DLQ](README.md#retry-and-dlq).
+- A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
+  the endpoint named in the adapter's warnings mask credentials by the .NET
+  adapter's rule, so both adapters store the same value
+  ([#113](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/113)):
+  besides what Camel's `URISupport.sanitizeUri` masked, the whole user info
+  (`https://xxxxxx@host/…`) and the values of the query parameters `key`,
+  `code`, `sig`, `pwd`, names that are credential-like by the DLQ header rule
+  (such as `Signature`, `X-Amz-Credential` or a name ending in `-key`), and
+  names containing `passphrase`, `passcode`, `privatekey`, `accesskey`,
+  `accountkey` or `connectionstring`. An endpoint the patterns cannot mask
+  within about a second is stored as `xxxxxx`, instead of the step waiting on
+  the pattern (Camel's own sanitizer, which also runs when an application has
+  added keywords, has no such bound). See [Step Tracking](README.md#step-tracking).
+  Upgrade: new attempts store the masked value; rows recorded before keep
+  theirs unless the same step is recorded again. A query or tool that matched a stored endpoint's user name or one of
+  these parameter values no longer finds it in new rows. Step keys and
+  classification by node id are unchanged.
 
 ### Fixed
 

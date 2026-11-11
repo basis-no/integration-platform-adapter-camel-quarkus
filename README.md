@@ -781,13 +781,14 @@ guess. Confirm the ids before the upgrade:
   `camel.main.dump-routes-resolve-placeholders=false`. The routes are logged at
   startup with their node ids. Without the last setting the dump can contain
   resolved credentials.
-- In the Message Store, list the step ids an integration has recorded. Older
-  rows can contain endpoint credentials; this query masks the common forms:
+- In the Message Store, list the step ids an integration has recorded. Rows
+  recorded before 0.3.7 can contain endpoint credentials (see the stored
+  endpoint rule below); this query masks the common forms:
 
   ```sql
   select o.step_id,
          regexp_replace(regexp_replace(o.endpoint_uri, '//[^/@]*@', '//xxxxxx@'),
-           '(?i)((password|passphrase|secret[a-z_]*|[a-z_]*token|authpassword)=)[^&]*',
+           '(?i)([?&](code|sig|key|pwd|[^=&]*(password|passphrase|passcode|secret|token|signature|credential|auth|apikey|api-key|api_key|[-_]key|accesskey|accountkey|privatekey|connectionstring)[^=&]*)=)[^&]*',
            '\1xxxxxx', 'g') as endpoint,
          count(*) as steps, max(o.occurred_at) as last_occurred_at
   from bip_step_outcome o
@@ -829,14 +830,47 @@ send was skipped. Every later `to`/`toD`, including `log:` and `direct:`, resets
 it, so read it in the step that follows the send, for example a `choice` or
 `setProperty`. Do not log "delivered" without checking it.
 
-Each recorded step keeps its endpoint URI with credentials masked the way Camel
-masks them in logs: a password in the user info and options such as `password`,
-`passphrase`, `secretKey` or `accessToken` are stored as `xxxxxx`. Step ids are
-derived from the exact URI, so masking does not change them. Failed and skipped
-step entries use the same masked endpoint, as does the warning emitted when a
-send has no stable Camel node id. This masks the endpoint field, not arbitrary
+Each recorded step keeps its endpoint URI, in `bip_step_outcome.endpoint_uri`
+and the attempt's `steps_json`, with its credentials masked as `xxxxxx`. From
+0.3.7 the rule is the one the .NET adapter applies to the steps it records, so
+both adapters store the same value for the same URI:
+
+- what Camel's `URISupport.sanitizeUri` masks: the value of every query
+  parameter whose name contains one of Camel's sensitive option names (such as
+  `password`, `token`, `secret`, `apikey`, `user` or `clientId`), and the
+  password in a `user:password@` part, including inside a parameter value;
+- the whole user info of the endpoint's authority (`https://xxxxxx@host/…`),
+  not only its password;
+- the value of every query parameter with a credential-like name, by the rule
+  the adapter uses for the headers it masks in a DLQ record: `Authorization`,
+  cookies, authentication challenges, names containing secret, token, password,
+  passwd, credential, session, signature, apikey, api-key, api_key,
+  subscription-key, private-key or auth (such as `Signature` or
+  `X-Amz-Credential`), or ending in `-key` or `_key` (such as
+  `subscription-key`), but not `x-bip-*` or `Idempotency-Key`; also the names
+  `key`, `code`, `sig` and `pwd`, and names containing `passphrase`,
+  `passcode`, `privatekey`, `accesskey`, `accountkey` or `connectionstring`.
+  Parameter names are compared after percent-decoding (an escape that is not
+  valid UTF-8 is compared as written), ignoring case.
+
+A run of masked characters becomes one `xxxxxx`. Keywords an application adds
+with `URISupport.addSanitizeKeywords` are masked too (the .NET adapter has no
+such setting). An endpoint the adapter's patterns cannot mask within about a
+second is stored as `xxxxxx`; when an application has added keywords, Camel's
+own sanitizer also runs on it, and that pass has no such bound. Up to 0.3.6
+only Camel's own sanitizer ran: a function key `?code=…`, a signature
+`?sig=…` and the user name in `sftp://user:pass@host` were stored in clear.
+
+Step ids are derived from the exact URI, so masking does not change them. The
+route still sends to the real endpoint; only the stored and logged copy is
+masked. Failed and skipped step entries use the same masked endpoint, as do the
+warning emitted when a send has no stable Camel node id and the startup
+refusal for a send without an id. This masks the endpoint field, not arbitrary
 exception messages or application logs. Existing rows, logs and backups are not
-rewritten; review their access and retention separately.
+rewritten, unless the same step is recorded again; review their access and
+retention separately. A query or tool that matched a stored endpoint's user
+name or one of these parameter values no longer finds it in rows recorded from
+0.3.7.
 
 ### Removing headers before a tracked send
 
