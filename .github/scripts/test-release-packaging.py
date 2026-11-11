@@ -297,6 +297,9 @@ class Fixtures(unittest.TestCase):
         for forbidden in ('secrets.', 'checkout@', 'mvnw', '.github/scripts', 'environment:'):
             self.assertNotIn(forbidden, attest)
         self.assertIn('subject-checksums:', attest)
+        for job in (sign, publish):
+            # A re-run attempt never repeats a portal write.
+            self.assertIn('test "${GITHUB_RUN_ATTEMPT:-1}" = 1', job)
         for job, environment in ((sign, 'release'), (publish, 'release-publish')):
             self.assertIn(f'    environment: {environment}\n', job)
             self.assertIn(f'environments/{environment}', job)

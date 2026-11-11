@@ -60,11 +60,35 @@ reviewing the `VALIDATED` deployment in the Central portal against
 `signing.json`. A reviewer cannot approve a run they started.
 
 Recovery never repeats a portal write. A re-run of `sign-upload` or `publish`
-refuses once the run holds deployment or publication state. Download that
-artifact and resume on the release workstation with `central-recovery.py`, as
-in [upload, validation and publication](#upload-validation-and-publication-are-separate).
-A polling timeout leaves the deployment on Central; resume with the same state
-file and without `--allow-upload`.
+always refuses, whatever state the run kept, because a runner can die after a
+portal write and before it keeps its state. Recover on the release workstation:
+first establish in the Central portal which deployments exist for the version
+and in which state. If the run kept current state, resume with it and
+`central-recovery.py`, as in
+[upload, validation and publication](#upload-validation-and-publication-are-separate);
+a polling timeout leaves the deployment on Central, so resume with the same
+state file and without `--allow-upload`. If the state is missing, or older than
+what the portal shows (for example `VALIDATED` state for a deployment the portal
+shows as publishing or published), do not resume from it: reconcile with the
+portal, and publish or drop the deployment there under the same approvals.
+
+Any re-run counts, also one of a failed `build` or `attest`: from the second
+attempt on, `sign-upload` and `publish` refuse, even when nothing was uploaded.
+The tag cannot be pushed again, and unsigned inspection refuses a version that
+is already tagged. If the Central portal shows no deployment for the version,
+finish such a release on the release workstation with the [offline
+path](#offline-release-signing), from the `unsigned-central-candidate-X.Y.Z`
+artifact that this run's `build` retained; otherwise recover as in the previous
+paragraph. Skip the runbook's inspect step, use the release run's ID as `RUN`
+from the download step on, and do not create the tag again. If more than one
+attempt of `build` retained a candidate, download the newest by its artifact ID
+(`gh api "repos/$GH_REPO/actions/runs/$RUN/artifacts"` lists them; fetch one
+with `gh api "repos/$GH_REPO/actions/artifacts/<id>/zip" > candidate.zip`, then
+unzip it into the download step's directory), and do not re-run the run again
+after the download: `release-page.yml` reads the newest candidate, and a rebuilt
+one has other bytes. A transient `build` failure can simply be re-run, since
+signing is already off for the run; if `build` cannot produce a candidate at
+all, release the next patch version instead.
 
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
@@ -81,16 +105,18 @@ secret.
 
 ## Offline release signing
 
-Use this path while the repository is private, or whenever the protected
-environments are not configured. Here the signing key and the Central portal
-token **never exist in GitHub**: not as repository, organization or environment
-secrets, not in CI runners, and not on agent or development hosts. GitHub holds
-only the public key, in the `RELEASE_SIGNING_PUBLIC_KEY` repository variable,
-for post-publication readback. Signing and Central upload are performed by a
-human release manager on a trusted release workstation, using GnuPG and the
-trusted release tools from a clean checkout of the reviewed tool branch: `main`,
-or for a 0.3.x release `release/0.3`, until `main` carries the same tools. That
-human step is also the release gate.
+Use this path while the repository is private, whenever the protected
+environments are not configured, or to finish a tag whose CI run was re-run (see
+[protected-tag release](#protected-tag-release-in-ci)). The signing key and the
+Central portal token this path uses **never exist in GitHub**: not as
+repository, organization or environment secrets, not in CI runners, and not on
+agent or development hosts. Of this path's credentials, GitHub holds only the
+public key, in the `RELEASE_SIGNING_PUBLIC_KEY` repository variable, for
+post-publication readback. Signing and Central upload are performed by a human
+release manager on a trusted release workstation, using GnuPG and the trusted
+release tools from a clean checkout of the reviewed tool branch: `main`, or for
+a 0.3.x release `release/0.3`, until `main` carries the same tools. That human
+step is also the release gate.
 
 The reason is structural. A source commit, Maven wrapper, plugin, test or
 dependency can execute arbitrary code, and no step cleanup or log masking protects
@@ -287,9 +313,11 @@ mkdir -p "$RELEASE" && cd "$RELEASE"
     git -C "$TOOLS" push origin "v$VERSION"
     ```
 
-    Pushing the tag also starts `release.yml`. Its `sign-upload` job waits for
-    approval in `release`: reject that deployment, since this release is
-    already published.
+    Pushing the tag also starts `release.yml`. When the `release` environment
+    is configured, its `sign-upload` job waits for approval: cancel that run,
+    or have a reviewer reject the deployment, since this release is already
+    published. Without the environment, the run fails by itself before
+    signing.
 
 11. **Run the release-page workflow**, which repeats the readback on a fresh
     runner and then creates or compares the GitHub Release:

@@ -83,8 +83,14 @@ place. `sign-upload` and `publish` refuse to run otherwise.
 6. After `PUBLISHED`, run the `release-page.yml` command from the run summary to
    read back the public bytes and create the GitHub Release.
 
-A failed or timed-out portal step is resumed from the retained state artifact on
-the release workstation, never by re-running the job or pushing another tag.
+A failed or timed-out portal step is never re-run and never repeated by pushing
+another tag: a re-run refuses. Recover on the release workstation after checking
+the deployment in the Central portal, from the retained state when it matches the
+portal, otherwise by reconciling in the portal; see
+[release packaging](release-packaging.md#protected-tag-release-in-ci). Any
+re-run, also of a failed `build`, disables signing and publication for that
+run; when the Central portal shows no deployment for the version, finish such a
+release offline from that run's unsigned candidate and the existing tag.
 
 ## Final release offline
 
@@ -112,9 +118,9 @@ Follow the [release-manager runbook](release-packaging.md#release-manager-runboo
    git push origin v0.4.0
    ```
 
-   Pushing the tag also starts `release.yml`. Its `sign-upload` job waits for
-   approval in `release`: reject that deployment, since this release is already
-   published.
+   Pushing the tag also starts `release.yml`. If `release` is configured,
+   cancel that run, or have a reviewer reject its `sign-upload`, since this
+   release is already published.
 
 6. Run `release-page.yml` from the same tool branch with the tag, candidate
    run, signer and `entries_sha256` to repeat the readback and create the GitHub
@@ -146,8 +152,9 @@ Before a final tag, finish a `## X.Y.Z — YYYY-MM-DD` section in `CHANGELOG.md`
 Include changes, compatibility, upgrade steps, known limitations and artifact identity.
 The tag must match the source POM version. The manual release-page workflow
 verifies actual public bytes against the reviewed unsigned candidate and the
-offline signing receipt, and validates the section before creating a GitHub
-Release. Relative documentation links are pinned to the released tag.
+signing receipt (offline or from the protected job), and validates the section
+before creating a GitHub Release. Relative documentation links are pinned to
+the released tag.
 
 Verify the actual Central artifacts and GitHub Release body before marking the
 release complete. A failed release-page step does not authorize another Maven
