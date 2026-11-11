@@ -89,8 +89,8 @@ the deployment in the Central portal, from the retained state when it matches th
 portal, otherwise by reconciling in the portal; see
 [release packaging](release-packaging.md#protected-tag-release-in-ci). Any
 re-run, also of a failed `build`, disables signing and publication for that
-run; finish such a release offline from that run's unsigned candidate and the
-existing tag.
+run; when the Central portal shows no deployment for the version, finish such a
+release offline from that run's unsigned candidate and the existing tag.
 
 ## Final release offline
 

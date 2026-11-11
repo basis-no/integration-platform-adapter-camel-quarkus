@@ -82,11 +82,13 @@ artifact that this run's `build` retained; otherwise recover as in the previous
 paragraph. Skip the runbook's inspect step, use the release run's ID as `RUN`
 from the download step on, and do not create the tag again. If more than one
 attempt of `build` retained a candidate, download the newest by its artifact ID
-(`gh api "repos/$GH_REPO/actions/runs/$RUN/artifacts"` lists them), and do not
-re-run the run again after the download: `release-page.yml` reads the newest
-candidate, and a rebuilt one has other bytes. A transient `build` failure can
-simply be re-run, since signing is already off for the run; if `build` cannot
-produce a candidate at all, release the next patch version instead.
+(`gh api "repos/$GH_REPO/actions/runs/$RUN/artifacts"` lists them; fetch one
+with `gh api "repos/$GH_REPO/actions/artifacts/<id>/zip" > candidate.zip`, then
+unzip it into the download step's directory), and do not re-run the run again
+after the download: `release-page.yml` reads the newest candidate, and a rebuilt
+one has other bytes. A transient `build` failure can simply be re-run, since
+signing is already off for the run; if `build` cannot produce a candidate at
+all, release the next patch version instead.
 
 `TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
 administrators change. Set it to a reviewed commit on `main` or `release/0.3`
