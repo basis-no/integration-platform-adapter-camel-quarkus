@@ -13,7 +13,10 @@
   integration, topic, attempt and redo list, as long as that attempt is not
   completed or parked. A `FAILED` outcome no longer replaces a completed or
   parked attempt's row, so a copy of a replay record that fails cannot reopen
-  its redo. Any other record's list is dropped with a warning. See
+  its redo. A replay whose record was published but whose audit row cannot be
+  marked `PUBLISHED` now succeeds, with a warning, instead of failing: the row
+  stays `REQUESTED`, and requesting it again would publish a second replay. Any
+  other record's list is dropped with a warning. See
   [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
   Upgrade: an operator's resend works as before. A tool that writes
   `x-bip-redo-steps` on records itself, not through the resend endpoint, no
