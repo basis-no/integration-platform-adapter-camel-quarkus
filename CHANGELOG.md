@@ -2,7 +2,26 @@
 
 ## Unreleased
 
-Documentation only; no code, schema or configuration change.
+No Message Store schema change.
+
+### Changed
+
+- The `ip-slow-backend` route configuration caps each redelivery delay at 20
+  seconds
+  ([#80](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/80)):
+  it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before the
+  message is parked. Before, the delays doubled up to Camel's default cap of
+  60 seconds and waited 195 seconds, which together with seven attempts could
+  outlast the Kafka consumer's 300-second `max.poll.interval.ms`; Kafka then
+  removed the consumer from its group and delivered the record again, so it
+  could run, and be parked, more than once. The number of redeliveries and the
+  first delay are unchanged.
+  Upgrade: a route on `ip-slow-backend` gives up sooner, after 95 seconds of
+  waiting instead of 195. The interval covers all records of one poll: for
+  such a route, set `maxPollRecords=1` on its Kafka input or raise
+  `maxPollIntervalMs`. See [Retry and DLQ](README.md#retry-and-dlq).
+
+### Documentation
 
 - The 0.3 line continues as a maintained series, with its current scope (one
   input topic per integration); further 0.3.x patch releases may follow, also
