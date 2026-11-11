@@ -8,6 +8,7 @@ import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 import no.basis.integrationplatform.camel.step.DefaultStepClassifier;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
+import no.basis.integrationplatform.camel.step.RedoClaim;
 import no.basis.integrationplatform.camel.step.StepOutcomeStore;
 import no.basis.integrationplatform.camel.step.StepTrackingInterceptStrategy;
 import org.apache.camel.builder.RouteBuilder;
@@ -58,7 +59,7 @@ class RedoHeaderBoundaryTest {
 
     @ParameterizedTest(name = "managed Kafka input {0}")
     @ValueSource(booleans = {true, false})
-    void aReplayRedoesItsStepsWithoutSendingTheListOnHttpOrKafka(boolean managedKafkaInput) throws Exception {
+    void onlyAManagedKafkaInputRedoesItsStepsAndNoSendCarriesTheList(boolean managedKafkaInput) throws Exception {
         String topic = "out-" + UUID.randomUUID();
         String brokers = KAFKA.getBootstrapServers();
         List<Headers> requests = new CopyOnWriteArrayList<>();
@@ -70,6 +71,11 @@ class RedoHeaderBoundaryTest {
             public boolean wasDelivered(String key) { return ledger.contains(key); }
             public void recordDelivered(StepResult step) { ledger.add(step.idempotencyKey()); }
             public void recordFailed(StepResult step) { }
+            // The replay audit has the adapter's own replay of attempt 2 to this input.
+            public boolean isAuthorisedReplay(RedoClaim claim) {
+                return claim.messageId().equals("message-1") && claim.integration().equals("orders")
+                        && claim.topic().equals("orders.in") && claim.attempt() == 2;
+            }
         };
         HttpServer server = HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
         server.createContext("/", x -> {
@@ -115,6 +121,13 @@ class RedoHeaderBoundaryTest {
             server.stop(0);
         }
 
+        if (!managedKafkaInput) {
+            // Only a managed Kafka input's record can be the adapter's replay: an HTTP intake's
+            // header is dropped, so its delivered steps are skipped.
+            assertEquals(0, requests.size(), "A caller's redo list does not re-run a delivered step");
+            assertEquals(Set.of("message-1:post-receiver", "message-1:publish-downstream"), ledger);
+            return;
+        }
         assertEquals(1, requests.size(), "The listed HTTP step was sent again");
         var record = consumeOne(brokers, topic);
         assertAll(
@@ -123,11 +136,9 @@ class RedoHeaderBoundaryTest {
                 // x-bip-replay is still forwarded: nothing in the adapter acts on it at a Kafka input.
                 () -> assertEquals("true", requests.getFirst().getFirst(PlatformHeaders.REPLAY)),
                 () -> assertEquals("true", header(record, PlatformHeaders.REPLAY)));
-        if (managedKafkaInput) {
-            assertEquals(1, rows.size());
-            assertEquals(List.of(StepStatus.DELIVERED, StepStatus.DELIVERED),
-                    rows.getFirst().steps().stream().map(StepResult::status).toList());
-        }
+        assertEquals(1, rows.size());
+        assertEquals(List.of(StepStatus.DELIVERED, StepStatus.DELIVERED),
+                rows.getFirst().steps().stream().map(StepResult::status).toList());
     }
 
     @Test

@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+- Security: a consumed record's `x-bip-redo-steps` makes the adapter send a
+  delivered step again only for the adapter's own replay, and only once. Before,
+  any record that carried the header and the id of a delivered message, from
+  any producer on the input topic, and any HTTP request to a route the adapter
+  tracks, re-ran the listed steps past the delivered-step ledger, with no replay
+  audit and no new attempt. Now the list is honoured only on a managed Kafka
+  input, while replay is enabled, on a record marked `x-bip-replay: true` that
+  matches a `REQUESTED` or `PUBLISHED` replay audit row for its message id,
+  integration, topic, attempt and redo list, as long as that attempt has no
+  recorded outcome. Any other record's list is dropped with a warning. See
+  [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
+  Upgrade: an operator's resend works as before. A tool that writes
+  `x-bip-redo-steps` on records itself, not through the resend endpoint, no
+  longer redoes anything. The Message Store login needs read access to
+  `bip_message_replay_audit` and `bip_message_attempt` for redo; without it, a
+  redo is ignored with a warning. A record with a redo list that names a
+  delivered step costs one more store read.
+- Security: message ids and the other values the adapter takes from a record
+  are written to the log with control characters, line and paragraph
+  separators and bidirectional controls escaped as `\uXXXX` (and a backslash as
+  `\\`), so a value with CR/LF can no longer forge or hide log lines. The same
+  applies to the adapter's error texts that name a message id or step key.
+- A record whose `x-bip-attempt` or `x-bip-schema-version` is not a whole number
+  is recorded with attempt 1 or schema version 1 and a warning that names the
+  header. Before, the outcome write failed after the route had run, the failure
+  was ignored, and a later commit moved past the record: the message was
+  processed, or parked, but had no row in the Message Store and could not be
+  resent. An unexpected failure while the outcome is built now leaves the record
+  uncommitted, so it is read again.
+
 - A Kafka boundary route that holds records in memory after its input
   completes refuses to start, naming the route and node: Camel's `resequence`
   (batch or stream), or an `aggregate` on Camel's in-memory repository (the

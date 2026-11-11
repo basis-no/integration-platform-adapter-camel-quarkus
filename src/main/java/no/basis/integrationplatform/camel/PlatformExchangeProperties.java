@@ -16,6 +16,8 @@ public final class PlatformExchangeProperties {
     public static final String STEP_SHOULD_SKIP = "basis.messageStore.stepShouldSkip";
     /** Parsed redo-step identities for the current attempt. */
     public static final String REDO_STEPS = "basis.messageStore.redoSteps";
+    /** The {@code RedoClaim} of a managed Kafka input that carries a redo list. */
+    public static final String REDO_CLAIM = "basis.messageStore.redoClaim";
     /** Whether the current step has a delivered ledger outcome. */
     public static final String STEP_ALREADY_DELIVERED = "basis.messageStore.stepAlreadyDelivered";
     /** The attempt's first failure to check or record a step outcome; see {@code StepOutcomeFailure}. */

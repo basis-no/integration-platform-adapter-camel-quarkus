@@ -2,6 +2,7 @@ package no.basis.integrationplatform.camel.lifecycle;
 
 import no.basis.integrationplatform.camel.KafkaPollInterval;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
@@ -47,6 +48,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     private static final String INPUT_CORRELATION_ID = "basis.messageStore.inputCorrelationId";
     private static final String ENVELOPE_PREFIX = "x-bip-";
     private static final String INPUT_ENVELOPE = "basis.messageStore.inputEnvelope";
+    private static final String INPUT_ATTEMPT = "basis.messageStore.inputAttempt";
+    private static final String INPUT_SCHEMA_VERSION = "basis.messageStore.inputSchemaVersion";
+    // A whole number in ASCII digits, as the .NET adapter reads it; surrounding ASCII white space is ignored.
+    private static final java.util.regex.Pattern ENVELOPE_NUMBER = java.util.regex.Pattern.compile("[+-]?[0-9]+");
     private static final List<String> ENVELOPE_HEADERS = List.of(PlatformHeaders.ATTEMPT, PlatformHeaders.SCHEMA_VERSION,
             PlatformHeaders.CONTENT_TYPE, PlatformHeaders.SOURCE_SYSTEM, PlatformHeaders.TARGET_SYSTEM);
 
@@ -145,15 +150,24 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     @Override
     public void onExchangeBegin(Route route, Exchange exchange) {
         normalizeKafkaEnvelopeHeaders(exchange);
-        // A replay's redo list is for this attempt only; the route must not forward it.
-        DefaultStepTracker.captureRedoSteps(exchange);
-        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, ensureMessageId(exchange));
+        String messageId = ensureMessageId(exchange);
+        exchange.setProperty(PlatformExchangeProperties.INPUT_MESSAGE_ID, messageId);
         exchange.setProperty(INPUT_CORRELATION_ID, exchange.getMessage().getHeader(PlatformHeaders.CORRELATION_ID, String.class));
         captureInputEnvelope(exchange);
+        captureEnvelopeNumbers(exchange, messageId);
         if (boundaryKind == MessageBoundaryKind.KAFKA) {
             captureKafkaManualCommit(exchange);
             captureRecordPosition(exchange);
             capturePollStart(exchange);
+        }
+        // A replay's redo list is for this attempt only; the route must not forward it. Only a
+        // Kafka input's record can be the adapter's own replay.
+        if (boundaryKind == MessageBoundaryKind.KAFKA) {
+            Object topic = KafkaRecordHeaders.topic(exchange.getMessage());
+            DefaultStepTracker.acceptRedoSteps(exchange, messageId, integrationName,
+                    topic == null ? null : topic.toString(), attempt(exchange), payloadPolicy.replayEnabled());
+        } else {
+            DefaultStepTracker.captureRedoSteps(exchange);
         }
         if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) != null) {
             // Only an input the adapter parks and commits is held back by its attempt's step outcomes.
@@ -179,10 +193,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             return;
         }
 
-        MessageAttemptResult result = result(route, exchange);
-
         try {
-            sink.record(result);
+            // Building the outcome reads the record's envelope; nothing it throws may leave the
+            // exchange looking processed, or a later commit would move past the record.
+            sink.record(result(route, exchange));
         } catch (Exception e) {
             String consequence = boundaryKind == MessageBoundaryKind.KAFKA
                     ? "Kafka offset was not committed"
@@ -275,7 +289,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         Throwable unrecorded = StepOutcomeFailure.of(exchange);
         if (boundaryKind == MessageBoundaryKind.KAFKA && unrecorded != null) {
             LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed again",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), unrecorded);
+                    LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)), unrecorded);
             if (exchange.getException() == null) {
                 // The route handled the failure; the Kafka consumer reads the record again only from a failed exchange.
                 exchange.setException(new IllegalStateException(
@@ -286,7 +300,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         if (boundaryKind == MessageBoundaryKind.KAFKA && exchange.getException() != null && !dlqParked(exchange)) {
             LOG.error("Message {} failed without confirmed DLQ parking; its Kafka offset was not committed",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+                    LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)));
             backOffBeforeReadingAgain(route, exchange);
             return;
         }
@@ -315,7 +329,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
 
         manualCommit.commit();
-        LOG.debug("Committed Kafka offset for message {}", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+        LOG.debug("Committed Kafka offset for message {}",
+                LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)));
     }
 
     /**
@@ -358,7 +373,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             return;
         }
         LOG.info("Message {} at {} could not be made durable {} times in a row; reading it again in {} ms",
-                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), position, state[1], wait);
+                LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)), LogText.escape(position),
+                state[1], wait);
         sleeper.sleep(route, wait);
     }
 
@@ -719,13 +735,64 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     }
 
     private int schemaVersion(Exchange exchange) {
-        Integer version = envelope(exchange, PlatformHeaders.SCHEMA_VERSION, Integer.class);
+        Integer version = envelopeNumber(exchange, PlatformHeaders.SCHEMA_VERSION, INPUT_SCHEMA_VERSION);
         return version == null ? 1 : version;
     }
 
     private int attempt(Exchange exchange) {
-        Integer attempt = envelope(exchange, PlatformHeaders.ATTEMPT, Integer.class);
+        Integer attempt = envelopeNumber(exchange, PlatformHeaders.ATTEMPT, INPUT_ATTEMPT);
         return attempt == null || attempt < 1 ? 1 : attempt;
+    }
+
+    /**
+     * Reads the input's attempt and schema version once, when the exchange begins. A value
+     * that is not a whole number in the {@code int} range is ignored with a warning that names
+     * the header, so the message is recorded with attempt 1 or schema version 1 instead of
+     * failing the outcome write.
+     */
+    private void captureEnvelopeNumbers(Exchange exchange, String messageId) {
+        exchange.setProperty(INPUT_ATTEMPT, readEnvelopeNumber(exchange, PlatformHeaders.ATTEMPT, messageId));
+        exchange.setProperty(INPUT_SCHEMA_VERSION, readEnvelopeNumber(exchange, PlatformHeaders.SCHEMA_VERSION, messageId));
+    }
+
+    private static Integer readEnvelopeNumber(Exchange exchange, String name, String messageId) {
+        Object value = exchange.getMessage().getHeader(name);
+        if (value == null) {
+            return null;
+        }
+        Integer number = envelopeNumber(value);
+        if (number == null) {
+            LOG.warn("Ignoring the {} header of message {}: it is not a whole number in the int range", name,
+                    LogText.escape(messageId));
+        }
+        return number;
+    }
+
+    // The route may set the header again; an unreadable value then falls back to the input's.
+    private static Integer envelopeNumber(Exchange exchange, String name, String captured) {
+        Object current = exchange.getMessage().getHeader(name);
+        Integer number = current == null ? null : envelopeNumber(current);
+        return number != null ? number : exchange.getProperty(captured, Integer.class);
+    }
+
+    static Integer envelopeNumber(Object value) {
+        if (value instanceof Integer number) {
+            return number;
+        }
+        if (value instanceof Long || value instanceof Short || value instanceof Byte) {
+            long number = ((Number) value).longValue();
+            return number < Integer.MIN_VALUE || number > Integer.MAX_VALUE ? null : (int) number;
+        }
+        String text = value instanceof byte[] bytes ? new String(bytes, StandardCharsets.UTF_8) : value.toString();
+        text = text.replaceAll("^[\\t\\n\\x0B\\f\\r ]+|[\\t\\n\\x0B\\f\\r ]+$", "");
+        if (!ENVELOPE_NUMBER.matcher(text).matches()) {
+            return null;
+        }
+        try {
+            return Integer.valueOf(text);
+        } catch (NumberFormatException outOfRange) {
+            return null;
+        }
     }
 
     // Retry diagnostics. The redelivery headers survive on the
