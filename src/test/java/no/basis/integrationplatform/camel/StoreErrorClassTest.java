@@ -8,6 +8,7 @@ import java.net.SocketTimeoutException;
 import java.sql.SQLException;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertNull;
 
 class StoreErrorClassTest {
@@ -30,6 +31,15 @@ class StoreErrorClassTest {
                 "Output-producing step 'create-order' exceeded the inline checkpoint threshold"));
         assertEquals(StoreErrorClass.CHECKPOINT, StoreErrorClass.of(failure));
         assertEquals(" storeError=checkpoint", StoreErrorClass.logSuffix(failure));
+    }
+
+    @Test
+    void aCommitReportedWithAWarningIsUnavailableWhateverTheWarningsSqlState() {
+        // A trigger could raise a warning with a data SQLSTATE; the record is still read again.
+        var failure = assertThrows(SQLException.class, () -> MessageStoreTimeouts.requireConfirmedCommit(
+                new java.sql.SQLWarning("raised by a deferred trigger", "22023")));
+        assertEquals("08007", failure.getSQLState());
+        assertEquals(StoreErrorClass.UNAVAILABLE, StoreErrorClass.of(new RuntimeException(failure)));
     }
 
     @Test

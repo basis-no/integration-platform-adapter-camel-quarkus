@@ -173,7 +173,11 @@ kind.
 
 A Kafka input whose attempt could not check or record a step outcome is neither
 parked nor committed. It is recorded `FAILED`, and its exchange stays failed, so
-the consumer reads the record again once Camel's retries are done. This also
+the consumer reads the record again. The adapter marks the exchange's
+redelivery exhausted, so Camel's error handler neither redelivers it nor runs
+the dead letter channel or an application's own `onException` for it; the ERROR
+line `Message <id> is not committed: a step outcome was not checked or recorded,
+so it is consumed again` with `storeError=<class>` reports it. This also
 holds when the route catches the failure, and when it happens in a split part,
 loop iteration or branch, which run on copies of the input's exchange. A store
 failure ends the attempt: every send through `to` or `toD` after it in the same
