@@ -90,8 +90,8 @@ one has other bytes. A transient `build` failure can simply be re-run, since
 signing is already off for the run; if `build` cannot produce a candidate at
 all, release the next patch version instead.
 
-`TRUSTED_TOOLING_SHA` is an environment variable on both environments that only
-administrators change. Set it to a reviewed commit on `main` or `release/0.3`
+`TRUSTED_TOOLING_SHA` is an environment variable on each protected environment
+that only administrators change. Set it to a reviewed commit on `main` or `release/0.3`
 whose `.github/scripts` are the tools to trust, and change it only through a
 reviewed change. The jobs never execute tools from the tag. Set it on each
 environment (`release`, `release-publish` and `snapshot`) and never as a
