@@ -6,6 +6,54 @@ No Message Store schema change.
 
 ### Changed
 
+- The `ip-slow-backend` route configuration caps each redelivery delay at 20
+  seconds
+  ([#80](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/80)):
+  it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before the
+  message is parked. Before, the delays doubled up to Camel's default cap of
+  60 seconds and waited 195 seconds, which together with seven attempts could
+  outlast the Kafka consumer's 300-second `max.poll.interval.ms`; Kafka then
+  removed the consumer from its group and delivered the record again, so it
+  could run, and be parked, more than once. The number of redeliveries and the
+  first delay are unchanged.
+  Upgrade: a route on `ip-slow-backend` gives up sooner, after 95 seconds of
+  waiting instead of 195. The interval covers all records of one poll: for
+  such a route, set `maxPollRecords=1` on its Kafka input or raise
+  `maxPollIntervalMs`. See [Retry and DLQ](README.md#retry-and-dlq).
+- A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
+  the endpoint named in the adapter's warnings mask credentials by the .NET
+  adapter's rule, so both adapters store the same value
+  ([#113](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/113)):
+  besides what Camel's `URISupport.sanitizeUri` masked, the whole user info
+  (`https://xxxxxx@host/…`) and the values of the query parameters `key`,
+  `code`, `sig`, `pwd`, names that are credential-like by the DLQ header rule
+  (such as `Signature`, `X-Amz-Credential` or a name ending in `-key`), and
+  names containing `passphrase`, `passcode`, `privatekey`, `accesskey`,
+  `accountkey` or `connectionstring`. An endpoint the patterns cannot mask
+  within about a second is stored as `xxxxxx`, instead of the step waiting on
+  the pattern (Camel's own sanitizer, which also runs when an application has
+  added keywords, has no such bound). See [Step Tracking](README.md#step-tracking).
+  Upgrade: new attempts store the masked value; rows recorded before keep
+  theirs unless the same step is recorded again. A query or tool that matched a stored endpoint's user name or one of
+  these parameter values no longer finds it in new rows. Step keys and
+  classification by node id are unchanged.
+- A Kafka record whose outcome could not be made durable is read again with a
+  growing wait
+  ([#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66),
+  part 1). Before, while the outcome write, a step outcome or the DLQ publish
+  kept failing, for example during a Message Store outage, the record was read
+  again at once, about twice a second, and every read ran the route again: a
+  send the step store did not skip (with the default `noop` store, or for a
+  record without `x-bip-message-id`) reached its receiver again, and a parked
+  message got another DLQ record. Now the first read again is at once, then
+  each further read of the same record waits 1 s, doubling, at most 30 s and at
+  most half the consumer's `max.poll.interval.ms` less the time its poll has
+  already taken; a committed outcome resets it. Without
+  `break-on-first-error=true` there is no wait. The consumer's other partitions
+  wait with it. The record is still not committed and the partition still
+  waits, as before. No setting. See [Retry and DLQ](README.md#retry-and-dlq).
+  Upgrade: recovery after an outage can take up to 30 seconds longer per
+  consumer.
 - The adapter ships `camel.component.kafka.auto-offset-reset=earliest`, and a
   managed Kafka input whose consumer uses another `auto.offset.reset`, or has
   no `groupId`, logs a warning at startup that names the route and its endpoint
@@ -27,20 +75,43 @@ No Message Store schema change.
   Check that every Kafka input has a stable `groupId`. An input that sets
   `autoOffsetReset=latest` itself keeps it, with the warning.
 
+### Fixed
+
+- A tracked send in a route that another send calls, such as a `direct:`
+  sub-route, is recorded once per try
+  ([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)).
+  Before, the calling send recorded the sub-route's step again when it
+  completed. A successful call was listed twice as `DELIVERED`. When the
+  sub-route's dead letter channel parked the message after the send failed,
+  the step was recorded `DELIVERED` with no error, so a resend or replay
+  skipped it and the receiver never got the message. With the `postgres` step
+  store, so did any later read of the parked record that carries
+  `x-bip-message-id`, which then recorded the message `COMPLETED`: for example
+  after a commit that failed because a receiver that never answers kept the
+  route busy past the poll interval. When the input route's error handler
+  retried the call instead, each failed try was listed twice as `FAILED`. A
+  calling send now records only its own step, and a `direct:` send records
+  none. Adapter 0.3.5 and 0.3.6 have the fault.
+  Upgrade: a message that 0.3.5 or 0.3.6 recorded this way keeps its
+  `DELIVERED` step and is still skipped. The README gives a way to find such
+  messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);
+  resend each one the receiver did not get with the step in `redoSteps`. See
+  [Retry and DLQ](README.md#retry-and-dlq).
+
 ### Documentation
 
 - The 0.3 line continues as a maintained series, with its current scope (one
   input topic per integration); further 0.3.x patch releases may follow, also
   after 0.4.0. This replaces "the last 0.3 release" in the 0.3.6 notes.
-- Known limitation, documented: during a Message Store outage the consumer
-  reads an uncommitted Kafka record again at once and runs the route on every
-  read, and a message that fails meanwhile can be parked in the DLQ more than
-  once (with the `noop` step store, or when it fails before its first tracked
-  send). The README gives what to do: scale the integration down during a long
-  outage, keep `auto.offset.reset` at `earliest` (the adapter's default from
-  0.3.7), and check the DLQ
-  for copies of a message by `x-bip-message-id` before resending it. See
-  [Retry and DLQ](README.md#retry-and-dlq).
+- Known limitation, documented: during a Message Store outage the consumer reads
+  an uncommitted Kafka record again and runs the route on every read (up to
+  0.3.6 at once; from 0.3.7 with the growing wait above), and a message that
+  fails meanwhile can be parked in the DLQ more than once (with the `noop` step
+  store, or when it fails before its first tracked send). The README gives what
+  to do: scale the integration down during a long outage, keep
+  `auto.offset.reset` at `earliest` (the adapter's default from 0.3.7), and
+  check the DLQ for copies of a message by `x-bip-message-id` before resending
+  it. See [Retry and DLQ](README.md#retry-and-dlq).
 - Corrected: a tracked send is not repeated during an outage only while the
   Message Store cannot be read. When the store can be read but not written (a
   read-only database after a failover or for maintenance, a lost write
@@ -50,14 +121,17 @@ No Message Store schema change.
   says to scale the integrations to zero at once in that case. Receivers should
   deduplicate by `Idempotency-Key`
   ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
-- Known limitation, extended: a failed send in a `direct:` sub-route that was
-  recorded `DELIVERED` is also lost without a resend. Any later read of the
-  parked record, when it carries `x-bip-message-id`, records the message
-  `COMPLETED`, for example after a commit that failed because a receiver that
-  never answers kept the route busy past the poll interval. The README gives a
-  way to find such messages: `COMPLETED` in the Message Store, with a record on
-  the DLQ topic
-  ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
+- Documented which headers a tracked send needs
+  ([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)).
+  A route that removes every header before a tracked send, such as
+  `removeHeaders("*")`, also removes `x-bip-message-id`: the send then uses a
+  new random id on every delivery, so a redelivery, a read again or a resend
+  sends again under another `Idempotency-Key`, and the message is journaled
+  under that random id. Keep the adapter's headers with
+  `removeHeaders("*", "x-bip-.*")`, and also keep `kafka.KEY` (camel-kafka
+  before 4.14.8, 4.18.3 and 4.21.0) or `CamelKafkaKey` (those versions and
+  later) for a parked record to keep its key. See
+  [Removing headers before a tracked send](README.md#removing-headers-before-a-tracked-send).
 - Known limitation, documented: a `toD` that chooses its component only when
   it sends, through a literal scheme other than `kafka`, such as
   `language:header:receiverUrl`, does not invalidate the
