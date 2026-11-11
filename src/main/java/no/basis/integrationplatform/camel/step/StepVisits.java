@@ -123,6 +123,18 @@ final class StepVisits {
      * a part that sent the key in this attempt, when neither this part nor one of its own
      * parts sent it. Null for a normal skip, and whenever that is not certain.
      */
+    /**
+     * As {@link #repeatedIn}, and when no other part sent the key, records this part as its
+     * sender in the same step, so that parallel parts cannot both take it.
+     */
+    synchronized String claim(String path, String idempotencyKey) {
+        String repeated = repeatedIn(path, idempotencyKey);
+        if (repeated == null) {
+            sent(path, idempotencyKey);
+        }
+        return repeated;
+    }
+
     synchronized String repeatedIn(String path, String idempotencyKey) {
         Senders senders = keys.get(idempotencyKey);
         if (forgotten || senders == null || senders.unchecked || path.isEmpty() || path.contains(UNKNOWN)) {

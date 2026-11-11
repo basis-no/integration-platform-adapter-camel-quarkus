@@ -221,8 +221,9 @@ store keeps as text, `x-bip-message-id`, `x-bip-correlation-id`,
 refuses a value that contains a NUL byte or is longer than 1,024 bytes. Header
 names are matched ignoring case. A refused record's route does not run, so
 nothing is sent. A refused record whose payload cannot be captured, for example
-a claim check that cannot be read, is still refused, and is parked as it came
-with a metadata-only outcome.
+a claim check whose object cannot be read, is still refused, and is parked with
+a metadata-only outcome: as it came, or as its claim check when that could be
+read.
 
 The same terminal path runs when the step outcomes that failed all failed with
 a SQLSTATE of class `22` or `54000` for the record's own data, for example an id
@@ -244,7 +245,10 @@ record is read again instead:
    and the record is not parked again on its next reads in the process.
 3. The offset is committed only after both are durable; otherwise the record is
    read again and the path runs again. The consumer then goes on with the next
-   record, and an ERROR line ends with `storeError=record-data`.
+   record, and an ERROR line says `Message <id> from record <position> was
+   parked: <reason> storeError=record-data`, or, when the route completed and
+   nothing was parked, `... was recorded without its envelope values: <reason>
+   storeError=record-data`.
 
 When `x-bip-message-id` itself is refused, the record is parked and recorded
 under an id derived from its position: the UUID made from the first 16 bytes of

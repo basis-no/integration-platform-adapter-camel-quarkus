@@ -368,10 +368,11 @@ public class DefaultStepTracker implements StepTracker {
         exchange.getMessage().setHeader(PlatformHeaders.IDEMPOTENCY_KEY, idempotencyKey);
         exchange.getMessage().setHeader(PlatformHeaders.HTTP_IDEMPOTENCY_KEY, idempotencyKey);
         exchange.setProperty(PlatformExchangeProperties.INJECTED_IDEMPOTENCY_KEY, idempotencyKey);
-        String repeatedIn = StepVisits.of(exchange).repeatedIn(StepVisits.path(exchange), idempotencyKey);
+        String repeatedIn = StepVisits.of(exchange).claim(StepVisits.path(exchange), idempotencyKey);
         if (repeatedIn != null) {
             // Another part of this attempt took the mark's send: this part shares its step key and
-            // was not delivered, which the skip reports as a ledger skip does.
+            // was not delivered, which the skip reports as a ledger skip does. Parallel parts claim
+            // the key in one step, so only one takes it.
             exchange.setProperty(StepVisits.REPEATED_IN, repeatedIn);
             return;
         }

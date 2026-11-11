@@ -377,8 +377,8 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
         private Send prepare(Exchange exchange) {
             Throwable earlier = StepOutcomeFailure.of(exchange);
             if (earlier != null) {
-                // A store failure ends the attempt: no later send of it, nor a redelivery of this
-                // one, is made, since nothing it does can be committed.
+                // A store failure ends the attempt: no later send of it through to or toD, tracked or
+                // not, nor a redelivery of this one, is made, since nothing it does can be committed.
                 exchange.getExchangeExtension().setRedeliveryExhausted(true);
                 throw new StepOutcomeStoreException("Not sent: a step outcome of this attempt was not checked or "
                         + "recorded, so the input is read again", earlier);

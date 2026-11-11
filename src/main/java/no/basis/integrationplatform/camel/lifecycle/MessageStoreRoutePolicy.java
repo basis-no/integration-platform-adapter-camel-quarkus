@@ -2,12 +2,10 @@ package no.basis.integrationplatform.camel.lifecycle;
 
 import no.basis.integrationplatform.camel.KafkaPollInterval;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
-import org.apache.camel.ProducerTemplate;
-import no.basis.integrationplatform.camel.step.UnrecordedDeliveries;
-import no.basis.integrationplatform.camel.StoreErrorClass;
 import no.basis.integrationplatform.camel.PlatformDeadLetterRoute;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.StoreErrorClass;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
@@ -17,6 +15,7 @@ import no.basis.integrationplatform.camel.payload.PayloadStorageException;
 import no.basis.integrationplatform.camel.payload.UnresolvablePayloadException;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
 import no.basis.integrationplatform.camel.step.StepOutcomeFailure;
+import no.basis.integrationplatform.camel.step.UnrecordedDeliveries;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.Exchange;
@@ -701,7 +700,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 full.replayDisabledReason(), full.integration(), full.routeId(), full.attempt(), full.autoRedelivered(),
                 full.autoRedeliveryCount(), full.autoRedeliveryMax(), full.occurredAt(),
                 completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), stored);
-        if (!completed) {
+        if (!completed && position != null) {
             parkedForData.add(parkedKey);
         }
         try {
