@@ -167,9 +167,9 @@ its check, so it is parked in the DLQ`. It is parked as its claim check (one
 that could not be read, as it came), its outcome is `DLQ`, and its offset is
 committed after the DLQ accepted it. The reasons:
 
-- `does not match its reference's SHA-256`, `has N bytes; its reference has M`,
-  `is larger than its reference`, or `Payload object size mismatch for <ref>`:
-  the object was changed or replaced after it was stored.
+- `does not match its reference's SHA-256`, `is larger than its reference`, or
+  `Payload object size mismatch for <ref>`: the object was changed or replaced
+  after it was stored.
 - `Payload object does not exist: <ref>`: the object store answered that the
   key does not exist; the object was deleted, or its lifecycle expiry removed it.
 - `Payload reference has expired: <ref>`: the reference's expiry has passed.

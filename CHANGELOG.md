@@ -14,12 +14,13 @@
   access or times out, a bucket that does not exist, a download that ends before
   the reference's size (reported as `ended after N of its reference's M bytes`), a
   reference outside the configured bucket or prefix, a full or unwritable spool,
-  and any failure on the first attempt of a streamed input. A missing object is now reported as
-  `Payload object does not exist: <ref>` when the store answers that the key does
-  not exist (a one-byte GET after the HEAD tells a missing key from a missing
-  bucket); otherwise still as `Payload object is unavailable`. An application's
-  own `PayloadObjectStore` throws the new `UnresolvablePayloadException` only
-  when its store answered that the object does not exist. See
+  and any failure on the first attempt of a streamed input. A missing object is
+  now reported as `Payload object does not exist: <ref>` when the store answers
+  that the key does not exist (a one-byte GET after the HEAD tells a missing key
+  from a missing bucket); otherwise still as `Payload object is unavailable`. An
+  application's own `PayloadObjectStore` throws the new
+  `UnresolvablePayloadException` only when its store answered that the object
+  does not exist or has another size than the reference. See
   [Object Metadata and Verification](docs/payload-storage.md#object-metadata-and-verification)
   ([#160](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/160)).
   Upgrade: watch the DLQ for replays and resends whose object is gone, changed

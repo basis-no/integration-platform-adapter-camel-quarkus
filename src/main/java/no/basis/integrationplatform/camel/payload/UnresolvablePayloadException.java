@@ -8,9 +8,9 @@ package no.basis.integrationplatform.camel.payload;
  * being read again.
  * <p>
  * An application's own {@link PayloadObjectStore} throws it only when the store itself has
- * answered that the object does not exist. A failure that may pass, such as an unreachable
- * store, a refused access, a missing bucket or a timeout, is a plain
- * {@link PayloadStorageException}.
+ * answered that the object does not exist or has another size than the reference. A failure
+ * that may pass, such as an unreachable store, a refused access, a missing bucket, a timeout or
+ * a download that ends early, is a plain {@link PayloadStorageException}.
  */
 public class UnresolvablePayloadException extends PayloadStorageException {
     /**

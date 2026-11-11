@@ -262,16 +262,17 @@ Mount a dedicated, size-limited volume at the spool directory with room for
 count toward a pod's ephemeral-storage accounting.
 
 A payload that cannot be captured or checked never reaches its route. A Kafka
-claim check that can never pass (a changed, truncated or deleted object, an
-expired reference, a malformed claim check) is parked in the DLQ as its claim
-check and committed after the DLQ accepted it, so it does not hold up its
-partition. Any other failure (an object store that cannot be reached or refuses
-access, a full or unwritable spool, the first attempt of a streamed input) is
-`FAILED` with the claim check kept and not committed, so the record is read
-again; see [Payload Storage](payload-storage.md#object-metadata-and-verification)
-and [Troubleshooting](troubleshooting.md#s3-replay-fails). On 0.3.6 and
-0.4.0-rc1, a failure while a payload was captured or resolved was only logged
-by Camel and the route ran anyway.
+claim check that can never pass (a changed or deleted object, one the store
+reports with another size, an expired reference, a malformed claim check) is
+parked in the DLQ as its claim check and committed after the DLQ accepted it, so
+it does not hold up its partition. Any other failure (an object store that
+cannot be reached or refuses access, a full or unwritable spool, the first
+attempt of a streamed input) is `FAILED` with the claim check kept and not
+committed, so the record is read again; see
+[Payload Storage](payload-storage.md#object-metadata-and-verification) and
+[Troubleshooting](troubleshooting.md#s3-replay-fails). On 0.3.6 and 0.4.0-rc1, a
+failure while a payload was captured or resolved was only logged by Camel and
+the route ran anyway.
 
 ## Not in This Build Yet
 
