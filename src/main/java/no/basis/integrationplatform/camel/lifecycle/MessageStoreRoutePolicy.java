@@ -384,7 +384,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 full.replayDisabledReason(), full.integration(), full.routeId(), full.attempt(), full.autoRedelivered(),
                 full.autoRedeliveryCount(), full.autoRedeliveryMax(), full.occurredAt(),
                 completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), stored);
-        if (!completed) {
+        if (!completed && position != null) {
             parkedForData.add(parkedKey);
         }
         try {

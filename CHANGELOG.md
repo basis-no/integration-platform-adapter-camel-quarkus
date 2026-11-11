@@ -106,8 +106,9 @@ No Message Store schema change.
   end. Now the write is tried again in place a few times, then kept in memory
   for the record, and the next read writes it before the ledger check and skips
   the send. A record without `x-bip-message-id` keeps its generated id while it
-  is read again. A store failure also ends the attempt: no later tracked send of
-  it, nor a redelivery of the failed one, is made. The ERROR lines for a record
+  is read again. A store failure also ends the attempt: no later send of it
+  through `to` or `toD`, tracked or not, nor a redelivery of the failed one, is
+  made. The ERROR lines for a record
   that is not committed name the store error's class (`storeError=read-only`,
   `privilege`, `schema`, `record-data` or `unavailable`) and its SQLSTATE. See
   [A send whose `DELIVERED` outcome could not be written](README.md#a-send-whose-delivered-outcome-could-not-be-written).
