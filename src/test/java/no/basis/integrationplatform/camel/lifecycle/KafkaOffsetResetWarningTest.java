@@ -67,11 +67,23 @@ class KafkaOffsetResetWarningTest {
     }
 
     @Test
-    void aGroupIdInTheAdditionalPropertiesCounts() throws Exception {
+    void aGroupIdInTheAdditionalPropertiesDoesNotCount() throws Exception {
+        // Camel's consumer replaces it with groupId, or with a random group when that is not set.
         try (var context = kafkaContext("earliest"); var log = LogCapture.of(MessageStoreRoutePolicyFactory.class)) {
             factory().createRoutePolicy(context, "orders",
                     route("kafka:bip.orders.in?brokers=localhost:9092&additionalProperties.group.id=orders"));
-            assertEquals(List.of(), log.at(Level.WARNING).stream().map(LogCapture::text).toList());
+            List<String> warnings = log.at(Level.WARNING).stream().map(LogCapture::text).toList();
+            assertEquals(1, warnings.size(), warnings.toString());
+            assertTrue(warnings.getFirst().contains("has no groupId"), warnings.getFirst());
+        }
+    }
+
+    @Test
+    void anEndpointTheCheckCannotReadStillGetsItsPolicy() throws Exception {
+        try (var context = kafkaContext("latest"); var log = LogCapture.of(MessageStoreRoutePolicyFactory.class)) {
+            assertInstanceOf(MessageStoreRoutePolicy.class, factory().createRoutePolicy(context, "orders",
+                    route("kafka:bip.orders.in?brokers=localhost:9092&noSuchOption=1")));
+            assertEquals(List.of(), log.at(Level.WARNING));
         }
     }
 

@@ -127,9 +127,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         if (!uri.startsWith("kafka:")) {
             return new RedoStepsRoutePolicy();
         }
-        if (camelContext != null) {
-            warnAboutKafkaOffsetReset(routeId, camelContext, uri);
-        }
+        warnAboutKafkaOffsetReset(routeId, camelContext, uri);
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, integrationName, payloadPolicy);
         policy.setTrafficSignals(trafficSignals);
         if (trafficSignals != null) trafficSignals.observeKafkaBoundary();
@@ -156,9 +154,9 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             // The consumer's effective values: the endpoint option, the component default, or an
             // additionalProperties entry, which Camel applies last.
             consumer = kafka.getConfiguration().createConsumerProperties();
-            // Camel's consumer adds the group id itself; an additionalProperties entry comes first.
-            Object extra = consumer.get("group.id");
-            group = extra != null ? extra.toString() : kafka.getConfiguration().getGroupId();
+            // Camel's consumer sets group.id from groupId, or a random one, over any
+            // additionalProperties.group.id, so only groupId counts.
+            group = kafka.getConfiguration().getGroupId();
         } catch (RuntimeException unreadable) {
             // The route fails on its own when Camel creates its consumer; this check only warns.
             LOG.debug("Could not read the Kafka consumer settings of route {}", routeId, unreadable);
@@ -176,8 +174,9 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         }
         if (group == null || group.isBlank()) {
             LOG.warn("Kafka input route '{}' ({}) has no groupId, so its consumer gets a new consumer group on every "
-                            + "start, without committed offsets: it reads every retained record of its partitions "
-                            + "again on each start. Set a stable groupId on the endpoint",
+                            + "start, without committed offsets: every start begins where auto.offset.reset says, "
+                            + "and with earliest every retained record of its partitions is read again. Set a stable "
+                            + "groupId on the endpoint; additionalProperties.group.id is not used",
                     routeId, endpoint.getEndpointBaseUri());
         }
     }

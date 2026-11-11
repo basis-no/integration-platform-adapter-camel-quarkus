@@ -22,7 +22,8 @@ No Message Store schema change.
   its first start. The same holds for a group whose committed offsets expired
   on the broker (stopped for longer than the broker's offset retention), and
   for a Kafka input without a `groupId`, for which Camel generates a new group
-  on every start: it now reprocesses every retained record on each start.
+  on every start, also when `additionalProperties.group.id` is set: it now
+  reprocesses every retained record on each start.
   Check that every Kafka input has a stable `groupId`. An input that sets
   `autoOffsetReset=latest` itself keeps it, with the warning.
 
@@ -36,7 +37,8 @@ No Message Store schema change.
   read, and a message that fails meanwhile can be parked in the DLQ more than
   once (with the `noop` step store, or when it fails before its first tracked
   send). The README gives what to do: scale the integration down during a long
-  outage, set `autoOffsetReset=earliest` on the Kafka input, and check the DLQ
+  outage, keep `auto.offset.reset` at `earliest` (the adapter's default from
+  0.3.7), and check the DLQ
   for copies of a message by `x-bip-message-id` before resending it. See
   [Retry and DLQ](README.md#retry-and-dlq).
 - Corrected: a tracked send is not repeated during an outage only while the

@@ -195,7 +195,8 @@ startup that names the route, its endpoint without options and the value. So
 does a managed Kafka input without a `groupId`: Camel then gives its consumer a
 new group on every start, which has no committed offsets, so with `earliest` it
 reads every retained record of its partitions again on each start. Give every
-Kafka input a stable `groupId`.
+Kafka input a stable `groupId`; Camel's consumer does not use
+`additionalProperties.group.id`, it replaces it.
 
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
 processing completed or DLQ publication was confirmed. An unparked `FAILED`
