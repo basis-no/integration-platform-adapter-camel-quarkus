@@ -51,6 +51,17 @@ No Message Store schema change.
   way to find such messages: `COMPLETED` in the Message Store, with a record on
   the DLQ topic
   ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
+- Documented which headers a tracked send needs
+  ([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)).
+  A route that removes every header before a tracked send, such as
+  `removeHeaders("*")`, also removes `x-bip-message-id`: the send then uses a
+  new random id on every delivery, so a redelivery, a read again or a resend
+  sends again under another `Idempotency-Key`, and the message is journaled
+  under that random id. Keep the adapter's headers with
+  `removeHeaders("*", "x-bip-.*")`, and also keep `kafka.KEY` (camel-kafka
+  before 4.14.8, 4.18.3 and 4.21.0) or `CamelKafkaKey` (those versions and
+  later) for a parked record to keep its key. See
+  [Removing headers before a tracked send](README.md#removing-headers-before-a-tracked-send).
 - Known limitation, documented: a `toD` that chooses its component only when
   it sends, through a literal scheme other than `kafka`, such as
   `language:header:receiverUrl`, does not invalidate the
