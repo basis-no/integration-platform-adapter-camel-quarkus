@@ -25,7 +25,7 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
   no replacement yet; a durable resequencer is planned (#36). See
   [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
 - **Kafka header names on the newer Quarkus line.** This branch builds against
-  Quarkus 3.33.4 (Camel 4.18.4), whose camel-kafka exchange headers are named
+  Quarkus 3.33.4.1 (Camel 4.18.4), whose camel-kafka exchange headers are named
   `CamelKafka*` instead of `kafka.*`. An integration that moves to this line
   and reads a header by its old literal name, such as `kafka.KEY` in a YAML
   route, must use the new name, such as `CamelKafkaKey`. A Java route that uses
