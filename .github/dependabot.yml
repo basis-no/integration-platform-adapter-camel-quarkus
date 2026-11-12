@@ -26,6 +26,9 @@ updates:
     groups:
       maven:
         patterns: ["*"]
+        # A new Maven runtime line can change how the build reads the POM, so
+        # the Maven wrapper's distribution gets a pull request of its own.
+        exclude-patterns: ["org.apache.maven:apache-maven"]
         update-types: [minor, patch]
     ignore:
       # Integrations build against the adapter's Quarkus and Camel line, so a new
