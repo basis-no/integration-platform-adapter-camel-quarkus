@@ -1,7 +1,7 @@
 version: 2
-# Each week every ecosystem gets one grouped pull request with its minor and
-# patch updates. A major update gets a pull request of its own. A new release
-# is proposed only after it has been out for 3 days.
+# On main, each ecosystem gets one grouped pull request a week with its minor
+# and patch updates. A major update gets a pull request of its own. A new
+# release is proposed only after it has been out for 3 days.
 #
 # Security updates always target the default branch and use the entries
 # without target-branch. The release/0.3 entries cover version updates only.
@@ -45,7 +45,7 @@ updates:
     cooldown:
       default-days: 3
     groups:
-      actions-release-0.3:
+      actions-maintenance:
         patterns: ["*"]
         update-types: [patch]
     ignore:
@@ -59,7 +59,7 @@ updates:
     cooldown:
       default-days: 3
     groups:
-      maven-release-0.3:
+      maven-maintenance:
         patterns: ["*"]
         update-types: [patch]
     ignore:
