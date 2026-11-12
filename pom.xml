@@ -44,15 +44,15 @@
     <quarkus.platform.group-id>io.quarkus.platform</quarkus.platform.group-id>
     <quarkus.platform.artifact-id>quarkus-bom</quarkus.platform.artifact-id>
     <quarkus.platform.version>3.33.4</quarkus.platform.version>
-    <compiler-plugin.version>3.15.0</compiler-plugin.version>
-    <dependency-plugin.version>3.8.1</dependency-plugin.version>
+    <compiler-plugin.version>3.16.0</compiler-plugin.version>
+    <dependency-plugin.version>3.11.0</dependency-plugin.version>
     <upgrade-test.released-version>0.3.6</upgrade-test.released-version>
     <upgrade-test.skip>false</upgrade-test.skip>
-    <surefire-plugin.version>3.5.4</surefire-plugin.version>
-    <jandex-plugin.version>3.5.0</jandex-plugin.version>
+    <surefire-plugin.version>3.6.1</surefire-plugin.version>
+    <jandex-plugin.version>3.6.0</jandex-plugin.version>
     <javadoc-plugin.version>3.12.0</javadoc-plugin.version>
     <test.spring.version>6.2.19</test.spring.version>
-    <test.artemis.version>2.38.0</test.artemis.version>
+    <test.artemis.version>2.57.0</test.artemis.version>
   </properties>
 
   <dependencyManagement>
@@ -338,7 +338,7 @@
         <plugins>
           <plugin>
             <artifactId>maven-source-plugin</artifactId>
-            <version>3.3.1</version>
+            <version>3.4.0</version>
             <executions>
               <execution>
                 <id>attach-sources</id>
@@ -361,7 +361,7 @@
           </plugin>
           <plugin>
             <artifactId>maven-gpg-plugin</artifactId>
-            <version>3.2.7</version>
+            <version>3.2.8</version>
             <configuration>
               <gpgArguments>
                 <arg>--pinentry-mode</arg>
@@ -381,7 +381,7 @@
           <plugin>
             <groupId>org.sonatype.central</groupId>
             <artifactId>central-publishing-maven-plugin</artifactId>
-            <version>0.11.0</version>
+            <version>0.12.0</version>
             <extensions>true</extensions>
             <configuration>
               <publishingServerId>central</publishingServerId>
