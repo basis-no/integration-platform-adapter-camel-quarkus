@@ -572,7 +572,7 @@
   `setHeader("Authorization", header("Authorization").convertToString())`. A
   receiver that read `kafka.*` request headers must get the values from
   headers the route sets itself.
-- Build and test against Quarkus 3.33.4 (Camel 4.18.4, Camel Quarkus 3.33.3)
+- Build and test against Quarkus 3.33.4.1 (Camel 4.18.4, Camel Quarkus 3.33.3)
   instead of Quarkus 3.32.2 (Camel 4.18.0). Camel 4.18.3 and later include
   Camel's fix for
   [CVE-2026-49098](https://camel.apache.org/security/CVE-2026-49098.html):
@@ -580,7 +580,7 @@
   so Camel's HTTP header filters drop them. The adapter reads Kafka record
   headers under both names and compiles in no other camel-kafka header name,
   so it also runs on Camel 4.18.0. Other updates that come with the platform
-  include kafka-clients 4.1.2, Jackson 2.21.7, Netty 4.1.138, Vert.x 4.5.34
+  include kafka-clients 4.1.2, Jackson 2.21.7, Netty 4.1.139, Vert.x 4.5.35
   and the AWS SDK 2.42.7.
   Upgrade: an integration that moves to this Quarkus line and reads a Kafka
   header by its old literal name, such as `kafka.KEY` or `kafka.TOPIC` in a
