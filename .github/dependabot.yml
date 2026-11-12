@@ -1,7 +1,8 @@
 version: 2
 # On main, each ecosystem gets one grouped pull request a week with its minor
-# and patch updates. A major update gets a pull request of its own. A new
-# release is proposed only after it has been out for 3 days.
+# and patch updates. A major update and the Maven runtime each get a pull
+# request of their own. A new release is proposed only after it has been out
+# for 3 days.
 #
 # Security updates always target the default branch and use the entries
 # without target-branch. The release/0.3 entries cover version updates only.
@@ -26,6 +27,9 @@ updates:
     groups:
       maven:
         patterns: ["*"]
+        # A new Maven runtime line can change how the build reads the POM, so
+        # the Maven wrapper's distribution gets a pull request of its own.
+        exclude-patterns: ["org.apache.maven:apache-maven"]
         update-types: [minor, patch]
     ignore:
       # Integrations build against the adapter's Quarkus and Camel line, so a new
