@@ -126,8 +126,9 @@ Start with the [documentation index](docs/index.md).
   caller and is never replayable, and the two can run in one application; see
   [Failure and Replay per Input Type](docs/retry-dlq-replay.md#failure-and-replay-per-input-type).
   A `jms:queue:` input needs `acknowledgementModeName=CLIENT_ACKNOWLEDGE`.
-- `main` builds and tests against Quarkus 3.33.4.1 (Camel 4.18.4). The 0.3.x
-  releases are built against Quarkus 3.32.2 (Camel 4.18.0).
+- `main` builds and tests against Quarkus 3.40.1.2, the 3.40 LTS line (Camel
+  4.22.1, Camel Quarkus 3.40.0). The 0.3.x releases are built against Quarkus
+  3.32.2 (Camel 4.18.0).
 - The 0.3 line continues as a maintained series, with its current scope (one
   input topic per integration); further 0.3.x patch releases may follow, also
   after 0.4.0. 0.3.x documents its own known

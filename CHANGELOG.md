@@ -572,21 +572,39 @@
   `setHeader("Authorization", header("Authorization").convertToString())`. A
   receiver that read `kafka.*` request headers must get the values from
   headers the route sets itself.
-- Build and test against Quarkus 3.33.4.1 (Camel 4.18.4, Camel Quarkus 3.33.3)
-  instead of Quarkus 3.32.2 (Camel 4.18.0). Camel 4.18.3 and later include
-  Camel's fix for
+- Build and test against Quarkus 3.40.1.2, the Quarkus 3.40 LTS line (Camel
+  4.22.1, Camel Quarkus 3.40.0), instead of Quarkus 3.32.2 (Camel 4.18.0)
+  ([#184](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/184)).
+  Quarkus maintains 3.40 until September 2027, 3.33 until March 2027. Camel
+  4.18.3 and later include Camel's fix for
   [CVE-2026-49098](https://camel.apache.org/security/CVE-2026-49098.html):
   camel-kafka's exchange headers are named `CamelKafka*` instead of `kafka.*`,
-  so Camel's HTTP header filters drop them. The adapter reads Kafka record
-  headers under both names and compiles in no other camel-kafka header name,
-  so it also runs on Camel 4.18.0. Other updates that come with the platform
-  include kafka-clients 4.1.2, Jackson 2.21.7, Netty 4.1.139, Vert.x 4.5.35
-  and the AWS SDK 2.42.7.
-  Upgrade: an integration that moves to this Quarkus line and reads a Kafka
-  header by its old literal name, such as `kafka.KEY` or `kafka.TOPIC` in a
-  YAML route, must use the new name, such as `CamelKafkaKey` or
-  `CamelKafkaTopic`. A Java route that uses `KafkaConstants` gets the new
-  names when it is compiled.
+  so Camel's HTTP header filters drop them; Camel 4.22.1 uses the same names
+  as 4.18.4. The adapter reads Kafka record headers under both names and
+  compiles in no other camel-kafka header name. Other updates that come with
+  the platform include kafka-clients 4.2.1, Jackson 2.21.8, Micrometer 1.17.1,
+  Netty 4.1.139, Vert.x 4.5.35 and the AWS SDK 2.54.13. Generated node ids
+  (`to1`, `choice1`, …) are the same on Camel 4.18.4 and 4.22.1, so a step key
+  recorded under a generated id still matches after the move.
+  Upgrade: move the application to the same Quarkus platform version as the
+  adapter. An integration that reads a Kafka header by its old literal name,
+  such as `kafka.KEY` or `kafka.TOPIC` in a YAML route, must use the new name,
+  such as `CamelKafkaKey` or `CamelKafkaTopic`. A Java route that uses
+  `KafkaConstants` gets the new names when it is compiled. Check the
+  application against Camel's upgrade guides for 4.19 to 4.22; see
+  [Upgrading to 0.4](docs/upgrading-to-0.4.md#before-you-upgrade) for the
+  changes most likely to matter.
+- A stored step endpoint is masked with Camel 4.18's sensitive option names on
+  every Camel version
+  ([#184](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/184)).
+  Camel 4.22 no longer lists `login` and `passcode` and adds names such as
+  `knownHosts` and `subscriptionId`; built on Camel's current list, the adapter
+  would have stored `?login=` values unmasked and no longer the value the .NET
+  adapter stores for the same URI. Keywords an application adds with
+  `URISupport.addSanitizeKeywords` are applied on their own, in every
+  parameter, within the masking time bound; Camel's own sanitizer ran over
+  the stored value before. See
+  [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
 - A tracked send in a route that another send calls, such as a `direct:`
   sub-route, is recorded once per try. Before, the calling send recorded the
   sub-route's step again when it completed. A successful call was listed twice

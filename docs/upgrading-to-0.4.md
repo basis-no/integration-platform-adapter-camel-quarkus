@@ -24,12 +24,38 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
   a persistent `aggregationRepository`. A `resequence` on a Kafka boundary has
   no replacement yet; a durable resequencer is planned (#36). See
   [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
-- **Kafka header names on the newer Quarkus line.** This branch builds against
-  Quarkus 3.33.4.1 (Camel 4.18.4), whose camel-kafka exchange headers are named
-  `CamelKafka*` instead of `kafka.*`. An integration that moves to this line
-  and reads a header by its old literal name, such as `kafka.KEY` in a YAML
-  route, must use the new name, such as `CamelKafkaKey`. A Java route that uses
-  `KafkaConstants` gets the new names when it is compiled.
+- **Move the application to Quarkus 3.40.** This branch builds and tests
+  against Quarkus 3.40.1.2, the 3.40 LTS line (Camel 4.22.1, Camel Quarkus
+  3.40.0); 0.3.x is built against Quarkus 3.32.2 (Camel 4.18.0). Set the
+  application's `quarkus.platform.version` to the same version, for the
+  platform BOMs and the Quarkus Maven plugin. Then check:
+  - **Kafka header names.** camel-kafka's exchange headers are named
+    `CamelKafka*` instead of `kafka.*` (since Camel 4.18.3; 4.22.1 uses the
+    same names). An integration that reads a header by its old literal name,
+    such as `kafka.KEY` in a YAML route, must use the new name, such as
+    `CamelKafkaKey`. A Java route that uses `KafkaConstants` gets the new
+    names when it is compiled.
+  - **Version overrides.** Remove an override the platform BOM now manages at
+    an equal or newer version. Camel's `http` component needs Apache
+    HttpClient 5.5 or later; Quarkus 3.40.1.2 manages 5.6.4.
+  - **Camel 4.19 to 4.22**, from Camel's upgrade guides, where an
+    integration is likely to notice: the Kafka producer's `lingerMs` default is
+    5 instead of 0, and the `DefaultPartitioner` and `UniformStickyPartitioner`
+    partitioners are gone (4.19); a YAML route's `routePolicy` is
+    `routePolicyRef`, and `wireTap` has no `pattern` option (4.19);
+    `DefaultHeaderFilterStrategy` filters `Camel*` headers by default (4.21);
+    camel-jms refuses `ObjectMessage` unless `objectMessageEnabled=true`
+    (4.21); a `{{…}}` placeholder that reaches a `toD` or `enrich` at runtime,
+    in a header or the body, is no longer resolved (4.22); a `pollEnrich`
+    that times out without an aggregation strategy leaves a `null` body
+    (4.22); and Camel's own URI sanitizer masks a different set of option
+    names (4.22). The adapter stores step endpoints masked as before; see
+    [Stored Endpoints](steps-and-idempotency.md#stored-endpoints).
+  - **Quarkus 3.34 to 3.40**, from Quarkus's migration guides: a metric
+    name registered with different tag keys fails instead of being dropped
+    (3.34); Kafka Dev Services start `upstream-kafka-native` instead of
+    Redpanda (3.35); with `quarkus.http.host` set to `localhost`, `127.0.0.1`
+    or `[::1]`, a request with another `Host` header gets 400 (3.38).
 - **Keep the required Kafka consumer settings**, in particular
   `camel.component.kafka.break-on-first-error=true`; see the
   [configuration reference](configuration.md).

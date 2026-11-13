@@ -205,7 +205,7 @@ multi-replica poll fails startup rather than risking duplicate discovery.
   ([#123](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/123)).
 - After a failure the broker delivers the message again at once. A message that
   keeps failing is handled by the broker's own delivery limit and dead-letter
-  address (Apache ActiveMQ Artemis moves it after 10 deliveries by default), not
+  address (Apache Artemis moves it after 10 deliveries by default), not
   by the adapter's DLQ. Configure them on the broker.
 - `transacted=true` is not tested with this pattern and is not covered by these
   rules; see #123.
@@ -213,7 +213,8 @@ multi-replica poll fails startup rather than risking duplicate discovery.
   every replica would receive and publish every message.
 - Order is kept per queue up to the Kafka publish; after it, per Kafka key and
   partition only.
-- Checked with `jms:` and Apache ActiveMQ Artemis in the adapter's tests.
+- Checked with `jms:` and Apache Artemis (formerly Apache ActiveMQ Artemis) in
+  the adapter's tests.
   `sjms:` and `sjms2:` and other brokers are not verified.
 
 ## HTTP Audit-Only Preview
