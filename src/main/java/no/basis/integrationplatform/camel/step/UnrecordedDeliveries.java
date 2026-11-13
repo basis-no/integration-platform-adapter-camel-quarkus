@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.step;
 
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.model.StepResult;
 import org.apache.camel.CamelContext;
@@ -130,7 +131,7 @@ public final class UnrecordedDeliveries {
             oldest.remove();
             LOG.warn("Dropped the unwritten DELIVERED outcome of step {} for record {}: more than {} such outcomes "
                             + "are kept; that record's next read sends the step again",
-                    dropped.step().step(), dropped.position(), MAX_MARKS);
+                    LogText.escape(dropped.step().step()), dropped.position(), MAX_MARKS);
         }
     }
 

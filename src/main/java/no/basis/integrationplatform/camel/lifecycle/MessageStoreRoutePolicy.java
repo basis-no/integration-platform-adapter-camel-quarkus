@@ -318,7 +318,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         if (unrecorded != null) {
             if (managed(exchange)) {
                 LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed "
-                        + "again{}", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID),
+                        + "again{}", LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)),
                         StoreErrorClass.logSuffix(unrecorded), unrecorded);
             }
             readAgain(route, exchange, "A step outcome was not checked or recorded; Kafka offset was not committed",
@@ -355,11 +355,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
     }
 
+    // The reason is stored, parked and logged as it is, so the step ids it names are escaped here, once.
     private static String stepDataReason(Exchange exchange, Throwable unrecorded) {
         List<String> sent = UnrecordedDeliveries.markedSteps(exchange);
         return "The Message Store cannot hold a step outcome of the record (SQLSTATE " + StoreErrorClass.sqlState(unrecorded)
                 + "); " + (sent.isEmpty() ? "no send of the attempt had returned without a recorded outcome"
-                : "the send of step " + String.join(", ", sent) + " had returned, its outcome not recorded");
+                : "the send of step " + String.join(", ", sent.stream().map(LogText::escape).toList())
+                        + " had returned, its outcome not recorded");
     }
 
     /**
@@ -379,7 +381,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 && recordDataInARow.getOrDefault(partition(position), 0) >= MAX_RECORD_DATA_IN_A_ROW) {
             LOG.error("Message {} at {} is not committed: {} records in a row on this partition could not be stored for "
                             + "their own data, so this one is held back; check the Message Store's settings and schema. "
-                            + "{} storeError=schema", messageId, position, MAX_RECORD_DATA_IN_A_ROW, reason);
+                            + "{} storeError=schema", LogText.escape(messageId), position, MAX_RECORD_DATA_IN_A_ROW,
+                    reason);
             readAgain(route, exchange, reason + "; held back after " + MAX_RECORD_DATA_IN_A_ROW + " such records in a row",
                     null);
             return;
@@ -389,7 +392,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         String stored = position == null ? reason : reason + " (record " + position + ")";
         if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, stored)) {
             LOG.error("Message {} at {} is not committed: it could not be parked for its own data; {} storeError=record-data",
-                    messageId, position, reason);
+                    LogText.escape(messageId), position, reason);
             readAgain(route, exchange, "Not parked: " + reason, null);
             return;
         }
@@ -406,8 +409,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         try {
             recordReduced(reduced);
         } catch (Exception e) {
-            LOG.error("Message {} at {} is not committed: its reduced outcome could not be recorded{}", messageId,
-                    position, StoreErrorClass.logSuffix(e), e);
+            LOG.error("Message {} at {} is not committed: its reduced outcome could not be recorded{}",
+                    LogText.escape(messageId), position, StoreErrorClass.logSuffix(e), e);
             readAgain(route, exchange, "Failed to record the reduced outcome", e);
             return;
         }
@@ -424,7 +427,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         // Parked and recorded: the consumer goes on with the next record.
         exchange.setException(null);
-        LOG.error("Message {} from record {} was {}: {} storeError=record-data", messageId, position,
+        LOG.error("Message {} from record {} was {}: {} storeError=record-data", LogText.escape(messageId), position,
                 completed ? "recorded without its envelope values" : "parked", reason);
     }
 
@@ -605,7 +608,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             return;
         }
         LOG.info("Message {} at {} could not be made durable {} times in a row; reading it again in {} ms",
-                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), position, state[1], wait);
+                LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)), position, state[1], wait);
         sleeper.sleep(route, wait);
     }
 

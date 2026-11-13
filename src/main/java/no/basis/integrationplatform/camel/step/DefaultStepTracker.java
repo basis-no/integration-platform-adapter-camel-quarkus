@@ -340,7 +340,7 @@ public class DefaultStepTracker implements StepTracker {
                 try {
                     stepOutcomeStore.recordDelivered(step);
                     LOG.info("Step {} of message {}: its DELIVERED outcome was written when tried again in place",
-                            step.step(), exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+                            LogText.escape(step.step()), LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)));
                     return;
                 } catch (RuntimeException again) {
                     failure = again;
@@ -386,8 +386,8 @@ public class DefaultStepTracker implements StepTracker {
         }
         exchange.setProperty(PlatformExchangeProperties.STEP_FROM_MARK, mark.step());
         LOG.warn("Step {} of message {} was sent in an earlier read of record {}, and its DELIVERED outcome is "
-                        + "written now; the send is not repeated", mark.step().step(),
-                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), mark.position());
+                        + "written now; the send is not repeated", LogText.escape(mark.step().step()),
+                LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)), mark.position());
     }
 
     @Override
