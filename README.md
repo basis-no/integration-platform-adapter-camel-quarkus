@@ -569,7 +569,7 @@ as byte-array text unless they are `x-bip-*` headers.
 **Known issue
 ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w)):**
 on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0, which include
-Camel 4.18.0 from Quarkus 3.32.2, Camel's Kafka consumer also sets headers
+Camel 4.18.0 from Quarkus 3.32.2 and 3.32.4, Camel's Kafka consumer also sets headers
 named `kafka.*`. One of them, `kafka.HEADERS`, holds the record's whole header
 set. Camel's `http`, `vertx-http` and `netty-http` producers send it to the
 receiver as a header whose value lists the bytes of every record header,

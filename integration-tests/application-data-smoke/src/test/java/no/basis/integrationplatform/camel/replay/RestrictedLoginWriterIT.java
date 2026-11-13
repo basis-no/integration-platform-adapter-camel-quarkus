@@ -255,7 +255,7 @@ class RestrictedLoginWriterIT {
 
     static void verifyLoadedArtifact() throws Exception {
         String version = required("bip.test.adapter-version");
-        assertTrue(Set.of("0.3.5", "0.3.6-SNAPSHOT").contains(version));
+        assertTrue(Set.of("0.3.5", "0.3.6", "0.3.6-SNAPSHOT", "0.3.7-SNAPSHOT").contains(version));
         Path jar = Path.of(PostgresMessageStoreSink.class.getProtectionDomain().getCodeSource().getLocation().toURI()).toRealPath();
         assertTrue(Files.isRegularFile(jar) && jar.toString().endsWith(".jar"), "Use exact packaged adapter bytes, never target/classes");
         assertEquals(required("bip.test.adapter-sha256"), sha(jar));
