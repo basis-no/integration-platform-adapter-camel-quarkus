@@ -320,6 +320,11 @@ Also not on this branch yet:
 
 The changelog's Unreleased section has the details; in short:
 
+- **The resend endpoint answers an unexpected failure itself:** `500` with
+  `status` `FAILED` and a fixed `error`, not Quarkus's error page; the log
+  keeps the failure, masked. A failure that carries an HTTP answer of its own,
+  from an application's replay service or exception mapper, gets that `500`
+  too.
 - **Error texts show `xxxxxx` where they showed credentials.** Every URI in a
   failure text that is stored, published in `x-bip-error` or logged is masked
   by the stored-endpoint rule, once; a DLQ reader or alert that matched an

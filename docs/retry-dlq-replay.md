@@ -399,6 +399,16 @@ The endpoint answers `409 Conflict` with the reason. A message recorded by a
 route that has since changed needs review; send its payload again as a new
 message once it is safe to process.
 
+The answer is JSON with `status` (`SUCCEEDED` or `FAILED`), `messageId` and,
+for a failure, `error`. A message that is not stored is answered
+`404 Not Found`; a replay that is refused or fails, and a request body that is
+not JSON, `409 Conflict` with the reason. A failure the endpoint does not
+expect, also one that carries an HTTP answer of its own, is answered
+`500 Internal Server Error` with a fixed `error`: whether the replay was
+published is not known, so check the replay audit and the integration's log
+before you resend. No answer carries a failure's type or
+stack trace, in any launch mode; the log keeps the failure, masked.
+
 The caller, typically an operator's tool, supplies operator identity and reason
 through the `x-dashboard-user` and `x-dashboard-reason` headers or the JSON
 request body. The default target pattern is `bip.%s.in`, where `%s` is the

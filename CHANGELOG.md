@@ -49,6 +49,22 @@
   the failing row, the stored value included, and the adapter stored, parked and
   logged it as the message's failure. The error now names the key's operation,
   the limit and the SQLSTATE only.
+- Security: the resend endpoint answers a failure it does not expect itself.
+  It caught only its own replay failures, and any other exception went to
+  Quarkus's error handling, which in dev and test mode answers the caller with
+  the failure's class, text, source lines and stack trace, and in every mode
+  logs the failure unmasked. Such a failure is now answered `500` with `status`
+  `FAILED` and a fixed `error` saying that whether the replay was published is
+  not known, as the .NET adapter's `RESEND_FAILED` does, and is logged once,
+  masked. The endpoint's other answers are unchanged. A failure that carries
+  an HTTP answer of its own, such as a `WebApplicationException` from an
+  application's own `MessageReplayService` or one an application's
+  `ExceptionMapper` handled, is now answered the same way. See
+  [Manual Replay](docs/retry-dlq-replay.md#manual-replay).
+  Upgrade: a caller that read Quarkus's `details` from such an answer reads the
+  endpoint's `error` instead; the failure itself is in the log. An application
+  whose own replay service or exception mapper chose the answer to a failure
+  gets the `500` instead.
 - A send whose `DELIVERED` outcome could not be written is not made again on
   the record's next read in the same process
   ([#137](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/137)).
