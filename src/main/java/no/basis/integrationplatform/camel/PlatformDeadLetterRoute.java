@@ -27,6 +27,10 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                     exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS);
                     if (exchange.getProperty(PlatformExchangeProperties.KAFKA_MANUAL_COMMIT) == null
                             && exchange.getMessage().getHeader(KafkaConstants.MANUAL_COMMIT) == null) {
+                        // Not parked, so no parking headers: a platform-http input answers its
+                        // caller with the exchange's headers, and x-bip-error names the failure.
+                        exchange.getMessage().removeHeader(PlatformHeaders.ERROR);
+                        exchange.getMessage().removeHeader(PlatformHeaders.DLQ_AT);
                         Throwable failure = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
                         if (failure instanceof Exception original) {
                             // The caller owns recovery; retain the receiver's type and diagnostics.

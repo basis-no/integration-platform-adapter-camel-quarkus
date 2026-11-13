@@ -53,6 +53,23 @@ No Message Store schema change.
   the failing row, the stored value included, and the adapter stored, parked and
   logged it as the message's failure. The error now names the key's operation,
   the limit and the SQLSTATE only.
+- A failed HTTP input no longer sends its caller the failure text. When an
+  input that is not a managed Kafka input failed, for example a `platform-http`
+  route, the adapter's dead-letter route set `x-bip-error` and `x-bip-dlq-at`
+  on the exchange before it handed the failure back, and `platform-http` copies
+  an exchange's headers into its answer. The caller so received the failure
+  text, which names a failed send's receiver URL, query included; before 0.3.7
+  that text was not masked, so the caller could read a key or signature in the
+  URL. An exchange that is not parked no longer carries these headers. The
+  answer keeps its status and Camel's empty body (`platform-http` leaves the
+  failure out unless the endpoint sets `muteException=false`). The adapter's
+  own log lines keep the masked failure, and so does the Message Store for an
+  input selected by `basis.input-audit.routes`. An answer the route makes
+  itself, in its own `onException` or `doCatch`, is unchanged.
+  Upgrade: an HTTP caller that read `x-bip-error` from the answer gets the
+  status only, and the caller of an internal request (a `direct:` route or a
+  `ProducerTemplate`) that read `x-bip-error` or `x-bip-dlq-at` from the failed
+  exchange must read its exception instead.
 
 ### Changed
 
@@ -298,6 +315,12 @@ the details.
   `x-bip-…-key` or `x-bip-…-token` header, is masked in the parked copy and no
   longer reaches HTTP receivers; stored endpoints mask `?jwt=`, `?assertion=`
   and `?bearer=` values.
+- **A failed exchange that is not parked has no `x-bip-error`.** An input
+  that is not a managed Kafka input, such as a `platform-http` route, and an
+  internal request get their failure back without the parking headers
+  `x-bip-error` and `x-bip-dlq-at`: an HTTP caller no longer receives the
+  failure text in the answer, and a caller that read these headers from the
+  failed exchange must read its exception instead.
 - **Kafka inputs start at `earliest`.** A new consumer group, a changed
   `groupId`, a group whose committed offsets expired on the broker, and a Kafka
   input without a `groupId` now read each partition's retained records from

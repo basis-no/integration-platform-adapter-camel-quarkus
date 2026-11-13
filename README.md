@@ -272,7 +272,12 @@ status becomes `DLQ`. A send that returns without an error counts as success, so
 reference below). The internal parking route bypasses business-step tracking;
 parking must never be skipped because of a previously delivered business step.
 An internal request without a managed Kafka input propagates its failure back
-to its caller rather than parking transformed receiver bytes independently.
+to its caller rather than parking transformed receiver bytes independently, and
+so does any other input, such as `platform-http`. From 0.3.7 the exchange it
+hands back carries no `x-bip-error` or `x-bip-dlq-at`: `platform-http` copies an
+exchange's headers into its answer, so its HTTP caller received the failure
+text there. The answer has the error status and, unless the endpoint sets
+`muteException=false`, an empty body.
 
 A competing application `onException` can bypass this recovery handler. Do not
 install a catch-all recovery policy alongside the adapter's handler. Nested
