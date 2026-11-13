@@ -57,14 +57,22 @@ class JoinedTransactionRedoTest {
         ownerStore.recordDelivered(StepResult.delivered("notify-vendor", "message-123:notify-vendor", "https://v/a"));
         ownerStore.recordDelivered(StepResult.delivered("notify-other", "message-123:notify-other", "https://v/b"));
 
-        // One connection in a transaction the application owns, as a JTA-enlisted connection is.
+        // One connection in a transaction the application owns, as a JTA-enlisted connection is:
+        // like Agroal's or an XA connection while enlisted, it refuses JDBC's transaction and
+        // savepoint methods.
         Connection real = source("restricted_writer", "test-only").getConnection();
         try {
             real.setAutoCommit(false);
+            java.util.Set<String> refused = java.util.Set.of("commit", "rollback", "setAutoCommit", "setSavepoint",
+                    "releaseSavepoint");
             Connection held = (Connection) Proxy.newProxyInstance(getClass().getClassLoader(),
                     new Class<?>[]{Connection.class}, (proxy, method, args) -> {
                         if (method.getName().equals("close")) {
                             return null;
+                        }
+                        if (refused.contains(method.getName())) {
+                            throw new java.sql.SQLException("Attempting to " + method.getName()
+                                    + " while enlisted in a transaction");
                         }
                         try {
                             return method.invoke(real, args);
