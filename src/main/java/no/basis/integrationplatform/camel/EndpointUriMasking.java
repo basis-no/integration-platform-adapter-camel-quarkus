@@ -25,10 +25,10 @@ import java.util.stream.Collectors;
  * name that contains {@code passphrase}, {@code passcode}, {@code privatekey}, {@code accesskey},
  * {@code accountkey} or {@code connectionstring}. Both rules read the URI as given, and a run of
  * masked characters becomes one {@code xxxxxx}. Keywords an application adds with
- * {@link URISupport#addSanitizeKeywords(String)} are masked as well; the .NET adapter has no such
- * setting. A URI the adapter's patterns cannot mask within about a second is recorded as
- * {@code xxxxxx}; when keywords were added, Camel's own sanitizer also runs, and that pass is not
- * bounded.
+ * {@link URISupport#addSanitizeKeywords(String)} are masked as well, in every parameter whose name
+ * contains one; the .NET adapter has no such setting. A URI the adapter's patterns cannot mask
+ * within about a second is recorded as {@code xxxxxx}. Only if Camel's added keywords cannot be
+ * read does Camel's own sanitizer run too, and that pass is not bounded.
  */
 public final class EndpointUriMasking {
     /** The mask written in place of a credential. */
@@ -71,6 +71,7 @@ public final class EndpointUriMasking {
     // sanitizer, run only when an application added keywords, is not bounded.
     private static final long MASK_TIMEOUT_NANOS = 1_000_000_000L;
     private static final java.lang.reflect.Field EXTRA_SECRETS = extraSecretsField();
+    private static final Object UNREADABLE = new Object();
 
     private EndpointUriMasking() {
     }
@@ -85,9 +86,10 @@ public final class EndpointUriMasking {
         if (endpointUri == null) {
             return null;
         }
+        long deadline = System.nanoTime() + MASK_TIMEOUT_NANOS;
         Sanitized camel;
         try {
-            camel = camelSanitized(endpointUri, System.nanoTime() + MASK_TIMEOUT_NANOS);
+            camel = camelSanitized(endpointUri, deadline);
         } catch (MaskTimeout e) {
             return MASK;
         }
@@ -109,27 +111,38 @@ public final class EndpointUriMasking {
             masked.append(adds ? MASK : camel.text.substring(run, index));
         }
         String result = masked.toString();
-        if (hasAddedSanitizeKeywords() && !URISupport.sanitizeUri(endpointUri).equals(camel.text.toString())) {
+        Object added = addedSanitizeKeywords();
+        if (added instanceof Pattern keywords) {
             // The application added keywords to Camel's sanitizer, which the patterns above do
-            // not know; mask those too, so nothing Camel masks is stored. This pass also applies
-            // the sensitive names of the Camel version the application runs.
+            // not know. Apply only that pattern: Camel's own names of the version the
+            // application runs are not the list the .NET adapter shares.
+            try {
+                return keywords.matcher(new DeadlineText(result, deadline)).replaceAll("$1=" + MASK);
+            } catch (MaskTimeout e) {
+                return MASK;
+            }
+        }
+        if (added == UNREADABLE && !URISupport.sanitizeUri(endpointUri).equals(camel.text.toString())) {
+            // Keywords may have been added: mask what Camel masks, so nothing Camel masks is stored.
             return URISupport.sanitizeUri(result);
         }
         return result;
     }
 
     /**
-     * Whether keywords were added with {@link URISupport#addSanitizeKeywords(String)}. Camel keeps
-     * them in a private field; if it cannot be read, assume they were, so Camel's own pass runs.
+     * The pattern of the keywords added with {@link URISupport#addSanitizeKeywords(String)}, null
+     * when none were added, or {@link #UNREADABLE} when Camel's private field cannot be read as a
+     * pattern.
      */
-    private static boolean hasAddedSanitizeKeywords() {
+    private static Object addedSanitizeKeywords() {
         if (EXTRA_SECRETS == null) {
-            return true;
+            return UNREADABLE;
         }
         try {
-            return EXTRA_SECRETS.get(null) != null;
+            Object added = EXTRA_SECRETS.get(null);
+            return added == null || added instanceof Pattern ? added : UNREADABLE;
         } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
-            return true;
+            return UNREADABLE;
         }
     }
 
@@ -138,9 +151,9 @@ public final class EndpointUriMasking {
         return camelSanitized(endpointUri, Long.MAX_VALUE).text.toString();
     }
 
-    /** Whether Camel's added-keyword field was found, so the bounded path is used without them. */
+    /** Whether Camel's added keywords can be read, so that only they are applied, within the bound. */
     static boolean addedKeywordsReadable() {
-        return EXTRA_SECRETS != null;
+        return addedSanitizeKeywords() != UNREADABLE;
     }
 
     private static java.lang.reflect.Field extraSecretsField() {

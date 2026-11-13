@@ -103,11 +103,11 @@ the steps it records, so both adapters store the same value for the same URI:
   valid UTF-8 is compared as written), ignoring case.
 
 A run of masked characters becomes one `xxxxxx`. Keywords an application adds
-with `URISupport.addSanitizeKeywords` are masked too (the .NET adapter has no
-such setting); in that case Camel's own sanitizer also runs, with the sensitive
-option names of the application's Camel version. An endpoint the adapter's patterns cannot mask within about a
-second is stored as `xxxxxx`; when an application has added keywords, Camel's
-own sanitizer also runs on it, and that pass has no such bound. The route still sends to the real endpoint; only the stored
+with `URISupport.addSanitizeKeywords` are masked too, in every parameter whose
+name contains one (the .NET adapter has no such setting); Camel's other
+sensitive option names are not applied with them. An endpoint the adapter's
+patterns, the added keywords included, cannot mask within about a second is
+stored as `xxxxxx`. The route still sends to the real endpoint; only the stored
 and logged copy is masked.
 
 ## Explicit Classification

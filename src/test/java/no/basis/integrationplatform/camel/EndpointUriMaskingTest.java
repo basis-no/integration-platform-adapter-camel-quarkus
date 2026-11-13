@@ -230,6 +230,27 @@ class EndpointUriMaskingTest {
                 EndpointUriMasking.mask("https://u:p@target.example/a?zqfixtureword=s&page=2"));
     }
 
+    /**
+     * With an added keyword, only that keyword is applied on top: a name only later Camel
+     * versions list stays as the .NET adapter stores it, and every parameter with the keyword is
+     * masked.
+     */
+    @Test
+    void appliesOnlyTheAddedKeywordsOnTopOfTheSharedRule() throws Exception {
+        java.lang.reflect.Field extra = URISupport.class.getDeclaredField("EXTRA_SECRETS");
+        extra.setAccessible(true);
+        Object before = extra.get(null);
+        String uri = "https://target.example/a?knownHosts=k&zqfixtureword=s&subscriptionId=i&login=l&xzqfixtureword=t";
+        try {
+            URISupport.addSanitizeKeywords("zqfixtureword");
+
+            assertEquals("https://target.example/a?knownHosts=k&zqfixtureword=xxxxxx&subscriptionId=i&login=xxxxxx"
+                    + "&xzqfixtureword=xxxxxx", EndpointUriMasking.mask(uri));
+        } finally {
+            extra.set(null, before);
+        }
+    }
+
     @Test
     void keepsNull() {
         assertNull(EndpointUriMasking.mask(null));

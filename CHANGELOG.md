@@ -600,8 +600,10 @@
   Camel 4.22 no longer lists `login` and `passcode` and adds names such as
   `knownHosts` and `subscriptionId`; built on Camel's current list, the adapter
   would have stored `?login=` values unmasked and no longer the value the .NET
-  adapter stores for the same URI. An application that adds keywords with
-  `URISupport.addSanitizeKeywords` also gets Camel's current list. See
+  adapter stores for the same URI. Keywords an application adds with
+  `URISupport.addSanitizeKeywords` are applied on their own, in every
+  parameter, within the masking time bound; Camel's own sanitizer ran over
+  the stored value before. See
   [Stored Endpoints](docs/steps-and-idempotency.md#stored-endpoints).
 - A tracked send in a route that another send calls, such as a `direct:`
   sub-route, is recorded once per try. Before, the calling send recorded the
