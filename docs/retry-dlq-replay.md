@@ -104,7 +104,7 @@ upper limit on the Kafka consumer thread.
 On Camel 4's `http` component, bound a receiver call with `responseTimeout`
 and `connectTimeout`. Camel accepts some timeout options without applying them,
 and the call then waits for the component's timeout, three minutes unless
-configured. Checked on Camel 4.18.0 and 4.18.4:
+configured. Checked on Camel 4.18.0, 4.18.4 and 4.22.1:
 
 | Option | Where | What Camel does | Use instead |
 | --- | --- | --- | --- |
