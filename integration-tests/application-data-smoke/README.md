@@ -4,7 +4,7 @@ This synthetic fixture keeps the Message Store and an existing business cursor i
 separate logical databases. It boots on a base Message Store without a
 Key-Value Store table, reads and updates the existing cursor, and asserts that
 unused optional KV starts no sweeper. The same fixture can run with adapter
-0.3.5 or 0.3.6 using `-Dadapter.version=...`; do not change business
+0.3.5, 0.3.6 or the 0.3.7 snapshot using `-Dadapter.version=...`; do not change business
 logic between the two runs. A passing run does not migrate application data.
 The fixture supplies a synthetic loopback Kafka bootstrap value for the adapter's
 required CDI configuration; it starts no Kafka route or broker. Its HTTP listener
