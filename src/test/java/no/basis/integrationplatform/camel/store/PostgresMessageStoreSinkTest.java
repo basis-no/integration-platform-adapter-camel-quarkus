@@ -49,6 +49,18 @@ class PostgresMessageStoreSinkTest {
     }
 
     @Test
+    void storesAnErrorTextAsItIsGiven() {
+        // The adapter masks an error text once before it builds the result; the sink must not
+        // mask it again, since a second pass would change this one.
+        String masked = "Receiver refused the call to http://host:xxxxxx@d";
+        sink.record(result(MessageStatus.FAILED, 1, masked));
+
+        assertEquals(masked, singleValue("select error from bip_message_log where message_id = 'message-123'"));
+        assertEquals(masked, singleValue("select error from bip_message_attempt where message_id = 'message-123'"));
+        assertEquals(masked, singleValue("select steps_json->0->>'error' from bip_message_attempt where message_id = 'message-123'"));
+    }
+
+    @Test
     void recordsCompletedMessageAttemptAndCurrentMessageLog() {
         sink.record(result(MessageStatus.COMPLETED, 1, null));
 

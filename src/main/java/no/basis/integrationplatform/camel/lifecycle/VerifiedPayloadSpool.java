@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.inject.Singleton;
 import jakarta.enterprise.event.Observes;
@@ -152,11 +153,11 @@ class VerifiedPayloadSpool {
                         deleted++;
                     }
                 } catch (IOException e) {
-                    LOG.warn("Could not delete checked payload copy {}: {}", file, e.toString());
+                    LOG.warn("Could not delete checked payload copy {}: {}", file, ErrorTextMasking.forLog(e).toString());
                 }
             }
         } catch (IOException | java.nio.file.DirectoryIteratorException e) {
-            LOG.warn("Could not clean up checked payload copies in {}: {}", directory, e.toString());
+            LOG.warn("Could not clean up checked payload copies in {}: {}", directory, ErrorTextMasking.forLog(e).toString());
         }
         if (deleted > 0) {
             LOG.info("Deleted {} checked payload copies left by a process that is no longer running in {}",
@@ -296,7 +297,7 @@ class VerifiedPayloadSpool {
         try {
             channel.close();
         } catch (IOException e) {
-            LOG.debug("Could not close a checked payload copy: {}", e.toString());
+            LOG.debug("Could not close a checked payload copy: {}", ErrorTextMasking.forLog(e).toString());
         }
     }
 
@@ -307,7 +308,7 @@ class VerifiedPayloadSpool {
         try {
             Files.deleteIfExists(file);
         } catch (IOException e) {
-            LOG.warn("Could not delete checked payload copy {}: {}", file, e.toString());
+            LOG.warn("Could not delete checked payload copy {}: {}", file, ErrorTextMasking.forLog(e).toString());
         }
     }
 

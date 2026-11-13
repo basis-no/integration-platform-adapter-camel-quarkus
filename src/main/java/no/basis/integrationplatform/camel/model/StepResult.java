@@ -11,7 +11,8 @@ import java.time.Instant;
  * @param idempotencyKey stable side-effect identity
  * @param endpointUri intercepted endpoint URI
  * @param targetRef receiver-specific reference, when known
- * @param error failure description, when applicable
+ * @param error failure description, when applicable; {@link #failed} masks the URIs in a
+ *        failure's text, and a text given here is kept as it is
  * @param occurredAt observation timestamp
  */
 public record StepResult(
@@ -22,11 +23,6 @@ public record StepResult(
         String targetRef,
         String error,
         Instant occurredAt) {
-    /** Masks the URIs in an error text however the result was built. */
-    public StepResult {
-        error = ErrorTextMasking.mask(error);
-    }
-
 
     /**
      * Creates a delivered step result at the current time.

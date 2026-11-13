@@ -367,7 +367,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         // One line: the message id and a reference's ref come from the producer.
         LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
-                + " did not reach its route: " + failure.getMessage() + rootCause(failure)
+                + " did not reach its route: " + ErrorTextMasking.mask(failure.getMessage() + rootCause(failure))
                 + (park ? "; it can never pass its check, so it is parked in the DLQ" : "")));
         closeCheckedCopy(exchange);
         exchange.getMessage().setBody(null);
@@ -396,7 +396,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             Throwable publish = exchange.getException();
             LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
                     + " could not be parked, so it is read again: "
-                    + (publish == null ? "the DLQ route did not publish it" : publish.toString())));
+                    + (publish == null ? "the DLQ route did not publish it" : ErrorTextMasking.forLog(publish))));
             exchange.setException(failure);
         }
     }
@@ -472,7 +472,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             copy.close();
         } catch (Exception e) {
             LOG.warn("{}", oneLine("Could not close the checked payload copy of message "
-                    + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID) + ": " + e));
+                    + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID) + ": " + ErrorTextMasking.forLog(e)));
         }
     }
 
@@ -527,7 +527,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             }
             if (boundaryKind == MessageBoundaryKind.KAFKA) {
                 LOG.error("Message {} is not committed: its outcome could not be recorded, so it is consumed again{}",
-                        exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e), e);
+                        exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e),
+                        ErrorTextMasking.forLog(e));
             }
             String consequence = boundaryKind == MessageBoundaryKind.KAFKA
                     ? "Kafka offset was not committed"
@@ -690,7 +691,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         // The parked copy and the row name the record: the DLQ copy carries no Kafka position,
         // and a derived id is traced back to the record only through it.
-        String stored = position == null ? reason : reason + " (record " + position + ")";
+        // Masked once, as the parked copy's x-bip-error is; the row below keeps it as it is.
+        String stored = ErrorTextMasking.mask(position == null ? reason : reason + " (record " + position + ")");
         if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, stored)) {
             LOG.error("Message {} at {} is not committed: it could not be parked for its own data; {} storeError=record-data",
                     messageId, position, reason);
@@ -711,8 +713,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             recordReduced(reduced);
         } catch (Exception e) {
             LOG.error("Message {} at {} is not committed: its reduced outcome could not be recorded{}", messageId,
-                    position, StoreErrorClass.logSuffix(e), e);
-            readAgain(route, exchange, new IllegalStateException("Failed to record the reduced outcome", e));
+                    position, StoreErrorClass.logSuffix(e), ErrorTextMasking.forLog(e));
+            // Camel logs the failure a route policy throws.
+            readAgain(route, exchange, new IllegalStateException("Failed to record the reduced outcome",
+                    ErrorTextMasking.forLog(e)));
             return;
         }
         try {

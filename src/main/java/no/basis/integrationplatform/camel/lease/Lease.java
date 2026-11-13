@@ -336,7 +336,7 @@ final class Lease {
             }
         } catch (RuntimeException e) {
             LOG.warn("Single-active route {} could not release {}; it expires in {}",
-                    name, key, timing.leaseDuration(), e);
+                    name, key, timing.leaseDuration(), ErrorTextMasking.forLog(e));
         }
     }
 
@@ -457,7 +457,7 @@ final class Lease {
             retrying = true;
             if (reported != Reported.UNREACHABLE) {
                 LOG.warn("Single-active route {} could not renew {}; retrying every {} until {} after the last renewal",
-                        name, key, timing.retryInterval(), timing.stopDeadline(), failure);
+                        name, key, timing.retryInterval(), timing.stopDeadline(), ErrorTextMasking.forLog(failure));
                 reported = Reported.UNREACHABLE;
             }
             return;

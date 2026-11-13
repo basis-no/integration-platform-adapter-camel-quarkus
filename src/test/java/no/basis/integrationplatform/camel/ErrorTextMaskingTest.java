@@ -127,6 +127,26 @@ class ErrorTextMaskingTest {
     }
 
     @Test
+    void aMaskedCopyIsNeverMaskedAgain() {
+        // A second pass would read "host:xxxxxx" as user info.
+        String raw = "Refused by http://host:8080/a?b=c@d";
+        String once = ErrorTextMasking.mask(raw);
+        org.junit.jupiter.api.Assertions.assertNotEquals(once, ErrorTextMasking.mask(once));
+
+        Throwable copy = ErrorTextMasking.forLog(new IllegalStateException(raw));
+        assertEquals("java.lang.IllegalStateException: " + once, copy.toString());
+        assertSame(copy, ErrorTextMasking.forLog(copy), "Nothing left to mask");
+        assertEquals("java.lang.IllegalStateException: " + once, ErrorTextMasking.message(copy));
+
+        var outer = new RuntimeException("Not parked", copy);
+        assertSame(outer, ErrorTextMasking.forLog(outer), "A masked cause needs no copy");
+        var withUri = new RuntimeException("Not parked: " + raw, copy);
+        Throwable logged = ErrorTextMasking.forLog(withUri);
+        assertEquals("java.lang.RuntimeException: Not parked: " + once, logged.toString());
+        assertEquals(copy.toString(), logged.getCause().toString(), "The masked cause keeps its text");
+    }
+
+    @Test
     void aCauseCycleIsCopiedOnce() {
         var first = new RuntimeException("first https://r.example/?sig=s-1");
         var second = new RuntimeException("second", first);

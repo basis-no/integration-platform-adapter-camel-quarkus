@@ -7,7 +7,9 @@ import org.slf4j.LoggerFactory;
 /**
  * The logger of the adapter's error handlers: Camel's own line for a failed delivery names the
  * failure's message, and so a receiver's URI with its credentials. Each line and failure is
- * masked by {@link ErrorTextMasking} before it is written, under the logger name Camel uses.
+ * masked by {@link ErrorTextMasking} once, before it is written, under the logger name Camel uses.
+ * Every method writes its line itself instead of through another of Camel's methods, which may
+ * call back into this logger and would mask the line a second time.
  */
 final class MaskingCamelLogger extends CamelLogger {
     MaskingCamelLogger(String logName) {
@@ -18,29 +20,39 @@ final class MaskingCamelLogger extends CamelLogger {
     @Override
     public void log(String message, LoggingLevel loggingLevel) {
         if (shouldLog(getLog(), loggingLevel)) {
-            super.log(ErrorTextMasking.mask(message), loggingLevel);
+            write(loggingLevel, ErrorTextMasking.mask(message), null);
         }
     }
 
     @Override
     public void log(String message) {
-        super.log(ErrorTextMasking.mask(message));
+        log(message, getLevel());
     }
 
     @Override
     public void doLog(String message) {
-        super.doLog(ErrorTextMasking.mask(message));
+        write(getLevel(), ErrorTextMasking.mask(message), null);
     }
 
     @Override
     public void log(String message, Throwable exception, LoggingLevel loggingLevel) {
         if (shouldLog(getLog(), loggingLevel)) {
-            super.log(ErrorTextMasking.mask(message), ErrorTextMasking.forLog(exception), loggingLevel);
+            write(loggingLevel, ErrorTextMasking.mask(message), ErrorTextMasking.forLog(exception));
         }
     }
 
     @Override
     public void log(String message, Throwable exception) {
-        super.log(ErrorTextMasking.mask(message), ErrorTextMasking.forLog(exception));
+        log(message, exception, getLevel());
+    }
+
+    private void write(LoggingLevel level, String message, Throwable exception) {
+        if (exception != null) {
+            CamelLogger.log(getLog(), level, getMarker(), message, exception);
+        } else if (getMarker() != null) {
+            CamelLogger.log(getLog(), level, getMarker(), message);
+        } else {
+            CamelLogger.log(getLog(), level, message);
+        }
     }
 }
