@@ -320,6 +320,21 @@ Also not on this branch yet:
 
 The changelog's Unreleased section has the details; in short:
 
+- **Redo lists come only from the adapter's own replay.** A resend through the
+  resend endpoint redoes its listed steps as before. A redo list that a tool
+  writes on a record itself, or that an HTTP caller sends, is dropped with a
+  warning. Grant the Message Store login `SELECT` on `bip_message_replay_audit`
+  and `bip_message_attempt`, or a resend's redo is ignored with a warning. An
+  application's own `StepOutcomeStore` must implement `isAuthorisedReplay`, or
+  no redo is honoured. A `FAILED` outcome no longer replaces a `COMPLETED` or
+  `DLQ` row of the same attempt in `bip_message_attempt`; a consumer of
+  `bip.message.status` events that writes that table itself should keep the
+  same rule. See [Redo Steps](retry-dlq-replay.md#redo-steps).
+- **Record values in log lines are escaped.** Control and invisible characters
+  in a message id or another value from a record show as `\uXXXX`, and a
+  backslash as `\\`. A record whose `x-bip-attempt` or `x-bip-schema-version`
+  is not a whole number is now recorded, with attempt or schema version 1 and a
+  warning that names the header.
 - **The failure handling follows the input type.** A Kafka boundary parks a
   failed message in the DLQ and commits after it; an HTTP audit-only boundary
   records `FAILED`, answers its caller with the error and is never replayable,

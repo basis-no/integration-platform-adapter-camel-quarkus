@@ -9,8 +9,11 @@ import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 
 import javax.sql.DataSource;
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Savepoint;
 import java.sql.Timestamp;
 import java.util.Map;
 import java.util.Optional;
@@ -204,20 +207,37 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     public boolean isAuthorisedReplay(RedoClaim claim) {
         try {
             return timeouts.inTransactionOrJoin(dataSource, connection -> {
+                // A failed statement aborts the whole transaction, also an application's own one
+                // this call joined. A refused read drops the redo list and the attempt goes on, so
+                // the read runs under a savepoint that undoes its failure.
+                Savepoint savepoint = savepoint(connection);
                 try (PreparedStatement statement = timeouts.prepare(connection, AUTHORISED_REPLAY_SQL)) {
                     statement.setString(1, claim.messageId());
                     statement.setString(2, claim.integration());
                     statement.setString(3, claim.topic());
                     statement.setInt(4, claim.attempt());
                     JsonNode claimed = JSON.readTree(claim.redoStepsJson());
+                    boolean authorised = false;
                     try (ResultSet resultSet = statement.executeQuery()) {
-                        while (resultSet.next()) {
-                            if (claimed.equals(JSON.readTree(resultSet.getString(1)))) {
-                                return true;
-                            }
+                        while (!authorised && resultSet.next()) {
+                            authorised = claimed.equals(JSON.readTree(resultSet.getString(1)));
                         }
-                        return false;
                     }
+                    if (savepoint != null) {
+                        connection.releaseSavepoint(savepoint);
+                    }
+                    return authorised;
+                } catch (SQLException e) {
+                    if (savepoint != null) {
+                        try {
+                            connection.rollback(savepoint);
+                        } catch (SQLException rollback) {
+                            // The transaction stays aborted: report that, so the attempt does not go on.
+                            rollback.addSuppressed(e);
+                            throw rollback;
+                        }
+                    }
+                    throw e;
                 }
             });
         } catch (Exception e) {
@@ -239,6 +259,15 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     @Override
     public void recordFailed(StepResult step) {
         record(step, StepStatus.FAILED, RECORD_FAILED_SQL, null);
+    }
+
+    // A connection that cannot set one runs the read without it, as before.
+    private static Savepoint savepoint(Connection connection) {
+        try {
+            return connection.setSavepoint();
+        } catch (SQLException e) {
+            return null;
+        }
     }
 
     private void record(StepResult step, StepStatus status, String sql, StepOutputCheckpoint checkpoint) {
