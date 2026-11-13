@@ -1,6 +1,5 @@
 package no.basis.integrationplatform.camel;
 
-import org.apache.camel.util.SensitiveUtils;
 import org.apache.camel.util.URISupport;
 
 import java.nio.ByteBuffer;
@@ -12,14 +11,16 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * Masks the credentials in an endpoint URI before the adapter stores or logs it, by the rule the
  * .NET adapter applies to the step endpoints it records, so that both adapters store the same value
  * for the same URI.
  *
- * <p>The result starts from Camel's {@link URISupport#sanitizeUri(String)} and also masks the whole
- * user info of the authority, and the value of each query parameter whose name is credential-like:
+ * <p>The result starts from what Camel 4.18's {@link URISupport#sanitizeUri(String)} masks, with the
+ * sensitive option names of Camel 4.18 on every Camel version, and also masks the whole user info
+ * of the authority, and the value of each query parameter whose name is credential-like:
  * by the rule for DLQ header names, or {@code key}, {@code code}, {@code sig} or {@code pwd}, or a
  * name that contains {@code passphrase}, {@code passcode}, {@code privatekey}, {@code accesskey},
  * {@code accountkey} or {@code connectionstring}. Both rules read the URI as given, and a run of
@@ -37,10 +38,32 @@ public final class EndpointUriMasking {
     private static final List<String> URI_CREDENTIAL_NAME_PARTS = List.of(
             "passphrase", "passcode", "privatekey", "accesskey", "accountkey", "connectionstring");
 
+    // The option names Camel 4.18's SensitiveUtils treats as sensitive, the list the .NET adapter
+    // masks. Later Camel versions changed it (4.22 drops login and passcode and adds others), so
+    // the adapter keeps its own copy: the stored value must not change with the Camel version.
+    static final List<String> CAMEL_SENSITIVE_NAMES = List.of(
+            "accesskey", "accesstoken", "accesstokensecret", "accountkey", "accountsid", "acltoken",
+            "api_key", "api_secret", "apikey", "apipassword", "apiuser", "apiusername",
+            "authenticationtoken", "authkey", "authorizationtoken", "authtoken", "azureclientid",
+            "azureclientsecret", "blobaccesskey", "blobstoragesharedkeycredential", "certresourcepassword",
+            "clientid", "clientsecret", "clientsecretcredential", "connectionstring", "consumerkey",
+            "consumersecret", "emailaddress", "httpproxypassword", "kerberosauthticket", "keypassword",
+            "keystorepassword", "login", "oauthclientid", "oauthclientsecret", "oauthtoken", "oauthtokenurl",
+            "p12filename", "passcode", "passphrase", "password", "personalaccesstoken", "privatekey",
+            "privatekeyfile", "privatekeyname", "privatekeypassword", "proxyauthpassword",
+            "proxyauthusername", "proxypassword", "proxyuser", "proxyusername", "publickeyid", "publishkey",
+            "queueownerawsaccountid", "realm", "refreshtoken", "sascredential", "sasljaasconfig",
+            "saslpassword", "sassignature", "secret", "secretkey", "securerandom", "serviceinstanceid",
+            "sessiontoken", "sharedaccesskey", "sourceblobaccesskey", "sslkeypassword",
+            "sslkeystorepassword", "sslpassword", "ssltruststorepassword", "subscribekey", "systemid",
+            "token", "tokencredential", "truststorepassword", "user", "userauthenticationcredentials",
+            "username", "userpassword", "verificationcode", "webhookverifytoken", "zookeeperpassword");
+
     // URISupport.sanitizeUri's two patterns, built as Camel builds them, so that the source of
     // every character can be followed.
     private static final Pattern CAMEL_SECRET_PARAMETER = Pattern.compile(
-            "([?&][^=]*(?:" + SensitiveUtils.getSensitivePattern() + ")[^=]*)=(RAW(([{][^}]*[}])|([(][^)]*[)]))|[^&]*)",
+            "([?&][^=]*(?:" + CAMEL_SENSITIVE_NAMES.stream().map(Pattern::quote).collect(Collectors.joining("|"))
+                    + ")[^=]*)=(RAW(([{][^}]*[}])|([(][^)]*[)]))|[^&]*)",
             Pattern.CASE_INSENSITIVE);
     private static final Pattern CAMEL_USER_INFO_PASSWORD = Pattern.compile("(.*://.*?:)(.*)(@)");
 
@@ -88,7 +111,8 @@ public final class EndpointUriMasking {
         String result = masked.toString();
         if (hasAddedSanitizeKeywords() && !URISupport.sanitizeUri(endpointUri).equals(camel.text.toString())) {
             // The application added keywords to Camel's sanitizer, which the patterns above do
-            // not know; mask those too, so nothing Camel masks is stored.
+            // not know; mask those too, so nothing Camel masks is stored. This pass also applies
+            // the sensitive names of the Camel version the application runs.
             return URISupport.sanitizeUri(result);
         }
         return result;
@@ -107,6 +131,11 @@ public final class EndpointUriMasking {
         } catch (ReflectiveOperationException | RuntimeException | LinkageError e) {
             return true;
         }
+    }
+
+    /** What Camel 4.18's sanitizeUri records for the URI, without added keywords. */
+    static String camelSanitizeUri(String endpointUri) {
+        return camelSanitized(endpointUri, Long.MAX_VALUE).text.toString();
     }
 
     /** Whether Camel's added-keyword field was found, so the bounded path is used without them. */
