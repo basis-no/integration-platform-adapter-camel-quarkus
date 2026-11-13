@@ -281,6 +281,23 @@ No Message Store schema change.
 What an integration notices when it moves from 0.3.6; the entries above give
 the details.
 
+- **Error texts show `xxxxxx` where they showed credentials.** Every URI in a
+  failure text that is stored, published in `x-bip-error` or logged is masked
+  by the stored-endpoint rule, once; a DLQ reader or alert that matched an
+  unmasked value in `x-bip-error` must match the masked form. A structured log
+  shows a masked failure's class as `ErrorTextMasking$MaskedFailure`, with the
+  original class in its text. An application's own `direct:` parking route
+  sees the caught failure as that masked copy instead of the original
+  exception, so a parking route that checks the exception's type or status
+  code must read its text instead. Rows, DLQ records and logs written before
+  keep their text: rotate any credential that has appeared in the URL of a
+  failed send.
+- **More header names are credential-like.** A consumed record's
+  `X-JWT-Assertion`, `PrivateKey` or other header whose name contains
+  `assertion`, `privatekey`, `jwt` or `bearer`, and an application's own
+  `x-bip-…-key` or `x-bip-…-token` header, is masked in the parked copy and no
+  longer reaches HTTP receivers; stored endpoints mask `?jwt=`, `?assertion=`
+  and `?bearer=` values.
 - **Kafka inputs start at `earliest`.** A new consumer group, a changed
   `groupId`, a group whose committed offsets expired on the broker, and a Kafka
   input without a `groupId` now read each partition's retained records from
