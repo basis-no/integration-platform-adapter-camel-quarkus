@@ -243,9 +243,11 @@ the details.
   redelivery delays are capped at 20 seconds (5, 10, 20, 20, 20 and 20). For
   such a route, also set `maxPollRecords=1` on its Kafka input or raise
   `maxPollIntervalMs`.
-- **Message Store statements time out.** Each statement of the Postgres sink
-  and the Postgres step outcome store runs with a 10-second statement timeout
-  and a 5-second lock timeout. A statement that needs longer now fails, and its
+- **Message Store statements time out.** By default, each statement of the
+  Postgres sink and the Postgres step outcome store runs in its call's own
+  transaction with a 10-second statement timeout and a 5-second lock timeout
+  (a step outcome call that joins an application transaction gets only the
+  query and network timeouts). A statement that needs longer now fails, and its
   record is read again; raise `basis.message-store.statement-timeout` or
   `basis.message-store.lock-timeout` for it, and set `loginTimeout` in the
   JDBC URL. A commit that PostgreSQL reports with a warning is a store failure
@@ -253,7 +255,14 @@ the details.
 - **Update alerts on the not-committed line.** For a record whose step outcome
   could not be checked or recorded, the ERROR line is `Message <id> is not
   committed: a step outcome was not checked or recorded, so it is consumed
-  again`, with `storeError=<class>` and the SQLSTATE.
+  again`, with `storeError=<class>` and the SQLSTATE. Neither the dead letter
+  channel nor an application's own `onException` runs for an attempt that a
+  store failure ended.
+- **Resend messages that 0.3.5 or 0.3.6 recorded as delivered from a failed
+  sub-route.** Such a message keeps its `DELIVERED` step after the upgrade and
+  is still skipped. Find them as the README describes (`COMPLETED` in the
+  Message Store, with a record on the DLQ topic), and resend each one the
+  receiver did not get with the step in `redoSteps`.
 - **Envelope values over 1,024 bytes are refused.** A record whose
   `x-bip-message-id`, `x-bip-correlation-id`, `x-bip-content-type`,
   `x-bip-source-system` or `x-bip-target-system` is longer, or holds a NUL
