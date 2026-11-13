@@ -80,10 +80,14 @@ attempt's `steps_json`, and named in the adapter's warnings, with its
 credentials masked as `xxxxxx`. The rule is the one the .NET adapter applies to
 the steps it records, so both adapters store the same value for the same URI:
 
-- what Camel's `URISupport.sanitizeUri` masks: the value of every query
-  parameter whose name contains one of Camel's sensitive option names (such as
-  `password`, `token`, `secret`, `apikey`, `user` or `clientId`), and the
-  password in a `user:password@` part, including inside a parameter value;
+- what Camel 4.18's `URISupport.sanitizeUri` masks: the value of every query
+  parameter whose name contains one of Camel 4.18's sensitive option names
+  (such as `password`, `token`, `secret`, `apikey`, `user`, `clientId` or
+  `login`), and the password in a `user:password@` part, including inside a
+  parameter value. The adapter keeps its own copy of that list, so the stored
+  value does not change with the Camel version an application runs; later
+  Camel versions changed the list (Camel 4.22 no longer lists `login` and
+  `passcode`, and adds names such as `knownHosts` and `subscriptionId`);
 - the whole user info of the endpoint's authority (`https://xxxxxx@host/…`),
   not only its password;
 - the value of every query parameter with a credential-like name, by the rule
@@ -99,10 +103,11 @@ the steps it records, so both adapters store the same value for the same URI:
   valid UTF-8 is compared as written), ignoring case.
 
 A run of masked characters becomes one `xxxxxx`. Keywords an application adds
-with `URISupport.addSanitizeKeywords` are masked too (the .NET adapter has no
-such setting). An endpoint the adapter's patterns cannot mask within about a
-second is stored as `xxxxxx`; when an application has added keywords, Camel's
-own sanitizer also runs on it, and that pass has no such bound. The route still sends to the real endpoint; only the stored
+with `URISupport.addSanitizeKeywords` are masked too, in every parameter whose
+name contains one (the .NET adapter has no such setting); Camel's other
+sensitive option names are not applied with them. An endpoint the adapter's
+patterns, the added keywords included, cannot mask within about a second is
+stored as `xxxxxx`. The route still sends to the real endpoint; only the stored
 and logged copy is masked.
 
 ## Explicit Classification

@@ -19,7 +19,7 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  */
 class EndpointUriMaskingTest {
 
-    /** Mirrors .NET MaskEndpointUriRecordsWhatTheCamelAdapterRecords: Camel's sanitizeUri already gives the value. */
+    /** Mirrors .NET MaskEndpointUriRecordsWhatTheCamelAdapterRecords: Camel 4.18's sanitizeUri already gives the value. */
     static Stream<Arguments> camelValues() {
         return Stream.of(
                 Arguments.of("https://target.example/api/orders?orderId=42", "https://target.example/api/orders?orderId=42"),
@@ -60,14 +60,58 @@ class EndpointUriMaskingTest {
     @ParameterizedTest
     @MethodSource("camelValues")
     void recordsWhatCamelsSanitizerRecordsWhenThatMasksEverything(String endpointUri, String expected) {
-        assertEquals(expected, URISupport.sanitizeUri(endpointUri), "the .NET case's Camel value");
+        assertEquals(expected, EndpointUriMasking.camelSanitizeUri(endpointUri), "the .NET case's Camel 4.18 value");
         assertEquals(expected, EndpointUriMasking.mask(endpointUri));
+    }
+
+    /**
+     * Camel 4.22 no longer lists login and passcode as sensitive. The stored value keeps Camel
+     * 4.18's names, which the .NET adapter masks, on every Camel version.
+     */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "https://target.example/a?login=l&page=2|https://target.example/a?login=xxxxxx&page=2",
+            "https://target.example/a?loginName=l&page=2|https://target.example/a?loginName=xxxxxx&page=2",
+            "https://target.example/a?passcode=p&page=2|https://target.example/a?passcode=xxxxxx&page=2"})
+    void masksTheNamesCamelNoLongerListsAsSensitive(String endpointUri, String expected) {
+        assertEquals(expected, EndpointUriMasking.mask(endpointUri));
+    }
+
+    /**
+     * A name later Camel versions added, and neither adapter rule covers, is stored as the .NET
+     * adapter stores it. Masking it would need the same change in both adapters.
+     */
+    @ParameterizedTest
+    @org.junit.jupiter.params.provider.CsvSource(delimiter = '|', value = {
+            "https://target.example/a?knownHosts=k&page=2",
+            "https://target.example/a?subscriptionId=s&page=2"})
+    void storesNamesOnlyLaterCamelVersionsListAsTheDotNetAdapterDoes(String endpointUri) {
+        assertEquals(endpointUri, EndpointUriMasking.mask(endpointUri));
+    }
+
+    /**
+     * Camel's sanitizer on this Camel version and the adapter's copy of Camel 4.18's agree for
+     * every name both list, so a change to Camel's patterns shows up here.
+     */
+    @Test
+    void agreesWithThisCamelVersionsSanitizerForTheNamesBothList() {
+        java.util.Set<String> current = org.apache.camel.util.SensitiveUtils.getSensitiveKeys();
+        int compared = 0;
+        for (String name : EndpointUriMasking.CAMEL_SENSITIVE_NAMES) {
+            if (!current.contains(name)) {
+                continue;
+            }
+            String uri = "https://u:p@target.example/a?page=2&" + name + "=RAW(v&w)&x" + name + "y=v#f";
+            assertEquals(URISupport.sanitizeUri(uri), EndpointUriMasking.camelSanitizeUri(uri), name);
+            compared++;
+        }
+        assertTrue(compared > 70, "Camel still lists most of the names: " + compared);
     }
 
     /**
      * Mirrors .NET MaskEndpointUriAlsoMasksUserInfoAndTheAdapterCredentialNames: the whole user
      * info, and the DLQ header rule's names plus key, code, sig and pwd. The third value is what
-     * Camel's sanitizeUri alone records, which this adapter stored before.
+     * Camel 4.18's sanitizeUri alone records, which this adapter stored before.
      */
     static Stream<Arguments> adapterValues() {
         return Stream.of(
@@ -114,7 +158,7 @@ class EndpointUriMaskingTest {
     @ParameterizedTest
     @MethodSource("adapterValues")
     void alsoMasksUserInfoAndTheCredentialNamesAsTheDotNetAdapterDoes(String endpointUri, String expected, String camelRecords) {
-        assertEquals(camelRecords, URISupport.sanitizeUri(endpointUri), "the .NET case's Camel value");
+        assertEquals(camelRecords, EndpointUriMasking.camelSanitizeUri(endpointUri), "the .NET case's Camel 4.18 value");
         assertEquals(expected, EndpointUriMasking.mask(endpointUri));
         assertNotEquals(camelRecords, expected);
     }
@@ -184,6 +228,27 @@ class EndpointUriMaskingTest {
         }
         assertEquals("https://xxxxxx@target.example/a?zqfixtureword=s&page=2",
                 EndpointUriMasking.mask("https://u:p@target.example/a?zqfixtureword=s&page=2"));
+    }
+
+    /**
+     * With an added keyword, only that keyword is applied on top: a name only later Camel
+     * versions list stays as the .NET adapter stores it, and every parameter with the keyword is
+     * masked.
+     */
+    @Test
+    void appliesOnlyTheAddedKeywordsOnTopOfTheSharedRule() throws Exception {
+        java.lang.reflect.Field extra = URISupport.class.getDeclaredField("EXTRA_SECRETS");
+        extra.setAccessible(true);
+        Object before = extra.get(null);
+        String uri = "https://target.example/a?knownHosts=k&zqfixtureword=s&subscriptionId=i&login=l&xzqfixtureword=t";
+        try {
+            URISupport.addSanitizeKeywords("zqfixtureword");
+
+            assertEquals("https://target.example/a?knownHosts=k&zqfixtureword=xxxxxx&subscriptionId=i&login=xxxxxx"
+                    + "&xzqfixtureword=xxxxxx", EndpointUriMasking.mask(uri));
+        } finally {
+            extra.set(null, before);
+        }
     }
 
     @Test

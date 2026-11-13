@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * Warns when a route is created with an HTTP timeout option that Camel 4's {@code http}
  * component accepts without applying it, so a call waits for the component's timeout,
- * three minutes unless configured. Checked on Camel 4.18:
+ * three minutes unless configured. Checked on Camel 4.18 and 4.22:
  * <ul>
  * <li>{@code socketTimeout}, a Camel 3 option, is sent to the receiver as a query parameter;</li>
  * <li>{@code httpConnection.*} applies only {@code soTimeout}; other timeouts are dropped;</li>
