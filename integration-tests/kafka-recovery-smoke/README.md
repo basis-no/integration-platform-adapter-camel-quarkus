@@ -47,7 +47,8 @@ predicate. Raw state pairs, HTTP bodies and phase times remain required evidence
 
 - SmallRye Health is an actual runtime dependency. It alone does not bridge
   Camel checks to HTTP. Dependency management does not add a dependency.
-- Testcontainers Kafka is an actual test dependency pinned to 2.0.3.
+- Testcontainers Kafka is an actual test dependency. The Quarkus BOM manages
+  its version together with core Testcontainers, as in the root POM.
 - The adapter's `@Produces @DefaultBean @ApplicationScoped` sink fallback is
   replaced by the ordinary CaptureSink application bean. The test asserts
   resolvable CDI selection and its type before starting either route.
