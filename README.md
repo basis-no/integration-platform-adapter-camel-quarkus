@@ -907,6 +907,13 @@ The endpoint calls `MessageReplayService`, reads `x-dashboard-user` and
 `status`, `messageId`, `replayId`, `integration`, `topic`, and `attempt`.
 Optional JSON request fields `requestedBy`, `reason`, and `redoSteps` are also
 accepted for future callers that prefer a body over headers.
+A replay failure is answered with `status` `FAILED` and `error`: `404` when
+the message is not stored, `409` with the reason otherwise. From 0.3.7 a
+failure the endpoint does not expect, also one that carries an HTTP answer of
+its own, is answered `500` with a fixed `error`: whether the replay was
+published is not known, so check the replay audit and the integration's log
+before you resend. No answer carries a failure's type or
+stack trace, in any launch mode; the log keeps the failure, masked.
 
 Callers can use `MessageReplayRequest` to include operator context:
 

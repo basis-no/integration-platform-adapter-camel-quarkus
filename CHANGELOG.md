@@ -70,6 +70,21 @@ No Message Store schema change.
   status only, and the caller of an internal request (a `direct:` route or a
   `ProducerTemplate`) that read `x-bip-error` or `x-bip-dlq-at` from the failed
   exchange must read its exception instead.
+- The resend endpoint answers a failure it does not expect itself. It caught
+  only its own replay failures, and any other exception went to Quarkus's error
+  handling, which in dev and test mode answers the caller with the failure's
+  class, text, source lines and stack trace, and in every mode logs the failure
+  unmasked. Such a failure is now answered `500` with `status` `FAILED` and a
+  fixed `error` saying that whether the replay was published is not known, as
+  the .NET adapter's `RESEND_FAILED` does, and is logged once, masked. The
+  endpoint's other answers are unchanged. A failure that carries an HTTP
+  answer of its own, such as a `WebApplicationException` from an
+  application's own `MessageReplayService` or one an application's
+  `ExceptionMapper` handled, is now answered the same way.
+  Upgrade: a caller that read Quarkus's `details` from such an answer reads the
+  endpoint's `error` instead; the failure itself is in the log. An application
+  whose own replay service or exception mapper chose the answer to a failure
+  gets the `500` instead.
 
 ### Changed
 
@@ -321,6 +336,11 @@ the details.
   `x-bip-error` and `x-bip-dlq-at`: an HTTP caller no longer receives the
   failure text in the answer, and a caller that read these headers from the
   failed exchange must read its exception instead.
+- **The resend endpoint answers an unexpected failure itself:** `500` with
+  `status` `FAILED` and a fixed `error`, not Quarkus's error page; the log
+  keeps the failure, masked. A failure that carries an HTTP answer of its own,
+  from an application's replay service or exception mapper, gets that `500`
+  too.
 - **Kafka inputs start at `earliest`.** A new consumer group, a changed
   `groupId`, a group whose committed offsets expired on the broker, and a Kafka
   input without a `groupId` now read each partition's retained records from
