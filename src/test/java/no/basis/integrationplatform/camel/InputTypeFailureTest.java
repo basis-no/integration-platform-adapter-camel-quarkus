@@ -54,7 +54,7 @@ class InputTypeFailureTest {
     static final ConfluentKafkaContainer KAFKA = new ConfluentKafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
 
     @Container
-    static final GenericContainer<?> BROKER = new GenericContainer<>(DockerImageName.parse("apache/activemq-artemis:2.38.0-alpine"))
+    static final GenericContainer<?> BROKER = new GenericContainer<>(DockerImageName.parse("apache/artemis:2.57.0-alpine"))
             .withEnv("ARTEMIS_USER", "artemis")
             .withEnv("ARTEMIS_PASSWORD", "artemis")
             .withExposedPorts(61616)
