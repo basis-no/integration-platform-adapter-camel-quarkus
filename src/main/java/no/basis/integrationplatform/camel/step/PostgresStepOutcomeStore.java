@@ -13,7 +13,6 @@ import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.SQLException;
-import java.sql.Savepoint;
 import java.sql.Timestamp;
 import java.util.Map;
 import java.util.Optional;
@@ -23,6 +22,7 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     /** Canonical durable step-outcome table. */
     public static final String TABLE_NAME = "bip_step_outcome";
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String SAVEPOINT = "bip_replay_audit_read";
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
 
@@ -209,8 +209,10 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             return timeouts.inTransactionOrJoin(dataSource, connection -> {
                 // A failed statement aborts the whole transaction, also an application's own one
                 // this call joined. A refused read drops the redo list and the attempt goes on, so
-                // the read runs under a savepoint that undoes its failure.
-                Savepoint savepoint = savepoint(connection);
+                // the read runs under a savepoint that undoes its failure. It is set in SQL: a pool
+                // refuses JDBC's savepoint rollback while the connection is enlisted in a JTA
+                // transaction, and an XA connection refuses JDBC's savepoints altogether.
+                boolean savepoint = setSavepoint(connection);
                 try (PreparedStatement statement = timeouts.prepare(connection, AUTHORISED_REPLAY_SQL)) {
                     statement.setString(1, claim.messageId());
                     statement.setString(2, claim.integration());
@@ -223,18 +225,28 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
                             authorised = claimed.equals(JSON.readTree(resultSet.getString(1)));
                         }
                     }
-                    if (savepoint != null) {
-                        connection.releaseSavepoint(savepoint);
+                    if (savepoint) {
+                        execute(connection, "release savepoint " + SAVEPOINT);
                     }
                     return authorised;
                 } catch (SQLException e) {
-                    if (savepoint != null) {
+                    if (savepoint) {
                         try {
-                            connection.rollback(savepoint);
+                            execute(connection, "rollback to savepoint " + SAVEPOINT);
                         } catch (SQLException rollback) {
                             // The transaction stays aborted: report that, so the attempt does not go on.
                             rollback.addSuppressed(e);
                             throw rollback;
+                        }
+                    }
+                    throw e;
+                } catch (Exception e) {
+                    // Nothing failed in the database: the savepoint is only released.
+                    if (savepoint) {
+                        try {
+                            execute(connection, "release savepoint " + SAVEPOINT);
+                        } catch (SQLException release) {
+                            e.addSuppressed(release);
                         }
                     }
                     throw e;
@@ -261,12 +273,19 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
         record(step, StepStatus.FAILED, RECORD_FAILED_SQL, null);
     }
 
-    // A connection that cannot set one runs the read without it, as before.
-    private static Savepoint savepoint(Connection connection) {
+    // Whether the savepoint was set; a connection that refuses one runs the read without it, as before.
+    private boolean setSavepoint(Connection connection) {
         try {
-            return connection.setSavepoint();
+            execute(connection, "savepoint " + SAVEPOINT);
+            return true;
         } catch (SQLException e) {
-            return null;
+            return false;
+        }
+    }
+
+    private void execute(Connection connection, String sql) throws SQLException {
+        try (PreparedStatement statement = timeouts.prepare(connection, sql)) {
+            statement.execute();
         }
     }
 
