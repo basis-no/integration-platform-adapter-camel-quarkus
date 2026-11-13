@@ -30,6 +30,7 @@ import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Properties;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -53,8 +54,13 @@ class InputTypeFailureTest {
     @Container
     static final ConfluentKafkaContainer KAFKA = new ConfluentKafkaContainer(DockerImageName.parse("confluentinc/cp-kafka:7.6.1"));
 
+    /** The broker runs the same Artemis version as the test's JMS client, test.artemis.version in pom.xml. */
+    static final String ARTEMIS_VERSION = Objects.requireNonNull(System.getProperty("artemis.version"),
+            "The build passes artemis.version (maven-surefire-plugin)");
+
     @Container
-    static final GenericContainer<?> BROKER = new GenericContainer<>(DockerImageName.parse("apache/artemis:2.57.0-alpine"))
+    static final GenericContainer<?> BROKER = new GenericContainer<>(
+            DockerImageName.parse("apache/artemis:" + ARTEMIS_VERSION + "-alpine"))
             .withEnv("ARTEMIS_USER", "artemis")
             .withEnv("ARTEMIS_PASSWORD", "artemis")
             .withExposedPorts(61616)

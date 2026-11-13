@@ -217,7 +217,7 @@
       <groupId>org.springframework</groupId><artifactId>spring-context</artifactId>
       <version>${test.spring.version}</version><scope>test</scope>
     </dependency>
-    <!-- test.artemis.version must equal the broker image tag in InputTypeFailureTest. -->
+    <!-- Surefire passes test.artemis.version to InputTypeFailureTest, which runs the broker image of that version. -->
     <dependency>
       <groupId>org.apache.artemis</groupId><artifactId>artemis-jakarta-client</artifactId>
       <version>${test.artemis.version}</version><scope>test</scope>
@@ -282,6 +282,7 @@
           <systemPropertyVariables>
             <released.adapter.jar>${project.build.directory}/released-adapter/integration-platform-adapter-camel-quarkus.jar</released.adapter.jar>
             <released.adapter.version>${upgrade-test.released-version}</released.adapter.version>
+            <artemis.version>${test.artemis.version}</artemis.version>
             <java.util.logging.manager>org.jboss.logmanager.LogManager</java.util.logging.manager>
           </systemPropertyVariables>
         </configuration>
