@@ -549,8 +549,15 @@ From 0.3.7 the failure text in `x-bip-error`, in the Message Store's error
 columns, in the attempt's steps and in the adapter's log lines has every URI in
 it masked by the stored-endpoint rule (see [Step Tracking](#step-tracking)): a
 receiver URL that a failed send's exception names keeps no user info, key or
-signature. A URI is a scheme (a letter, then letters, digits, `+`, `-` or
-`.`) followed by `://`, up to the next white space, `<` or `>`; a quote that
+signature. Each text is masked once, where the adapter takes it from the
+failure, as the .NET adapter does, so both adapters store the same text: a
+second pass would mask some texts further (`http://host:8080/a?b=c@d` is stored
+as `http://host:xxxxxx@d`, and a second pass would make it `http://xxxxxx@d`),
+and no sink or log line masks a masked text again. The one exception is the
+dead letter channel's line about a `direct:` parking route that throws the
+masked failure it was handed (see below): that line quotes the masked text and
+is masked as a whole once more. A URI is a scheme (a
+letter, then letters, digits, `+`, `-` or `.`) followed by `://`, up to the next white space, `<` or `>`; a quote that
 ends it is not part of it. One deadline of about a second covers the whole
 text, and at most 20 URIs are masked; any URI past either is replaced by
 `xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
@@ -560,8 +567,9 @@ class, with the stack traces kept and the messages of the failure, its causes
 and its suppressed failures masked the same way. The lines of Camel's error
 handlers that the adapter installs are masked too, and so is the failure that
 Camel's `FatalFallbackErrorHandler` logs when parking a managed Kafka input
-fails, as are the causes of the adapter's own not-parked and not-committed
-failures. Not covered: a failure of the parking endpoint or route itself, whose
+fails, as are the causes of the adapter's own not-parked, not-committed and
+reduced-outcome failures and of the Message Store contract check's startup
+failure. Not covered: a failure of the parking endpoint or route itself, whose
 text Camel logs as it is (keep credentials out of a `direct:` parking route's
 exceptions and out of `basis.message-store.dlq-uri`); for an input that is not a managed Kafka input, which gets
 its original failure back, Camel's `FatalFallbackErrorHandler` line and the

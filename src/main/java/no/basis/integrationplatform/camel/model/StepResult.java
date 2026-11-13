@@ -11,12 +11,6 @@ public record StepResult(
         String targetRef,
         String error,
         Instant occurredAt) {
-    /** Masks the URIs in an error text however the result was built. */
-    public StepResult {
-        error = ErrorTextMasking.mask(error);
-    }
-
-
     public static StepResult delivered(String step, String idempotencyKey, String endpointUri) {
         return new StepResult(step, StepStatus.DELIVERED, idempotencyKey, endpointUri, null, null, Instant.now());
     }

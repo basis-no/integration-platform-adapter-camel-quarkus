@@ -14,6 +14,12 @@ import java.util.Map;
  * white space, {@code <} or {@code >}; quotes that end it are not part of it. One deadline of
  * about a second covers the whole text, and at most {@value #MAX_URIS} URIs are masked; any URI
  * past either is replaced by {@code xxxxxx}. The scan is linear in the length of the text.</p>
+ *
+ * <p>Each text is masked once, as the .NET adapter does: where the adapter takes it from a
+ * failure, before it is stored, parked or logged. Masking is not idempotent (a second pass over
+ * {@code http://host:8080/a?b=c@d} masks the host as user info), so a text that was masked is
+ * never masked again: a {@link MaskedFailure} is the masked copy of a failure, and its text is
+ * kept as it is.</p>
  */
 public final class ErrorTextMasking {
     static final int MAX_URIS = 20;
@@ -85,7 +91,8 @@ public final class ErrorTextMasking {
     }
 
     /**
-     * The failure's message with its URIs masked, or its class name when it has none.
+     * The failure's message with its URIs masked, or its class name when it has none. The text
+     * of a masked copy is masked already and is returned as it is.
      *
      * @param failure a failure; may be {@code null}
      * @return the masked message, or {@code null} for {@code null}
@@ -94,14 +101,17 @@ public final class ErrorTextMasking {
         if (failure == null) {
             return null;
         }
-        return failure.getMessage() == null ? failure.getClass().getName() : mask(failure.getMessage());
+        if (failure.getMessage() == null) {
+            return failure.getClass().getName();
+        }
+        return failure instanceof MaskedFailure ? failure.getMessage() : mask(failure.getMessage());
     }
 
     /**
      * The failure to pass to a logger. When masking changes no message in its cause chain, that
      * is the failure itself. Otherwise it is a copy in which each failure of the chain keeps its
      * class name, in the text, and its stack trace, and has its message masked. The original
-     * stays unchanged, since it may be shared.
+     * stays unchanged, since it may be shared. A masked copy in the chain keeps its text.
      *
      * @param failure a failure; may be {@code null}
      * @return the failure or its masked copy, or {@code null} for {@code null}
@@ -127,6 +137,9 @@ public final class ErrorTextMasking {
         if (depth > MAX_CAUSES) {
             return true;
         }
+        if (failure instanceof MaskedFailure) {
+            return causesMaskAnything(failure, seen, depth, deadline);
+        }
         String message = failure.getMessage();
         if (message != null && !message.equals(mask(message, deadline))) {
             return true;
@@ -135,6 +148,11 @@ public final class ErrorTextMasking {
         if (text != null && !text.equals(mask(text, deadline))) {
             return true;
         }
+        return causesMaskAnything(failure, seen, depth, deadline);
+    }
+
+    // Whether masking changes a suppressed failure or the cause of this one.
+    private static boolean causesMaskAnything(Throwable failure, Map<Throwable, Boolean> seen, int depth, long deadline) {
         for (Throwable suppressed : failure.getSuppressed()) {
             if (masksAnything(suppressed, seen, depth + 1, deadline)) {
                 return true;
@@ -150,7 +168,8 @@ public final class ErrorTextMasking {
             return known;
         }
         // toString() names the class, then the message or whatever the exception adds to it.
-        MaskedFailure copy = new MaskedFailure(mask(String.valueOf(failure), deadline), failure.getStackTrace());
+        String text = failure instanceof MaskedFailure ? failure.getMessage() : mask(String.valueOf(failure), deadline);
+        MaskedFailure copy = new MaskedFailure(text, failure.getStackTrace());
         copies.put(failure, copy);
         Throwable cause = failure.getCause();
         if (cause != null && cause != failure && depth < MAX_CAUSES) {
@@ -164,7 +183,10 @@ public final class ErrorTextMasking {
         return copy;
     }
 
-    /** A failure as the log shows it: the original class name and stack trace, a masked message. */
+    /**
+     * A failure as the log shows it: the original class name and stack trace, a masked message.
+     * Its text is masked already, so it is never masked again.
+     */
     static final class MaskedFailure extends RuntimeException {
         private MaskedFailure(String text, StackTraceElement[] stackTrace) {
             super(text);

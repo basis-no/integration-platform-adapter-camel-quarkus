@@ -14,7 +14,9 @@ No Message Store schema change.
   stored-endpoint rule (user info, and parameters such as `code`, `sig`, `key`
   or a credential-like name), also in the failures the adapter logs, whose class
   names and stack traces stay, and in the lines of Camel's error handlers the
-  adapter installs, including the failure logged when parking fails. Not
+  adapter installs, including the failure logged when parking fails. Each text
+  is masked once, as the .NET adapter does, so that both adapters store the same
+  text for the same failure. Not
   covered: a failure of the parking endpoint or route itself; for an input that
   is not a managed Kafka input, Camel's
   `FatalFallbackErrorHandler` line and the consumer's own failure line; the

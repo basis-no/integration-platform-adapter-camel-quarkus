@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -106,7 +107,7 @@ public class ContractVersionStartupGate {
                 lastFailure = e;
                 if (attempt < maxAttempts) {
                     LOG.info("Contract check attempt {}/{} failed ({}); retrying in {} ms",
-                            attempt, maxAttempts, e.getMessage(), retryDelayMs);
+                            attempt, maxAttempts, ErrorTextMasking.message(e), retryDelayMs);
                     try {
                         Thread.sleep(retryDelayMs);
                     } catch (InterruptedException interrupted) {
@@ -121,9 +122,9 @@ public class ContractVersionStartupGate {
         // cannot reach its journal must not consume anyway.
         throw new IllegalStateException("Message-store contract gate could not read " + CONTRACT_TABLE
                 + " after " + maxAttempts + " attempts ("
-                + (lastFailure == null ? "interrupted" : lastFailure.getMessage())
+                + (lastFailure == null ? "interrupted" : ErrorTextMasking.message(lastFailure))
                 + "). Refusing to start: fix grants/connectivity (the runtime role needs select on "
-                + CONTRACT_TABLE + ").", lastFailure);
+                + CONTRACT_TABLE + ").", ErrorTextMasking.forLog(lastFailure));
     }
 
     private void queryAndCheck(DataSource resolved) throws SQLException {

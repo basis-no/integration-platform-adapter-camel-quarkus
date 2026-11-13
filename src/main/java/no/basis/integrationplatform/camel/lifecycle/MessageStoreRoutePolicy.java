@@ -295,7 +295,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             }
             if (managed(exchange)) {
                 LOG.error("Message {} is not committed: its outcome could not be recorded, so it is consumed again{}",
-                        exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e), e);
+                        exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e),
+                        ErrorTextMasking.forLog(e));
             }
             readAgain(route, exchange, "Failed to record message outcome; Kafka offset was not committed", e);
             return;
@@ -305,7 +306,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             if (managed(exchange)) {
                 LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed "
                         + "again{}", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID),
-                        StoreErrorClass.logSuffix(unrecorded), unrecorded);
+                        StoreErrorClass.logSuffix(unrecorded), ErrorTextMasking.forLog(unrecorded));
             }
             readAgain(route, exchange, "A step outcome was not checked or recorded; Kafka offset was not committed",
                     unrecorded);
@@ -372,7 +373,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         // The parked copy and the row name the record: the DLQ copy carries no Kafka position,
         // and a derived id is traced back to the record only through it.
-        String stored = position == null ? reason : reason + " (record " + position + ")";
+        // Masked once, as the parked copy's x-bip-error is; the row below keeps it as it is.
+        String stored = ErrorTextMasking.mask(position == null ? reason : reason + " (record " + position + ")");
         if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, stored)) {
             LOG.error("Message {} at {} is not committed: it could not be parked for its own data; {} storeError=record-data",
                     messageId, position, reason);
@@ -393,7 +395,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             recordReduced(reduced);
         } catch (Exception e) {
             LOG.error("Message {} at {} is not committed: its reduced outcome could not be recorded{}", messageId,
-                    position, StoreErrorClass.logSuffix(e), e);
+                    position, StoreErrorClass.logSuffix(e), ErrorTextMasking.forLog(e));
             readAgain(route, exchange, "Failed to record the reduced outcome", e);
             return;
         }
