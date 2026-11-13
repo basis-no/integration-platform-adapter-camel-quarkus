@@ -1099,8 +1099,9 @@ Step ids are derived from the exact URI, so masking does not change them. The
 route still sends to the real endpoint; only the stored and logged copy is
 masked. Failed and skipped step entries use the same masked endpoint, as do the
 warning emitted when a send has no stable Camel node id and the startup
-refusal for a send without an id. This masks the endpoint field, not arbitrary
-exception messages or application logs. Existing rows, logs and backups are not
+refusal for a send without an id. From 0.3.7 the URIs in failure texts are
+masked by the same rule (see [Retry and DLQ](#retry-and-dlq)); other text in
+exception messages and application logs is not. Existing rows, logs and backups are not
 rewritten, unless the same step is recorded again; review their access and
 retention separately. A query or tool that matched a stored endpoint's user
 name or one of these parameter values no longer finds it in rows recorded from

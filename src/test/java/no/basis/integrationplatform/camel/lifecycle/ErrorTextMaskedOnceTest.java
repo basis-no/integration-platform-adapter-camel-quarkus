@@ -155,6 +155,7 @@ class ErrorTextMaskedOnceTest {
         // writes. Camel's fallback handler logs a failure of the parking route itself as it is
         // (documented), so its lines are not checked when that route throws.
         boolean adapterLine = false;
+        boolean errorHandlerLine = false;
         for (LogRecord record : logs) {
             String logger = String.valueOf(record.getLoggerName());
             boolean adapter = logger.startsWith("no.basis.");
@@ -178,12 +179,15 @@ class ErrorTextMaskedOnceTest {
                     assertTrue(text.contains(URI_ONCE), logger + ": " + text);
                 }
             }
+            errorHandlerLine |= logger.startsWith("org.apache.camel.processor.errorhandler")
+                    && texts(record).stream().anyMatch(text -> text.contains(URI_ONCE));
             if (adapter && record.getThrown() != null && record.getThrown().toString().contains("host:")) {
                 assertEquals(IllegalStateException.class.getName() + ": " + ONCE, record.getThrown().toString());
                 adapterLine = true;
             }
         }
         assertTrue(adapterLine, "The adapter logged the failure");
+        assertTrue(errorHandlerLine, "The dead letter channel logged the failure through the adapter's logger");
     }
 
     @Test

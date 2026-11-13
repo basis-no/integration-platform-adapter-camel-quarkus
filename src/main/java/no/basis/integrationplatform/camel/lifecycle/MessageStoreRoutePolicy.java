@@ -366,19 +366,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 && recordDataInARow.getOrDefault(partition(position), 0) >= MAX_RECORD_DATA_IN_A_ROW) {
             LOG.error("Message {} at {} is not committed: {} records in a row on this partition could not be stored for "
                             + "their own data, so this one is held back; check the Message Store's settings and schema. "
-                            + "{} storeError=schema", messageId, position, MAX_RECORD_DATA_IN_A_ROW, reason);
-            readAgain(route, exchange, reason + "; held back after " + MAX_RECORD_DATA_IN_A_ROW + " such records in a row",
+                            + "{} storeError=schema", messageId, position, MAX_RECORD_DATA_IN_A_ROW,
+                    ErrorTextMasking.mask(reason));
+            readAgain(route, exchange, ErrorTextMasking.mask(reason) + "; held back after " + MAX_RECORD_DATA_IN_A_ROW + " such records in a row",
                     null);
             return;
         }
         // The parked copy and the row name the record: the DLQ copy carries no Kafka position,
         // and a derived id is traced back to the record only through it.
-        // Masked once, as the parked copy's x-bip-error is; the row below keeps it as it is.
-        String stored = ErrorTextMasking.mask(position == null ? reason : reason + " (record " + position + ")");
+        // The parked copy's x-bip-error masks this text once, and so does the row below.
+        String stored = position == null ? reason : reason + " (record " + position + ")";
         if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, stored)) {
             LOG.error("Message {} at {} is not committed: it could not be parked for its own data; {} storeError=record-data",
-                    messageId, position, reason);
-            readAgain(route, exchange, "Not parked: " + reason, null);
+                    messageId, position, ErrorTextMasking.mask(reason));
+            readAgain(route, exchange, "Not parked: " + ErrorTextMasking.mask(reason), null);
             return;
         }
         MessageAttemptResult full = result(route, exchange);
@@ -387,7 +388,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 full.payloadDeletedAt(), full.replayable(),
                 full.replayDisabledReason(), full.integration(), full.routeId(), full.attempt(), full.autoRedelivered(),
                 full.autoRedeliveryCount(), full.autoRedeliveryMax(), full.occurredAt(),
-                completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), stored);
+                completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), ErrorTextMasking.mask(stored));
         if (!completed && position != null) {
             parkedForData.add(parkedKey);
         }
@@ -413,7 +414,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         // Parked and recorded: the consumer goes on with the next record.
         exchange.setException(null);
         LOG.error("Message {} from record {} was {}: {} storeError=record-data", messageId, position,
-                completed ? "recorded without its envelope values" : "parked", reason);
+                completed ? "recorded without its envelope values" : "parked", ErrorTextMasking.mask(reason));
     }
 
     /**
