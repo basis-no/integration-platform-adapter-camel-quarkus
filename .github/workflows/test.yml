@@ -45,12 +45,32 @@ jobs:
           --no-transfer-progress
           install
 
-      - name: Boot the packaged adapter in a Quarkus application
+      - name: Read the installed adapter version
         run: |
           version="$(./mvnw --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          echo "ADAPTER_VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Boot the packaged adapter in a Quarkus application
+        run: >-
+          ./mvnw
+          --batch-mode
+          --no-transfer-progress
+          -f integration-tests/startup-smoke/pom.xml
+          -Dadapter.version="$ADAPTER_VERSION"
+          verify
+
+      # The fixture below never pulls its image itself, so the pinned image is
+      # pulled here. Each fixture run needs a unique run ID.
+      - name: Pull the Key-Value Store fixture's pinned PostgreSQL image
+        run: docker pull postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+
+      - name: Verify the Key-Value Store and metrics at runtime
+        run: |
+          run_id="$(cat /proc/sys/kernel/random/uuid)"
           ./mvnw --batch-mode --no-transfer-progress \
-            -f integration-tests/startup-smoke/pom.xml \
-            -Dadapter.version="$version" verify
+            -f integration-tests/key-value-smoke/pom.xml \
+            -Dadapter.version="$ADAPTER_VERSION" \
+            -Dbip.test.run-id="$run_id" -DargLine="-Dbip.test.run-id=$run_id" verify
 
       - name: Verify public API documentation
         run: >-
