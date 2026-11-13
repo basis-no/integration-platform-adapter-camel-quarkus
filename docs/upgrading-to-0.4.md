@@ -320,6 +320,21 @@ Also not on this branch yet:
 
 The changelog's Unreleased section has the details; in short:
 
+- **Error texts show `xxxxxx` where they showed credentials.** Every URI in a
+  failure text that is stored, published in `x-bip-error` or logged is masked
+  by the stored-endpoint rule, once; a DLQ reader or alert that matched an
+  unmasked value in `x-bip-error` must match the masked form. A structured log
+  shows a masked failure's class as `ErrorTextMasking$MaskedFailure`, with the
+  original class in its text. Rows, DLQ records and logs written before
+  keep their text: rotate any credential that has appeared in the URL of a
+  failed send.
+- **More header names are credential-like.** A consumed record's
+  `X-JWT-Assertion`, `PrivateKey` or other header whose name contains
+  `assertion`, `privatekey`, `jwt` or `bearer`, and an application's own
+  `x-bip-…-key` or `x-bip-…-token` header, is masked in the parked copy and no
+  longer reaches HTTP receivers; stored endpoints mask `?jwt=`, `?assertion=`
+  and `?bearer=` values. An output checkpoint's `header-names` that names such a header refuses to
+  start.
 - **The failure handling follows the input type.** A Kafka boundary parks a
   failed message in the DLQ and commits after it; an HTTP audit-only boundary
   records `FAILED`, answers its caller with the error and is never replayable,
