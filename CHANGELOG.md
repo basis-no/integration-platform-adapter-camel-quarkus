@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.7 — unreleased
 
 No Message Store schema change.
 
@@ -213,6 +213,56 @@ No Message Store schema change.
   activity counters' publication coverage, so its records are not counted
   while coverage is reported as supported. See
   [Kafka activity metrics](docs/activity-metrics.md).
+
+### Dependencies
+
+- Built with Quarkus 3.32.4 instead of 3.32.2
+  ([#173](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/pull/173)).
+  Its Camel is the same: Camel Quarkus 3.32.0 with Camel 4.18.0, so the
+  README's known issue for camel-kafka before 4.18.3 (`kafka.HEADERS`) still
+  applies. The smoke fixtures under `integration-tests/` use 3.32.4 as well.
+  An application keeps the Quarkus platform it imports.
+- The build uses Maven 3.9.16 through the wrapper (3.9.12 before), and patch
+  releases of the Surefire (3.5.6), Jandex (3.5.3), Javadoc (3.11.3), GPG
+  (3.2.8) and Central publishing (0.11.1) plugins.
+
+### Upgrade notes
+
+What an integration notices when it moves from 0.3.6; the entries above give
+the details.
+
+- **Kafka inputs start at `earliest`.** A new consumer group, a changed
+  `groupId`, a group whose committed offsets expired on the broker, and a Kafka
+  input without a `groupId` now read each partition's retained records from
+  the beginning instead of the end. A group with live committed offsets
+  continues from them. Check that every Kafka input has a stable `groupId`
+  before upgrading: an input without one reprocesses every retained record on
+  each start. The new startup warning names each managed Kafka input with
+  another `auto.offset.reset` or without a `groupId`.
+- **`ip-slow-backend` gives up after 95 seconds of waits instead of 195.** Its
+  redelivery delays are capped at 20 seconds (5, 10, 20, 20, 20 and 20). For
+  such a route, also set `maxPollRecords=1` on its Kafka input or raise
+  `maxPollIntervalMs`.
+- **Message Store statements time out.** Each statement of the Postgres sink
+  and the Postgres step outcome store runs with a 10-second statement timeout
+  and a 5-second lock timeout. A statement that needs longer now fails, and its
+  record is read again; raise `basis.message-store.statement-timeout` or
+  `basis.message-store.lock-timeout` for it, and set `loginTimeout` in the
+  JDBC URL. A commit that PostgreSQL reports with a warning is a store failure
+  now.
+- **Update alerts on the not-committed line.** For a record whose step outcome
+  could not be checked or recorded, the ERROR line is `Message <id> is not
+  committed: a step outcome was not checked or recorded, so it is consumed
+  again`, with `storeError=<class>` and the SQLSTATE.
+- **Envelope values over 1,024 bytes are refused.** A record whose
+  `x-bip-message-id`, `x-bip-correlation-id`, `x-bip-content-type`,
+  `x-bip-source-system` or `x-bip-target-system` is longer, or holds a NUL
+  byte, is parked instead of processed.
+- **Stored step endpoints are masked by the .NET adapter's rule** in new rows.
+  A query that matched a stored user name or one of the masked parameter values
+  no longer finds new rows.
+- Recovery after a Message Store outage can take up to 30 seconds longer per
+  consumer, because of the growing wait between reads of a record.
 
 ### Release process
 
