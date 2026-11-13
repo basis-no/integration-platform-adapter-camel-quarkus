@@ -368,8 +368,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                             + "their own data, so this one is held back; check the Message Store's settings and schema. "
                             + "{} storeError=schema", messageId, position, MAX_RECORD_DATA_IN_A_ROW,
                     ErrorTextMasking.mask(reason));
-            readAgain(route, exchange, ErrorTextMasking.mask(reason) + "; held back after " + MAX_RECORD_DATA_IN_A_ROW + " such records in a row",
-                    null);
+            readAgain(route, exchange, ErrorTextMasking.mask(reason) + "; held back after " + MAX_RECORD_DATA_IN_A_ROW
+                    + " such records in a row", null);
             return;
         }
         // The parked copy and the row name the record: the DLQ copy carries no Kafka position,
