@@ -376,8 +376,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 exchange.setProperty(PlatformExchangeProperties.PAYLOAD_SIZE_BYTES, payloadSizeBytes(body));
             }
         }
-        // One line: the message id and a reference's ref come from the producer.
-        LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
+        // Escaped: the message id and a reference's ref come from the producer.
+        LOG.error("{}", LogText.escape("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
                 + " did not reach its route: " + failure.getMessage() + rootCause(failure)
                 + (park ? "; it can never pass its check, so it is parked in the DLQ" : "")));
         closeCheckedCopy(exchange);
@@ -405,7 +405,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         if (!dlqParked(exchange)) {
             Throwable publish = exchange.getException();
-            LOG.error("{}", oneLine("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
+            LOG.error("{}", LogText.escape("Message " + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)
                     + " could not be parked, so it is read again: "
                     + (publish == null ? "the DLQ route did not publish it" : publish.toString())));
             exchange.setException(failure);
@@ -482,7 +482,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         try {
             copy.close();
         } catch (Exception e) {
-            LOG.warn("{}", oneLine("Could not close the checked payload copy of message "
+            LOG.warn("{}", LogText.escape("Could not close the checked payload copy of message "
                     + exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID) + ": " + e));
         }
     }
@@ -540,7 +540,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             }
             if (boundaryKind == MessageBoundaryKind.KAFKA) {
                 LOG.error("Message {} is not committed: its outcome could not be recorded, so it is consumed again{}",
-                        exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e), e);
+                        LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)),
+                        StoreErrorClass.logSuffix(e), e);
             }
             String consequence = boundaryKind == MessageBoundaryKind.KAFKA
                     ? "Kafka offset was not committed"
@@ -670,11 +671,13 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
     }
 
+    // The reason is stored, parked and logged as it is, so the step ids it names are escaped here, once.
     private static String stepDataReason(Exchange exchange, Throwable unrecorded) {
         List<String> sent = UnrecordedDeliveries.markedSteps(exchange);
         return "The Message Store cannot hold a step outcome of the record (SQLSTATE " + StoreErrorClass.sqlState(unrecorded)
                 + "); " + (sent.isEmpty() ? "no send of the attempt had returned without a recorded outcome"
-                : "the send of step " + String.join(", ", sent) + " had returned, its outcome not recorded");
+                : "the send of step " + String.join(", ", sent.stream().map(LogText::escape).toList())
+                        + " had returned, its outcome not recorded");
     }
 
     /**
@@ -694,7 +697,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 && recordDataInARow.getOrDefault(partition(position), 0) >= MAX_RECORD_DATA_IN_A_ROW) {
             LOG.error("Message {} at {} is not committed: {} records in a row on this partition could not be stored for "
                             + "their own data, so this one is held back; check the Message Store's settings and schema. "
-                            + "{} storeError=schema", messageId, position, MAX_RECORD_DATA_IN_A_ROW, reason);
+                            + "{} storeError=schema", LogText.escape(messageId), position, MAX_RECORD_DATA_IN_A_ROW,
+                    reason);
             readAgain(route, exchange, new IllegalStateException(reason + "; held back after "
                     + MAX_RECORD_DATA_IN_A_ROW + " such records in a row"));
             return;
@@ -704,7 +708,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         String stored = position == null ? reason : reason + " (record " + position + ")";
         if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, stored)) {
             LOG.error("Message {} at {} is not committed: it could not be parked for its own data; {} storeError=record-data",
-                    messageId, position, reason);
+                    LogText.escape(messageId), position, reason);
             readAgain(route, exchange, new IllegalStateException("Not parked: " + reason));
             return;
         }
@@ -721,8 +725,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         try {
             recordReduced(reduced);
         } catch (Exception e) {
-            LOG.error("Message {} at {} is not committed: its reduced outcome could not be recorded{}", messageId,
-                    position, StoreErrorClass.logSuffix(e), e);
+            LOG.error("Message {} at {} is not committed: its reduced outcome could not be recorded{}",
+                    LogText.escape(messageId), position, StoreErrorClass.logSuffix(e), e);
             readAgain(route, exchange, new IllegalStateException("Failed to record the reduced outcome", e));
             return;
         }
@@ -742,7 +746,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         }
         // Parked and recorded: the consumer goes on with the next record.
         exchange.setException(null);
-        LOG.error("Message {} from record {} was {}: {} storeError=record-data", messageId, position,
+        LOG.error("Message {} from record {} was {}: {} storeError=record-data", LogText.escape(messageId), position,
                 completed ? "recorded without its envelope values" : "parked", reason);
     }
 
