@@ -82,8 +82,9 @@ Start with the [documentation index](docs/index.md).
 - 0.4.0-rc1 restores an output checkpoint from object storage as a stream
   that is checked only when the route reads it to its end. Fixed for 0.4.0;
   see [Output-Producing Side Effects](docs/steps-and-idempotency.md#output-producing-side-effects).
-  An input in object storage is still checked that way
-  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+  0.4.0-rc1 checked an input in object storage the same way; on `main` it is
+  checked in full before its route reads it; see
+  [Object Metadata and Verification](docs/payload-storage.md#object-metadata-and-verification).
 - 0.4.0-rc1 replays any stored message, also another integration's, to the
   replay topic named by its row, and does not check that the route that
   recorded it still consumes that topic. The 0.3.x releases refuse both.
@@ -125,7 +126,7 @@ Start with the [documentation index](docs/index.md).
   caller and is never replayable, and the two can run in one application; see
   [Failure and Replay per Input Type](docs/retry-dlq-replay.md#failure-and-replay-per-input-type).
   A `jms:queue:` input needs `acknowledgementModeName=CLIENT_ACKNOWLEDGE`.
-- `main` builds and tests against Quarkus 3.33.4 (Camel 4.18.4). The 0.3.x
+- `main` builds and tests against Quarkus 3.33.4.1 (Camel 4.18.4). The 0.3.x
   releases are built against Quarkus 3.32.2 (Camel 4.18.0).
 - The 0.3 line continues as a maintained series, with its current scope (one
   input topic per integration); further 0.3.x patch releases may follow, also
@@ -170,9 +171,13 @@ Behavior and configuration changes must update the relevant local documentation.
 Changes to shared message-store semantics must stay compatible with the .NET
 adapter.
 
-Use `X.Y.Z-SNAPSHOT` builds from Sonatype's separate snapshot repository for
-remote acceptance. Create a `vX.Y.Z` tag only after local and remote acceptance
-is complete; that tag publishes the immutable final artifact to Maven Central.
+Use locally built `X.Y.Z-SNAPSHOT` artifacts for acceptance, or, to test in
+another environment, a reviewed snapshot published through the approval-gated
+snapshot lane. Create a `vX.Y.Z` tag only after acceptance is complete. Once its repository settings exist, a `vX.Y.Z` tag starts the protected
+release workflow, which waits for two separate approvals before it signs with a
+dedicated CI signing subkey and publishes. Without those settings, and as the
+fallback, the release manager signs and uploads offline from reviewed tooling.
+The primary release key never exists in GitHub.
 See [Releasing](docs/releasing.md) for the full workflow and checklist.
 
 ## License

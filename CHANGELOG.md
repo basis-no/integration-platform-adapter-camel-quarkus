@@ -47,7 +47,121 @@
   the failing row, the stored value included, and the adapter stored, parked and
   logged it as the message's failure. The error now names the key's operation,
   the limit and the SQLSTATE only.
-
+- A send whose `DELIVERED` outcome could not be written is not made again on
+  the record's next read in the same process
+  ([#137](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/137)).
+  Before, with a Message Store that could be read but not written (a read-only
+  database after a failover, a lost write privilege), every read of the record
+  passed the ledger check, sent again and failed to write the outcome, without
+  end. Now the write is tried again in place a few times, then kept in memory
+  for the record, and the next read writes it before the ledger check and skips
+  the send. A record without `x-bip-message-id` keeps its generated id while it
+  is read again. A store failure also ends the attempt: no later send of it
+  through `to` or `toD`, tracked or not, nor a redelivery of the failed one, is
+  made. The ERROR lines for a record that is not committed name the store
+  error's class (`storeError=read-only`, `privilege`, `schema`, `record-data`,
+  `checkpoint` or `unavailable`) and its SQLSTATE. See
+  [Steps and idempotency](docs/steps-and-idempotency.md#a-send-whose-delivered-outcome-could-not-be-written).
+  Upgrade: a restart or a rebalance still loses the kept outcomes, so the next
+  read in another process can send once more. While the store refuses writes, a
+  step takes up to about 3.5 seconds longer for the waits between the tries; when
+  it stops answering, each try runs to its call timeouts, up to about 40 seconds
+  in all at the defaults (about 30 when every try runs to the network timeout). The dead letter channel and an application's own
+  `onException` do not run for an attempt that a store failure ended.
+- A Kafka record whose envelope values the Message Store cannot hold is parked
+  and recorded without them, and committed, instead of blocking its partition
+  ([#138](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/138)).
+  Before the route runs, `x-bip-message-id`, `x-bip-correlation-id`,
+  `x-bip-content-type`, `x-bip-source-system` and `x-bip-target-system` are
+  refused when they contain a NUL byte or are longer than 1,024 bytes; a step
+  outcome or outcome write that fails for the record's own data (SQLSTATE class
+  `22`, `54000`) takes the same path. A refused `x-bip-message-id` is replaced
+  by an id derived from the record's position, shared with the .NET adapter.
+  After three records in a row whose data the store refused on a partition, the
+  next one is held back. A failure text with U+0000 is stored with U+FFFD.
+  See [A record whose own values the store cannot hold](docs/retry-dlq-replay.md#a-record-whose-own-values-the-store-cannot-hold).
+  Upgrade: an envelope value over 1,024 bytes, which the store accepted
+  before, is now refused and its record parked.
+- Documentation: the query in `docs/steps-and-idempotency.md` (Replay Roles)
+  that lists an integration's step ids now also masks `code`, `sig`, `key`,
+  `pwd` and other credential parameters, such as `passwd`, `session` and
+  `cookie`, that rows recorded before the stored-endpoint masking rule kept in
+  clear. Before, it printed them.
+- A Kafka input that arrives as a claim check, on a replay or a DLQ resend, and
+  whose object can never pass its check is parked in the DLQ as its claim check
+  and committed after the DLQ accepted it, instead of being read again forever
+  and holding up every later record of its partition: its object's SHA-256 does
+  not match the reference, the store reports another size or the object has more
+  bytes, the object store answers that the key does not exist, the reference has
+  expired, or the claim check is malformed or its headers do not match it (parked
+  as it came, with a metadata-only row). Its outcome is `DLQ`. A failure that may
+  pass is read again as before: an object store that cannot be reached, refuses
+  access or times out, a bucket that does not exist, a download that ends before
+  the reference's size (reported as `ended after N of its reference's M bytes`), a
+  reference outside the configured bucket or prefix, a full or unwritable spool,
+  and any failure on the first attempt of a streamed input. A missing object is
+  now reported as `Payload object does not exist: <ref>` when the store answers
+  that the key does not exist (a one-byte GET after the HEAD tells a missing key
+  from a missing bucket); otherwise still as `Payload object is unavailable`. An
+  application's own `PayloadObjectStore` throws the new
+  `UnresolvablePayloadException` only when its store answered that the object
+  does not exist or has another size than the reference. See
+  [Object Metadata and Verification](docs/payload-storage.md#object-metadata-and-verification)
+  ([#160](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/160)).
+  Upgrade: watch the DLQ for replays and resends whose object is gone, changed
+  or expired; they are parked before their route runs. A host clock far ahead,
+  or an endpoint setting that points at another store, parks the claim checks
+  it reads. On AWS S3, grant `s3:ListBucket` on the payload prefix so that a
+  deleted object is answered as missing (404), not refused (403).
+- An input whose payload is in object storage is checked in full, its size and
+  SHA-256 against its reference, before its route reads any of it: on a replay
+  of a claim-checked input and on the first attempt after the adapter stored a
+  streamed input. The adapter copies the object to a local file while checking
+  it, holding one 64 KiB buffer whatever the object's size, and hands the route
+  a stream of the checked copy; the copy is deleted when the exchange is done,
+  and a copy left by a crashed process is deleted at the next start. Before, the
+  SHA-256 was checked only when the route read the stream to its end, so a route
+  that read part of a changed object used bytes that were never checked. A
+  changed, truncated, missing or expired object, an object store failure, and a
+  spool that is full or not writable now fail the input before its route runs:
+  its outcome is `FAILED`, nothing is parked and its Kafka offset is not
+  committed (a claim check that can never pass is parked; see the entry above).
+  Before, such a failure during capture or resolution was only logged
+  by Camel at WARN and the route ran anyway. New deployment settings:
+  `basis.message-store.payload.spool-directory` (default
+  `<java.io.tmpdir>/basis-payload-spool`) and
+  `basis.message-store.payload.spool-max-bytes` (default `10737418240`, at least
+  `object-max-bytes` in `tiered` mode). See
+  [Object Metadata and Verification](docs/payload-storage.md#object-metadata-and-verification).
+  Upgrade: in `tiered` mode, give the spool directory room for `spool-max-bytes`
+  (a pod's ephemeral storage, or a mounted volume); startup refuses a
+  `spool-max-bytes` below `object-max-bytes`. A route now gets the checked
+  copy's stream instead of the object store's, and the stream is closed when the
+  boundary exchange is done: a route that hands it to work that reads it later,
+  such as a `wireTap` without stream caching, must read it first.
+- A `rest:` send through `http`, `vertx-http` or `netty-http` leaves a consumed
+  Kafka record's credential headers and Camel's `kafka.*` / `CamelKafka*`
+  consumer headers out of its request, whichever EIP sends, as other HTTP sends
+  do. Its producer replaces the header filter of the HTTP endpoint it sends
+  through, so the adapter now sets that producer's `headerFilterStrategy`
+  parameter when the `rest:` endpoint is registered: the component's rest
+  filter, or the `rest` component's own filter if one is set, together with the
+  record's headers. The path and query bind from the exchange's headers as
+  before. A `rest:` send through another producer component fails when its
+  producer is created (or at its first request), also when the `rest`
+  component has its own filter, instead of sending the headers. Not covered: a
+  `rest-openapi:` send, which can replace the `rest:` endpoint's parameters and
+  with them the adapter's filter
+  ([#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158)).
+  A REST DSL service, a `rest:` endpoint that is a route's input, is
+  left as it is: its consumer reads the endpoint's parameters without the
+  adapter's filter, and a send through the same endpoint is filtered. See
+  [Kafka Consumers](docs/ingress-and-scaling.md#kafka-consumers).
+  Upgrade: a receiver behind a `rest:` send that got a caller's credential
+  forwarded from the record no longer gets it and may answer 401; set the
+  header in the route as text to forward it deliberately. A `rest:` send
+  through a producer component other than these three no longer starts.
+  Remove the headers before a `rest-openapi:` send.
 - A Kafka boundary route that holds records in memory after its input
   completes refuses to start, naming the route and node: Camel's `resequence`
   (batch or stream), or an `aggregate` on Camel's in-memory repository (the
@@ -345,6 +459,39 @@
 - The replay documentation says which key and partition a replay record gets,
   what order a replay keeps, and how to resend several messages. A test pins
   the replay record's key, also for a message without a correlation id.
+- Final releases can be signed and published from a protected `vX.Y.Z` tag in
+  CI, in four separate jobs: `build` runs Maven and the tests with no secret and
+  no identity token, `attest` runs no project code, and `sign-upload` and
+  `publish` each wait for an approval in a protected environment, check out only
+  the release tools at a trusted commit, sign with a CI signing subkey and
+  publish exactly the uploaded deployment. Every action is pinned by commit SHA.
+  The release-page workflow (`release-page.yml`, formerly
+  `publish-central.yml`) only verifies the published artifacts before it writes
+  the GitHub Release. Offline signing stays as the fallback. The path needs
+  repository settings first: the two environments, a tag ruleset, the signer's
+  public key and fingerprint, the trusted tooling commit and the environment
+  secrets; see `docs/release-packaging.md`.
+- Remove production signing and publisher credentials from candidate inspection.
+  Inspection now retains unsigned evidence only, and its receipt records the
+  producing workflow run. Existing artifacts remain unchanged.
+- Sign releases offline: the new `sign-candidate.py` verifies a downloaded
+  unsigned candidate against its receipt, signs exactly its four payloads through
+  the release manager's gpg-agent, verifies each signature against the pinned
+  fingerprint and assembles the validated Central bundle with a signing receipt.
+  Upload and publication run from the release workstation with
+  `central-recovery.py`; the primary release key never exists in GitHub, and
+  the only signing material there is the protected tag path's dedicated CI
+  subkey and environment-scoped Central token (above). Post-publication readback
+  compares public bytes with the unsigned
+  receipt and the signed-entries digest.
+- Publish a reviewed `X.Y.Z-SNAPSHOT` to Central's snapshot repository for
+  testing in another environment, through `publish-snapshot.yml`: a manual run
+  on the head of `main` or `release/0.3` builds and tests it without
+  credentials, records build provenance, and uploads the same unsigned bytes
+  only after an approval in the protected environment `snapshot`, from the
+  release tools at the trusted commit, then reads them back. A re-run never
+  uploads again. It needs repository settings first; see
+  `docs/release-packaging.md#snapshot-lane`.
 - The Key-Value Store from adapter 0.3.6, unchanged: inject `KeyValueStore`
   for small JSON values per integration, such as polling cursors and markers,
   in the Message Store's `bip_key_value` table, with get, put,
@@ -411,10 +558,9 @@
   an `InputStream`, and the whole object is held in memory during the restore.
   An output larger than 2 GiB less a few bytes, which a restore cannot check in
   memory, can no longer be checkpointed; its capture fails as one above
-  `basis.message-store.payload.object-max-bytes` does.
-  Not changed: an input whose payload is in object storage is still checked
-  against its SHA-256 only when the route reads it to its end
-  ([#60](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/60)).
+  `basis.message-store.payload.object-max-bytes` does. An input whose payload
+  is in object storage is checked in full before its route reads it too (see
+  the entry for #60).
 - A replay sends a message again only to the integration that recorded it,
   through the Kafka input route that recorded it. Before, `main` republished
   any message in the store to the replay topic of the integration named in its
@@ -460,12 +606,10 @@
   value. An HTTP endpoint whose header filter the adapter cannot extend fails
   when it is created, so its route does not start. Not covered: an endpoint
   that Camel creates for a single send without registering it, such as one
-  from a `toD` with `cacheSize=-1`; an endpoint whose header filter is replaced
-  after the endpoint was registered; and a `rest:` send, whose producer
-  replaces the filter of the HTTP endpoint it sends through
-  ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53)).
-  Remove `kafka.HEADERS`, `CamelKafkaHeaders` and the record's credential
-  headers before such a send.
+  from a `toD` with `cacheSize=-1`; and an endpoint whose header filter is
+  replaced after the endpoint was registered. Remove `kafka.HEADERS`,
+  `CamelKafkaHeaders` and the record's credential headers before such a send.
+  A `rest:` send is covered too; see the entry below.
   Upgrade: a receiver that got a caller's credential forwarded from the
   record, for example through `vertx-http` or an `enrich`, no longer gets it
   and may answer 401. To forward a credential deliberately, set the header in
@@ -473,7 +617,7 @@
   `setHeader("Authorization", header("Authorization").convertToString())`. A
   receiver that read `kafka.*` request headers must get the values from
   headers the route sets itself.
-- Build and test against Quarkus 3.33.4 (Camel 4.18.4, Camel Quarkus 3.33.3)
+- Build and test against Quarkus 3.33.4.1 (Camel 4.18.4, Camel Quarkus 3.33.3)
   instead of Quarkus 3.32.2 (Camel 4.18.0). Camel 4.18.3 and later include
   Camel's fix for
   [CVE-2026-49098](https://camel.apache.org/security/CVE-2026-49098.html):
@@ -481,7 +625,7 @@
   so Camel's HTTP header filters drop them. The adapter reads Kafka record
   headers under both names and compiles in no other camel-kafka header name,
   so it also runs on Camel 4.18.0. Other updates that come with the platform
-  include kafka-clients 4.1.2, Jackson 2.21.7, Netty 4.1.138, Vert.x 4.5.34
+  include kafka-clients 4.1.2, Jackson 2.21.7, Netty 4.1.139, Vert.x 4.5.35
   and the AWS SDK 2.42.7.
   Upgrade: an integration that moves to this Quarkus line and reads a Kafka
   header by its old literal name, such as `kafka.KEY` or `kafka.TOPIC` in a

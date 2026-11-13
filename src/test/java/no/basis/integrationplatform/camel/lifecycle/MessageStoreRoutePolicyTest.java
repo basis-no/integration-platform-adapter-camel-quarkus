@@ -526,8 +526,10 @@ class MessageStoreRoutePolicyTest {
     @Test
     void anHttpRequestWithAClaimCheckIsRecordedMetadataOnlyAndNotReplayable() {
         RecordingSink sink = new RecordingSink();
+        byte[] object = "<a/>\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        // The object's real SHA-256: the adapter checks the whole object before the route reads it.
         var reference = new PayloadReference(1, PayloadReference.STORAGE, "s3://payloads/orders/order-1",
-                5, "a".repeat(64), "application/xml", Instant.now().plus(Duration.ofDays(1)).toString());
+                object.length, sha256Hex(object), "application/xml", Instant.now().plus(Duration.ofDays(1)).toString());
         PayloadObjectStore store = new PayloadObjectStore() {
             @Override
             public PayloadReference store(String integration, String messageId, InputStream payload,
@@ -537,7 +539,7 @@ class MessageStoreRoutePolicyTest {
 
             @Override
             public InputStream open(PayloadReference ignored) {
-                return new java.io.ByteArrayInputStream("<a/>\n".getBytes(java.nio.charset.StandardCharsets.UTF_8));
+                return new java.io.ByteArrayInputStream(object);
             }
 
             @Override
@@ -562,6 +564,50 @@ class MessageStoreRoutePolicyTest {
         assertEquals(MessageStatus.COMPLETED, sink.result.status());
         assertEquals("metadata_only", sink.result.payloadStorage());
         assertNull(sink.result.payloadRef());
+        assertFalse(sink.result.replayable());
+        assertEquals("a synchronous HTTP boundary is not replayable", sink.result.replayDisabledReason());
+    }
+
+    @Test
+    void anHttpRequestWhoseClaimCheckFailsItsCheckIsRecordedMetadataOnlyAndNotReplayable() {
+        RecordingSink sink = new RecordingSink();
+        byte[] object = "<a/>\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        var reference = new PayloadReference(1, PayloadReference.STORAGE, "s3://payloads/orders/order-1",
+                object.length, sha256Hex(object), "application/xml", Instant.now().plus(Duration.ofDays(1)).toString());
+        byte[] changed = "<b/>\n".getBytes(java.nio.charset.StandardCharsets.UTF_8);
+        PayloadObjectStore store = new PayloadObjectStore() {
+            @Override
+            public PayloadReference store(String integration, String messageId, InputStream payload,
+                                          Long declaredSize, String contentType, Instant expiresAt, long maxBytes) {
+                throw new UnsupportedOperationException();
+            }
+
+            @Override
+            public InputStream open(PayloadReference ignored) {
+                return new java.io.ByteArrayInputStream(changed);
+            }
+
+            @Override
+            public void verify(PayloadReference ignored) {
+            }
+        };
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                sink, "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1, 1024, Duration.ofDays(30), true),
+                MessageBoundaryKind.HTTP, false, store);
+        Exchange exchange = exchange();
+        exchange.getMessage().setBody(reference.toJsonBytes());
+        exchange.getMessage().setHeader(PlatformHeaders.PAYLOAD_STORAGE, reference.storage());
+        exchange.getMessage().setHeader(PlatformHeaders.PAYLOAD_REF, reference.ref());
+
+        policy.onExchangeBegin(route("receive-order"), exchange);
+        assertTrue(exchange.isRouteStop());
+        policy.onExchangeDone(route("receive-order"), exchange);
+
+        assertEquals(MessageStatus.FAILED, sink.result.status());
+        assertEquals("metadata_only", sink.result.payloadStorage());
+        assertNull(sink.result.payloadRef());
+        assertNull(sink.result.payloadSha256());
         assertFalse(sink.result.replayable());
         assertEquals("a synchronous HTTP boundary is not replayable", sink.result.replayDisabledReason());
     }
@@ -715,12 +761,105 @@ class MessageStoreRoutePolicyTest {
         exchange.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, commit);
         exchange.getMessage().setBody(new byte[]{1, 2});
 
-        PayloadStorageException failure = assertThrows(PayloadStorageException.class,
-                () -> policy.onExchangeBegin(route("orders"), exchange));
+        // Camel ignores an exception from onExchangeBegin, so the policy fails and stops the
+        // exchange instead: no processor runs, nothing is parked, and nothing is committed.
+        policy.onExchangeBegin(route("orders"), exchange);
 
+        PayloadStorageException failure = exchange.getException(PayloadStorageException.class);
         assertEquals("object store unavailable", failure.getMessage());
+        assertTrue(exchange.isRouteStop());
+        assertNull(exchange.getMessage().getBody());
         assertFalse(commit.committed);
         assertEquals(0, sink.recordCalls());
+
+        policy.onExchangeDone(route("orders"), exchange);
+
+        assertEquals(1, sink.recordCalls());
+        assertEquals(MessageStatus.FAILED, sink.result.status());
+        assertFalse(commit.committed);
+    }
+
+    @Test
+    void aMalformedClaimCheckDoesNotLogItsBody() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                sink,
+                "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1, 1024, Duration.ofDays(30), true),
+                MessageBoundaryKind.KAFKA,
+                true,
+                no.basis.integrationplatform.camel.payload.PayloadObjectStore.disabled());
+        Exchange exchange = exchange();
+        // An ordinary payload sent with the headers of a claim check.
+        String body = "{\"customer\": \"private-order-details-4711\",\n \"card\": \"0000-1111\"";
+        exchange.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
+        exchange.getMessage().setBody(body);
+
+        try (var log = no.basis.integrationplatform.camel.LogCapture.of(MessageStoreRoutePolicy.class)) {
+            policy.onExchangeBegin(route("orders"), exchange);
+
+            var errors = log.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            String logged = no.basis.integrationplatform.camel.LogCapture.text(errors.getFirst());
+            assertFalse(logged.contains("private-order-details"), logged);
+            assertFalse(logged.contains("0000-1111"), logged);
+            assertFalse(logged.contains("\n"), "one line: " + logged);
+            assertTrue(logged.contains("Invalid payload-reference document"), logged);
+        }
+        PayloadStorageException failure = exchange.getException(PayloadStorageException.class);
+        assertFalse(failure.getMessage().contains("private-order-details"), failure.getMessage());
+        assertNull(failure.getCause(), "the parser's exception, which quotes the body, is not kept");
+        assertTrue(exchange.isRouteStop());
+    }
+
+    @Test
+    void aReferenceCannotSplitTheLoggedLine() {
+        RecordingSink sink = new RecordingSink();
+        MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
+                sink,
+                "adapter-test",
+                new PayloadCapturePolicy(PayloadMode.TIERED, 1, 1024, Duration.ofDays(30), true),
+                MessageBoundaryKind.KAFKA,
+                true,
+                no.basis.integrationplatform.camel.payload.PayloadObjectStore.disabled());
+        // A well-formed, expired reference whose ref and message id carry line breaks.
+        var reference = new PayloadReference(1, PayloadReference.STORAGE, "s3://b/k\n2026-01-01 ERROR forged",
+                5, "0".repeat(64), "application/xml", Instant.now().minus(Duration.ofDays(1)).toString());
+        Exchange exchange = exchange();
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "m-1\r\nforged\u2028line\u2029\u0085\tend");
+        exchange.getMessage().setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
+        exchange.getMessage().setBody(reference.toJsonBytes());
+
+        try (var log = no.basis.integrationplatform.camel.LogCapture.of(MessageStoreRoutePolicy.class)) {
+            policy.onExchangeBegin(route("orders"), exchange);
+
+            var errors = log.at(java.util.logging.Level.SEVERE);
+            assertEquals(1, errors.size());
+            String logged = no.basis.integrationplatform.camel.LogCapture.text(errors.getFirst());
+            assertFalse(logged.matches("(?s).*[\\r\\n\\t\\u0085\\u2028\\u2029].*"), "one line: " + logged);
+            assertTrue(logged.contains("Payload reference has expired: s3://b/k 2026-01-01 ERROR forged"), logged);
+        }
+        assertTrue(exchange.isRouteStop());
+    }
+
+    @Test
+    void onlyCopyAndObjectStoreErrorsShowTheirMessage() {
+        var disk = new PayloadStorageException("copy failed",
+                new java.io.IOException("wrapped", new java.nio.file.FileSystemException("/spool: No space left\non device")));
+        var application = new PayloadStorageException("capture failed",
+                new IllegalStateException("payload was: private-order-details-4711"));
+
+        assertEquals(" (cause: java.nio.file.FileSystemException: /spool: No space left on device)",
+                MessageStoreRoutePolicy.rootCause(disk));
+        assertEquals(" (cause: java.lang.IllegalStateException)", MessageStoreRoutePolicy.rootCause(application));
+    }
+
+    private static String sha256Hex(byte[] bytes) {
+        try {
+            return java.util.HexFormat.of().formatHex(java.security.MessageDigest.getInstance("SHA-256").digest(bytes));
+        } catch (java.security.NoSuchAlgorithmException e) {
+            throw new IllegalStateException(e);
+        }
     }
 
     private Route route(String routeId) {
