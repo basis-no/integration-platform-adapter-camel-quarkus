@@ -58,8 +58,8 @@ class JoinedTransactionRedoTest {
         ownerStore.recordDelivered(StepResult.delivered("notify-other", "message-123:notify-other", "https://v/b"));
 
         // One connection in a transaction the application owns, as a JTA-enlisted connection is:
-        // like Agroal's or an XA connection while enlisted, it refuses JDBC's transaction and
-        // savepoint methods.
+        // like an enlisted Agroal or XA connection it refuses JDBC's commit and rollback, and,
+        // stricter than either, all of JDBC's savepoint methods.
         Connection real = source("restricted_writer", "test-only").getConnection();
         try {
             real.setAutoCommit(false);
@@ -109,6 +109,12 @@ class JoinedTransactionRedoTest {
                     "select count(*) from bip_step_outcome")) {
                 result.next();
                 assertEquals(2, result.getInt(1));
+            }
+            // The adapter's savepoint is gone: the rest of the transaction does not run inside it.
+            try (Statement statement = real.createStatement()) {
+                java.sql.SQLException gone = org.junit.jupiter.api.Assertions.assertThrows(java.sql.SQLException.class,
+                        () -> statement.execute("release savepoint bip_replay_audit_read"));
+                assertEquals("3B001", gone.getSQLState());
             }
         } finally {
             real.rollback();

@@ -209,10 +209,10 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             return timeouts.inTransactionOrJoin(dataSource, connection -> {
                 // A failed statement aborts the whole transaction, also an application's own one
                 // this call joined. A refused read drops the redo list and the attempt goes on, so
-                // the read runs under a savepoint that undoes its failure. It is set in SQL: a pool
-                // refuses JDBC's savepoint rollback while the connection is enlisted in a JTA
-                // transaction, and an XA connection refuses JDBC's savepoints altogether.
-                boolean savepoint = setSavepoint(connection);
+                // the read runs under a savepoint that undoes its failure. It is set in SQL: the pool
+                // and pgjdbc's XA connection refuse JDBC's rollback(Savepoint) in a JTA transaction.
+                SQLException notSet = setSavepoint(connection);
+                boolean savepoint = notSet == null;
                 try (PreparedStatement statement = timeouts.prepare(connection, AUTHORISED_REPLAY_SQL)) {
                     statement.setString(1, claim.messageId());
                     statement.setString(2, claim.integration());
@@ -232,12 +232,16 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
                 } catch (SQLException e) {
                     if (savepoint) {
                         try {
+                            // Undone and gone, so the rest of the transaction runs outside it.
                             execute(connection, "rollback to savepoint " + SAVEPOINT);
+                            execute(connection, "release savepoint " + SAVEPOINT);
                         } catch (SQLException rollback) {
                             // The transaction stays aborted: report that, so the attempt does not go on.
                             rollback.addSuppressed(e);
                             throw rollback;
                         }
+                    } else {
+                        e.addSuppressed(notSet);
                     }
                     throw e;
                 } catch (Exception e) {
@@ -273,13 +277,15 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
         record(step, StepStatus.FAILED, RECORD_FAILED_SQL, null);
     }
 
-    // Whether the savepoint was set; a connection that refuses one runs the read without it, as before.
-    private boolean setSavepoint(Connection connection) {
+    // Null when the savepoint was set, otherwise why not. A savepoint refused before it reaches the
+    // server leaves the read without one, as before; one the server refuses has aborted a joined
+    // transaction already, so the read fails as a store failure and the record is read again.
+    private SQLException setSavepoint(Connection connection) {
         try {
             execute(connection, "savepoint " + SAVEPOINT);
-            return true;
+            return null;
         } catch (SQLException e) {
-            return false;
+            return e;
         }
     }
 
