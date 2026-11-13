@@ -5,19 +5,25 @@ import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
 import jakarta.inject.Inject;
 import java.util.LinkedHashSet;
+import java.util.Locale;
 import java.util.Optional;
 import java.util.Set;
 import no.basis.integrationplatform.camel.store.MessageStoreSink;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
 import org.apache.camel.CamelContext;
+import org.apache.camel.Endpoint;
 import org.apache.camel.NamedNode;
+import org.apache.camel.component.kafka.KafkaEndpoint;
 import org.apache.camel.model.RouteDefinition;
 import org.apache.camel.spi.RoutePolicy;
 import org.apache.camel.spi.RoutePolicyFactory;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @ApplicationScoped
 public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
+    private static final Logger LOG = LoggerFactory.getLogger(MessageStoreRoutePolicyFactory.class);
     private final MessageStoreSink sink;
     @Inject TrafficSignals trafficSignals;
     private final String integrationName;
@@ -121,10 +127,59 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         if (!uri.startsWith("kafka:")) {
             return new RedoStepsRoutePolicy();
         }
+        warnAboutKafkaOffsetReset(routeId, camelContext, uri);
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(sink, integrationName, payloadPolicy);
         policy.setTrafficSignals(trafficSignals);
         if (trafficSignals != null) trafficSignals.observeKafkaBoundary();
         return policy;
+    }
+
+    /**
+     * A record that is not committed is read again after Camel's reconnect, which resumes from
+     * the committed offset. On a partition without one, the consumer resumes from its
+     * {@code auto.offset.reset}; anything but {@code earliest} skips the record ({@code latest})
+     * or stops the consumer ({@code none}). A consumer without a group id gets a new generated
+     * group on every start, which has no committed offsets. In 0.3.x both are warnings, not a
+     * refusal to start.
+     */
+    static void warnAboutKafkaOffsetReset(String routeId, CamelContext camelContext, String uri) {
+        Endpoint endpoint;
+        java.util.Properties consumer;
+        String group;
+        try {
+            endpoint = camelContext.getEndpoint(uri);
+            if (!(endpoint instanceof KafkaEndpoint kafka)) {
+                return;
+            }
+            // The consumer's effective values: the endpoint option, the component default, or an
+            // additionalProperties entry, which Camel applies last.
+            consumer = kafka.getConfiguration().createConsumerProperties();
+            // Camel's consumer sets group.id from groupId, or a random one, over any
+            // additionalProperties.group.id, so only groupId counts.
+            group = kafka.getConfiguration().getGroupId();
+        } catch (RuntimeException unreadable) {
+            // The route fails on its own when Camel creates its consumer; this check only warns.
+            LOG.debug("Could not read the Kafka consumer settings of route {}", routeId, unreadable);
+            return;
+        }
+        Object effective = consumer.get("auto.offset.reset");
+        String value = effective == null ? null : effective.toString().trim();
+        if (value == null || !"earliest".equals(value.toLowerCase(Locale.ROOT))) {
+            LOG.warn("Kafka input route '{}' ({}) uses auto.offset.reset={}. A record that is not committed is read "
+                            + "again from the committed offset; on a partition without one, any value other than "
+                            + "earliest skips the record or stops the consumer. Remove the autoOffsetReset or "
+                            + "additionalProperties.auto.offset.reset override from the endpoint and from "
+                            + "camel.component.kafka.auto-offset-reset, or set it to earliest",
+                    routeId, endpoint.getEndpointBaseUri(), value == null ? "latest (Kafka's default)" : value);
+        }
+        if (group == null || group.isBlank()) {
+            LOG.warn("Kafka input route '{}' ({}) has no groupId, so its consumer gets a new consumer group on every "
+                            + "start, without committed offsets: every start begins where auto.offset.reset says, "
+                            + "and with earliest every retained record of its partitions is read again. Set a stable "
+                            + "groupId on the endpoint or camel.component.kafka.group-id; "
+                            + "additionalProperties.group.id is not used",
+                    routeId, endpoint.getEndpointBaseUri());
+        }
     }
 
     void validateAuditRoutes(@Observes StartupEvent ignored) {

@@ -12,6 +12,12 @@ public final class PlatformExchangeProperties {
     public static final String STEP_OUTCOME_FAILURE = "basis.messageStore.stepOutcomeFailure";
     /** The consumed input's message id, captured when a recorded exchange begins. */
     public static final String INPUT_MESSAGE_ID = "basis.messageStore.inputMessageId";
+    /** A managed Kafka input's record position, {@code <topic>/<partition>@<offset>}, captured when it begins. */
+    public static final String RECORD_POSITION = "basis.messageStore.recordPosition";
+    /** The id of the thread that began processing a managed Kafka input: its consumer thread. */
+    public static final String POLL_THREAD = "basis.messageStore.pollThread";
+    /** The DELIVERED outcome a send's step got from an earlier read's mark instead of being sent. */
+    public static final String STEP_FROM_MARK = "basis.messageStore.stepFromMark";
     public static final String KAFKA_MANUAL_COMMIT = "basis.messageStore.kafkaManualCommit";
     public static final String DLQ_PARKED = "basis.messageStore.dlqParked";
     public static final String PAYLOAD_STORAGE = "basis.messageStore.payloadStorage";

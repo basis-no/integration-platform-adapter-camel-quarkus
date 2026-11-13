@@ -54,6 +54,54 @@ No Message Store schema change.
 
 ### Changed
 
+- The `ip-slow-backend` route configuration caps each redelivery delay at 20
+  seconds
+  ([#80](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/80)):
+  it waits 5, 10, 20, 20, 20 and 20 seconds, 95 seconds in all, before the
+  message is parked. Before, the delays doubled up to Camel's default cap of
+  60 seconds and waited 195 seconds, which together with seven attempts could
+  outlast the Kafka consumer's 300-second `max.poll.interval.ms`; Kafka then
+  removed the consumer from its group and delivered the record again, so it
+  could run, and be parked, more than once. The number of redeliveries and the
+  first delay are unchanged.
+  Upgrade: a route on `ip-slow-backend` gives up sooner, after 95 seconds of
+  waiting instead of 195. The interval covers all records of one poll: for
+  such a route, set `maxPollRecords=1` on its Kafka input or raise
+  `maxPollIntervalMs`. See [Retry and DLQ](README.md#retry-and-dlq).
+- Every statement of a Postgres sink or Postgres step outcome store call is
+  bounded
+  ([#90](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/90)):
+  the call runs in its own transaction with a statement timeout
+  (`basis.message-store.statement-timeout`, default 10 s) and a lock timeout
+  (`basis.message-store.lock-timeout`, default 5 s), set for that transaction
+  only, each statement has a JDBC query timeout of the statement timeout, and
+  the JDBC network timeout is the statement timeout plus 5 seconds. At the
+  defaults a step-outcome call ends within about 10 s and the sink's record
+  (up to three statements) within about 30 s. Before, a call waited without
+  limit on a held lock or a database that stopped answering, and held the
+  Kafka consumer thread past `max.poll.interval.ms`. A timeout is a Message
+  Store failure: the record is not committed and is read again. Startup
+  refuses a timeout under 1 ms, or a lock timeout longer than the statement
+  timeout. On a connection already in an application transaction (such as a
+  JTA transaction), the step outcome store joins it as before and only the
+  query and network timeouts apply.
+  A commit that PostgreSQL reports with a warning is a store failure too: a
+  synchronous commit whose wait for the standby was cancelled returns with only
+  a warning ("committed locally, but might not have been replicated"), and the
+  record is now read again and its outcome written again (the writes are
+  idempotent) instead of being committed to Kafka. `statement_timeout` does not
+  end a synchronous commit's wait; the network timeout does. The call's own
+  transaction sets `client_min_messages` to `warning`, so that a role or
+  database setting of `error` cannot hide the warning.
+  A failed `DELIVERED` write that is tried again in place runs each try to these
+  timeouts: when the store stops answering, the write takes up to about 40
+  seconds in all at the defaults (about 30 when every try runs to the network
+  timeout). A commit reported with a warning fails with SQLSTATE
+  `08007`, whatever the warning's own SQLSTATE, so it is read again, never
+  parked as the record's own data.
+  Upgrade: an outcome or step-outcome statement that legitimately needs longer
+  fails now; raise the property. Set `loginTimeout` in the JDBC URL as well
+  (see [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts)).
 - A step's stored endpoint (`bip_step_outcome.endpoint_uri`, `steps_json`) and
   the endpoint named in the adapter's warnings mask credentials by the .NET
   adapter's rule, so both adapters store the same value
@@ -68,23 +116,125 @@ No Message Store schema change.
   the pattern (Camel's own sanitizer, which also runs when an application has
   added keywords, has no such bound). See [Step Tracking](README.md#step-tracking).
   Upgrade: new attempts store the masked value; rows recorded before keep
-  theirs. A query or tool that matched a stored endpoint's user name or one of
+  theirs unless the same step is recorded again. A query or tool that matched a stored endpoint's user name or one of
   these parameter values no longer finds it in new rows. Step keys and
   classification by node id are unchanged.
+- A Kafka record whose outcome could not be made durable is read again with a
+  growing wait
+  ([#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66),
+  part 1). Before, while the outcome write, a step outcome or the DLQ publish
+  kept failing, for example during a Message Store outage, the record was read
+  again at once, about twice a second, and every read ran the route again: a
+  send the step store did not skip (with the default `noop` store, or for a
+  record without `x-bip-message-id`) reached its receiver again, and a parked
+  message got another DLQ record. Now the first read again is at once, then
+  each further read of the same record waits 1 s, doubling, at most 30 s and at
+  most half the consumer's `max.poll.interval.ms` less the time its poll has
+  already taken; a committed outcome resets it. Without
+  `break-on-first-error=true` there is no wait. The consumer's other partitions
+  wait with it. The record is still not committed and the partition still
+  waits, as before. No setting. See [Retry and DLQ](README.md#retry-and-dlq).
+  Upgrade: recovery after an outage can take up to 30 seconds longer per
+  consumer.
+- The adapter ships `camel.component.kafka.auto-offset-reset=earliest`, and a
+  managed Kafka input whose consumer uses another `auto.offset.reset`, or has
+  no `groupId`, logs a warning at startup that names the route and its endpoint
+  ([#83](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/83)).
+  It still starts. Before, the adapter left Camel's default `latest` in place:
+  after a record whose outcome was not durable, Camel's reconnect resumes from
+  the committed offset, and on a partition where the consumer group had none
+  yet it resumed at the end, so the record was never read again and a later
+  record's commit moved past it. See [Runtime Behavior](README.md#runtime-behavior).
+  Upgrade: a consumer group with committed offsets continues from them. A new
+  consumer group, such as a new integration's or a changed `groupId`, now
+  starts at the beginning of each partition's retained records instead of at
+  the end; to start one at the end, set its offsets with the Kafka tools before
+  its first start. The same holds for a group whose committed offsets expired
+  on the broker (stopped for longer than the broker's offset retention), and
+  for a Kafka input without a `groupId`, for which Camel generates a new group
+  on every start, also when `additionalProperties.group.id` is set: it now
+  reprocesses every retained record on each start.
+  Check that every Kafka input has a stable `groupId`. An input that sets
+  `autoOffsetReset=latest` itself keeps it, with the warning.
+
+### Fixed
+
+- A tracked send in a route that another send calls, such as a `direct:`
+  sub-route, is recorded once per try
+  ([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)).
+  Before, the calling send recorded the sub-route's step again when it
+  completed. A successful call was listed twice as `DELIVERED`. When the
+  sub-route's dead letter channel parked the message after the send failed,
+  the step was recorded `DELIVERED` with no error, so a resend or replay
+  skipped it and the receiver never got the message. With the `postgres` step
+  store, so did any later read of the parked record that carries
+  `x-bip-message-id`, which then recorded the message `COMPLETED`: for example
+  after a commit that failed because a receiver that never answers kept the
+  route busy past the poll interval. When the input route's error handler
+  retried the call instead, each failed try was listed twice as `FAILED`. A
+  calling send now records only its own step, and a `direct:` send records
+  none. Adapter 0.3.5 and 0.3.6 have the fault.
+  Upgrade: a message that 0.3.5 or 0.3.6 recorded this way keeps its
+  `DELIVERED` step and is still skipped. The README gives a way to find such
+  messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);
+  resend each one the receiver did not get with the step in `redoSteps`. See
+  [Retry and DLQ](README.md#retry-and-dlq).
+- A send whose `DELIVERED` outcome could not be written is not made again on
+  the record's next read in the same process
+  ([#137](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/137)).
+  Before, with a Message Store that could be read but not written (a read-only
+  database after a failover, a lost write privilege), every read of the record
+  passed the ledger check, sent again and failed to write the outcome, without
+  end. Now the write is tried again in place a few times, then kept in memory
+  for the record, and the next read writes it before the ledger check and skips
+  the send. A record without `x-bip-message-id` keeps its generated id while it
+  is read again. A store failure also ends the attempt: no later send of it
+  through `to` or `toD`, tracked or not, nor a redelivery of the failed one, is
+  made. The ERROR lines for a record
+  that is not committed name the store error's class (`storeError=read-only`,
+  `privilege`, `schema`, `record-data` or `unavailable`) and its SQLSTATE. See
+  [A send whose `DELIVERED` outcome could not be written](README.md#a-send-whose-delivered-outcome-could-not-be-written).
+  Upgrade: a restart or a rebalance still loses the kept outcomes, so the next
+  read in another process can send once more. While the store refuses writes, a
+  step takes up to about 3.5 seconds longer for the waits between the tries.
+  The ERROR line for such a record is now `Message <id> is not committed: a step
+  outcome was not checked or recorded, so it is consumed again` with
+  `storeError=<class>`; the 0.3.6 line "failed after its configured retries and
+  is not parked: a step outcome was not checked or recorded" no longer appears
+  for an attempt that a store failure ended, since neither the dead letter
+  channel nor an application's own `onException` runs for it; it can still
+  appear when the route caught the store failure and a later step that is not
+  a send failed. Update alerts that match the old line to the new one, which is
+  logged in every case.
+- A Kafka record whose envelope values the Message Store cannot hold is parked
+  and recorded without them, and committed, instead of blocking its partition
+  ([#138](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/138)).
+  Before the route runs, `x-bip-message-id`, `x-bip-correlation-id`,
+  `x-bip-content-type`, `x-bip-source-system` and `x-bip-target-system` are
+  refused when they contain a NUL byte or are longer than 1,024 bytes; a step
+  outcome or outcome write that fails for the record's own data (SQLSTATE class
+  `22`, `54000`) takes the same path. A refused `x-bip-message-id` is replaced
+  by an id derived from the record's position, shared with the .NET adapter.
+  After three records in a row whose data the store refused on a partition, the
+  next one is held back. A failure text with U+0000 is stored with U+FFFD.
+  See [A record whose own values the store cannot hold](README.md#a-record-whose-own-values-the-store-cannot-hold).
+  Upgrade: an envelope value over 1,024 bytes, which the store accepted
+  before, is now refused and its record parked.
 
 ### Documentation
 
 - The 0.3 line continues as a maintained series, with its current scope (one
   input topic per integration); further 0.3.x patch releases may follow, also
   after 0.4.0. This replaces "the last 0.3 release" in the 0.3.6 notes.
-- Known limitation, documented: during a Message Store outage the consumer
-  reads an uncommitted Kafka record again at once and runs the route on every
-  read, and a message that fails meanwhile can be parked in the DLQ more than
-  once (with the `noop` step store, or when it fails before its first tracked
-  send). The README gives what to do: scale the integration down during a long
-  outage, set `autoOffsetReset=earliest` on the Kafka input, and check the DLQ
-  for copies of a message by `x-bip-message-id` before resending it. See
-  [Retry and DLQ](README.md#retry-and-dlq).
+- Known limitation, documented: during a Message Store outage the consumer reads
+  an uncommitted Kafka record again and runs the route on every read (up to
+  0.3.6 at once; from 0.3.7 with the growing wait above), and a message that
+  fails meanwhile can be parked in the DLQ more than once (with the `noop` step
+  store, or when it fails before its first tracked send). The README gives what
+  to do: scale the integration down during a long outage, keep
+  `auto.offset.reset` at `earliest` (the adapter's default from 0.3.7), and
+  check the DLQ for copies of a message by `x-bip-message-id` before resending
+  it. See [Retry and DLQ](README.md#retry-and-dlq).
 - Corrected: a tracked send is not repeated during an outage only while the
   Message Store cannot be read. When the store can be read but not written (a
   read-only database after a failover or for maintenance, a lost write
@@ -94,20 +244,47 @@ No Message Store schema change.
   says to scale the integrations to zero at once in that case. Receivers should
   deduplicate by `Idempotency-Key`
   ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
-- Known limitation, extended: a failed send in a `direct:` sub-route that was
-  recorded `DELIVERED` is also lost without a resend. Any later read of the
-  parked record, when it carries `x-bip-message-id`, records the message
-  `COMPLETED`, for example after a commit that failed because a receiver that
-  never answers kept the route busy past the poll interval. The README gives a
-  way to find such messages: `COMPLETED` in the Message Store, with a record on
-  the DLQ topic
-  ([#135](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/135)).
+- Documented which headers a tracked send needs
+  ([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)).
+  A route that removes every header before a tracked send, such as
+  `removeHeaders("*")`, also removes `x-bip-message-id`: the send then uses a
+  new random id on every delivery, so a redelivery, a read again or a resend
+  sends again under another `Idempotency-Key`, and the message is journaled
+  under that random id. Keep the adapter's headers with
+  `removeHeaders("*", "x-bip-.*")`, and also keep `kafka.KEY` (camel-kafka
+  before 4.14.8, 4.18.3 and 4.21.0) or `CamelKafkaKey` (those versions and
+  later) for a parked record to keep its key. See
+  [Removing headers before a tracked send](README.md#removing-headers-before-a-tracked-send).
 - Known limitation, documented: a `toD` that chooses its component only when
   it sends, through a literal scheme other than `kafka`, such as
   `language:header:receiverUrl`, does not invalidate the
   activity counters' publication coverage, so its records are not counted
   while coverage is reported as supported. See
   [Kafka activity metrics](docs/activity-metrics.md).
+
+### Release process
+
+- Final releases can be signed and published from a protected `vX.Y.Z` tag in
+  CI, in four separate jobs: `build` runs Maven and the tests with no secret and
+  no identity token, `attest` runs no project code, and `sign-upload` and
+  `publish` each wait for an approval in a protected environment, check out only
+  the release tools at a trusted commit, sign with a CI signing subkey and
+  publish exactly the uploaded deployment. Every action is pinned by commit SHA.
+  The release-page workflow (`release-page.yml`, formerly
+  `publish-central.yml`) only verifies the published artifacts before it writes
+  the GitHub Release. Offline signing stays as the fallback. The path needs
+  repository settings first: the two environments, a tag ruleset, the signer's
+  public key and fingerprint, the trusted tooling commit and the environment
+  secrets; see `docs/release-packaging.md`.
+- Publish a reviewed `X.Y.Z-SNAPSHOT` to Central's snapshot repository for
+  testing in another environment, through `publish-snapshot.yml`: a manual run
+  on the head of `main` or `release/0.3` builds and tests it without
+  credentials, records build provenance, and uploads the same unsigned bytes
+  only after an approval in the protected environment `snapshot`, from the
+  release tools at the trusted commit, then reads them back. A re-run never
+  uploads again. It needs repository settings first; see
+  `docs/release-packaging.md#snapshot-lane`. Otherwise acceptance uses locally
+  built artifacts.
 
 ## 0.3.6 — 2026-11-04
 

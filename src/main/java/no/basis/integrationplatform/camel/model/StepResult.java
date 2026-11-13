@@ -34,6 +34,7 @@ public record StepResult(
             return null;
         }
         // Stored in the step ledger and the attempt's steps: a receiver URI keeps no credential.
-        return ErrorTextMasking.message(error);
+        // PostgreSQL text cannot hold a NUL; a failure's own text must not make its step unstorable.
+        return ErrorTextMasking.message(error).replace('\u0000', '\uFFFD');
     }
 }

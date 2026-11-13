@@ -1,13 +1,12 @@
 package no.basis.integrationplatform.camel.step;
 
+import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 
 import javax.sql.DataSource;
-import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.SQLException;
 import java.sql.Timestamp;
 
 public class PostgresStepOutcomeStore implements StepOutcomeStore {
@@ -64,20 +63,29 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             """;
 
     private final DataSource dataSource;
+    private final MessageStoreTimeouts timeouts;
 
     public PostgresStepOutcomeStore(DataSource dataSource) {
+        this(dataSource, MessageStoreTimeouts.DEFAULT);
+    }
+
+    PostgresStepOutcomeStore(DataSource dataSource, MessageStoreTimeouts timeouts) {
         this.dataSource = dataSource;
+        this.timeouts = timeouts;
     }
 
     @Override
     public boolean wasDelivered(String idempotencyKey) {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement statement = connection.prepareStatement(WAS_DELIVERED_SQL)) {
-            statement.setString(1, idempotencyKey);
-            try (ResultSet resultSet = statement.executeQuery()) {
-                return resultSet.next();
-            }
-        } catch (SQLException e) {
+        try {
+            return timeouts.inTransactionOrJoin(dataSource, connection -> {
+                try (PreparedStatement statement = timeouts.prepare(connection, WAS_DELIVERED_SQL)) {
+                    statement.setString(1, idempotencyKey);
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        return resultSet.next();
+                    }
+                }
+            });
+        } catch (Exception e) {
             throw new StepOutcomeStoreException("Failed to check step outcome for idempotency key " + idempotencyKey, e);
         }
     }
@@ -93,18 +101,21 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     }
 
     private void record(StepResult step, StepStatus status, String sql) {
-        try (Connection connection = dataSource.getConnection();
-             PreparedStatement statement = connection.prepareStatement(sql)) {
-            statement.setString(1, step.idempotencyKey());
-            statement.setString(2, messageId(step.idempotencyKey()));
-            statement.setString(3, step.step());
-            statement.setString(4, status.name());
-            statement.setString(5, step.endpointUri());
-            statement.setString(6, step.targetRef());
-            statement.setString(7, step.error());
-            statement.setTimestamp(8, Timestamp.from(step.occurredAt()));
-            statement.executeUpdate();
-        } catch (SQLException e) {
+        try {
+            timeouts.inTransactionOrJoin(dataSource, connection -> {
+                try (PreparedStatement statement = timeouts.prepare(connection, sql)) {
+                    statement.setString(1, step.idempotencyKey());
+                    statement.setString(2, messageId(step.idempotencyKey()));
+                    statement.setString(3, step.step());
+                    statement.setString(4, status.name());
+                    statement.setString(5, step.endpointUri());
+                    statement.setString(6, step.targetRef());
+                    statement.setString(7, step.error());
+                    statement.setTimestamp(8, Timestamp.from(step.occurredAt()));
+                    return statement.executeUpdate();
+                }
+            });
+        } catch (Exception e) {
             throw new StepOutcomeStoreException("Failed to record " + status + " step outcome for "
                     + step.idempotencyKey(), e);
         }

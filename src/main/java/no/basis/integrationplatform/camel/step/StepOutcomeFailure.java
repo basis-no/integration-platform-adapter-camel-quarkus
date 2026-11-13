@@ -1,6 +1,7 @@
 package no.basis.integrationplatform.camel.step;
 
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
+import no.basis.integrationplatform.camel.StoreErrorClass;
 import org.apache.camel.Exchange;
 import org.apache.camel.support.SynchronizationAdapter;
 
@@ -20,6 +21,8 @@ import java.util.concurrent.atomic.AtomicReference;
  * {@code wireTap}, cannot hold that input back either.</p>
  */
 public final class StepOutcomeFailure {
+    private static final String ONLY_RECORD_DATA = "basis.messageStore.stepOutcomeFailureOnlyRecordData";
+
     private StepOutcomeFailure() {
     }
 
@@ -29,6 +32,21 @@ public final class StepOutcomeFailure {
      */
     public static void begin(Exchange exchange) {
         exchange.setProperty(PlatformExchangeProperties.STEP_OUTCOME_FAILURE, new AtomicReference<Throwable>());
+        exchange.setProperty(ONLY_RECORD_DATA, new java.util.concurrent.atomic.AtomicBoolean(true));
+    }
+
+    /**
+     * Whether every step outcome failure of the attempt so far was the record's own data
+     * ({@link StoreErrorClass#RECORD_DATA}); the first failure alone does not tell, since
+     * parallel parts can fail for other reasons.
+     * @param exchange the input exchange or a copy of it
+     * @return {@code true} when the attempt has failures and all of them are the record's data
+     */
+    public static boolean onlyRecordData(Exchange exchange) {
+        java.util.concurrent.atomic.AtomicBoolean only = exchange.getProperty(ONLY_RECORD_DATA,
+                java.util.concurrent.atomic.AtomicBoolean.class);
+        Throwable first = of(exchange);
+        return first != null && StoreErrorClass.of(first) == StoreErrorClass.RECORD_DATA && only != null && only.get();
     }
 
     /**
@@ -50,6 +68,11 @@ public final class StepOutcomeFailure {
             exchange.getExchangeExtension().addOnCompletion(new FailOnCompletion(holder));
         }
         holder.compareAndSet(null, failure);
+        java.util.concurrent.atomic.AtomicBoolean only = exchange.getProperty(ONLY_RECORD_DATA,
+                java.util.concurrent.atomic.AtomicBoolean.class);
+        if (only != null && StoreErrorClass.of(failure) != StoreErrorClass.RECORD_DATA) {
+            only.set(false);
+        }
     }
 
     @SuppressWarnings("unchecked")
