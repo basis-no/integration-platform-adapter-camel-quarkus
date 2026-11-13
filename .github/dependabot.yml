@@ -45,6 +45,9 @@ updates:
       # released one. The root's rolling-upgrade baseline
       # (upgrade-test.released-version) is also moved by hand.
       - dependency-name: "no.basis.integrationplatform:integration-platform-adapter-camel-quarkus"
+      # test.spring.version must equal the spring-jms version that the Camel
+      # Quarkus BOM manages, so it moves only together with the Quarkus platform.
+      - dependency-name: "org.springframework:*"
 
   # The release/0.3 maintenance line takes patch updates only.
   - package-ecosystem: github-actions
