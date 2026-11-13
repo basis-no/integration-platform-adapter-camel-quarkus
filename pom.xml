@@ -199,9 +199,6 @@
       <groupId>org.apache.camel</groupId><artifactId>camel-jms</artifactId><scope>test</scope>
     </dependency>
     <dependency>
-      <groupId>org.apache.camel</groupId><artifactId>camel-platform-http-vertx</artifactId><scope>test</scope>
-    </dependency>
-    <dependency>
       <groupId>org.apache.camel</groupId><artifactId>camel-file</artifactId><scope>test</scope>
     </dependency>
     <dependency>
