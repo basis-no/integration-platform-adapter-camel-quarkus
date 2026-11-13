@@ -1,69 +1,162 @@
 # Releasing
 
-The adapter has two publication lanes. Development and remote acceptance use a
-mutable snapshot coordinate; users receive only immutable final releases.
+The adapter has three lanes. Development and acceptance use locally built
+`X.Y.Z-SNAPSHOT` artifacts, or a reviewed snapshot published through the
+approval-gated [snapshot lane](#testing-a-published-snapshot) when another
+environment must test it; users receive only immutable final releases on Maven
+Central.
 
-The [release packaging tools](release-packaging.md) separate manual candidate
-inspection, deployment recovery and publication. Tags do not build or upload
-automatically. Synthetic CI checks Maven/GPG packaging; a real full adapter
-candidate, trusted production signer and workflow review remain required before
-another immutable release. Existing releases are never rebuilt or replaced.
+Final releases take one of two paths with the same tools:
 
-## Remote acceptance
+- **Protected-tag release in CI** (public repository with protected
+  environments): a `vX.Y.Z` tag builds the unsigned candidate, records
+  provenance, and then signs, uploads and publishes only after approvals in the
+  environments `release` and `release-publish`. See
+  [protected-tag release](release-packaging.md#protected-tag-release-in-ci).
+- **Offline signing** (while the repository is private or the environments are
+  not configured): the release manager signs and uploads on a trusted release
+  workstation; the key and Central token never exist in GitHub. See
+  [offline release signing](release-packaging.md#offline-release-signing) and the
+  [release-manager runbook](release-packaging.md#release-manager-runbook).
 
-1. One time per Sonatype namespace, follow Sonatype's
-   [snapshot-enablement instructions](https://central.sonatype.org/publish/publish-portal-snapshots/#enabling-snapshot-releases-for-your-namespace),
-   choose **Enable SNAPSHOTs**, and confirm that the namespace shows the
-   `SNAPSHOTs enabled` badge. A snapshot upload otherwise finishes the build
-   but fails with HTTP 403.
-2. Keep the POM on the next intended version, for example
-   `0.4.0-SNAPSHOT`.
-3. Finish local unit, Testcontainers, documentation, and schema compatibility checks.
-4. Run the GitHub **Publish Maven SNAPSHOT** workflow from the commit to test.
-   The workflow publishes to Sonatype's separate snapshot repository and does
-   not create a Git tag or a Maven Central release entry.
-5. Configure the validation integration to consume snapshots:
+After publication, `release-page.yml` reads back the public bytes and creates
+the GitHub Release. Key custody and rotation are in
+[release packaging](release-packaging.md#key-custody). Existing releases are
+never rebuilt or replaced.
 
-   ```xml
-   <repository>
-     <id>central-portal-snapshots</id>
-     <url>https://central.sonatype.com/repository/maven-snapshots/</url>
-     <releases><enabled>false</enabled></releases>
-     <snapshots><enabled>true</enabled></snapshots>
-   </repository>
+## Acceptance with locally built artifacts
+
+1. Keep the POM on the next intended version, for example `0.4.0-SNAPSHOT`.
+2. Finish local unit, Testcontainers, documentation, and contract checks.
+3. Install the adapter into the local Maven repository of the machine that
+   builds the validation integration:
+
+   ```sh
+   ./mvnw -DskipTests clean install
    ```
 
-6. Build the validation integration with `./mvnw -U clean verify`, deploy its
-   immutable image, and record the adapter commit, build log's resolved
-   timestamped snapshot, and image digest in the acceptance evidence.
-7. Run the acceptance campaign. A later snapshot may replace the same
-   `0.4.0-SNAPSHOT` coordinate, so rebuilding the integration can resolve newer
-   adapter bytes. The already-built image digest remains reproducible.
+4. Build the validation integration on that machine with `./mvnw clean verify`,
+   so it resolves the locally installed adapter snapshot, and build its
+   immutable image. Record the adapter commit, the SHA-256 of the installed
+   adapter JAR and the image digest in the acceptance evidence.
+5. Deploy that image and run the acceptance campaign. Rebuilding the integration
+   after another local install picks up different adapter bytes; the recorded
+   image digest remains reproducible.
 
-Snapshots are pre-release artifacts: Sonatype does not apply normal Central
-release validation to them, and currently removes them after 90 days. They are
-therefore suitable for acceptance testing, not production dependencies.
+Locally built snapshots are suitable for acceptance testing, not production
+dependencies.
 
-## Final release
+## Testing a published snapshot
 
-Under the manual workflow, inspect a signed candidate from the exact approved
-source commit and explicitly selected version **before** creating a final tag.
-Review its bundle hash, toolchain, plugin versions and qualification evidence.
-Create the final tag only after that review and immutable-release approval:
+When the acceptance environment cannot build against a local Maven repository,
+publish the reviewed snapshot to Central's snapshot repository and test exactly
+that build there, before the final:
 
-```sh
-git tag -s v0.4.0 -m "Release 0.4.0"
-git push origin v0.4.0
-```
+1. Merge the change to `main` (or `release/0.3` for the 0.3 line), with the POM
+   at `X.Y.Z-SNAPSHOT`. A version that is already tagged gets no snapshot.
+2. Dispatch the snapshot lane on that branch with its current head commit:
 
-The tag path never builds or uploads automatically. The manual
-candidate workflow uploads the already inspected bundle in `USER_MANAGED` mode,
-then separately publishes its validated deployment under action-specific human approval.
-Resume by the saved deployment ID; never rebuild or start a second upload to
-repair a failed publication stage. The workflows reject release-candidate,
-milestone, snapshot and malformed versions.
-Afterward, integrations can pin the final version. A later defect is fixed in a new patch release such as `0.4.1`;
-published Central artifacts are never replaced.
+   ```sh
+   gh workflow run publish-snapshot.yml --ref main -f source_commit=<40-character head commit>
+   ```
+
+3. The other of the two release approvers reviews the run's `build` and `attest`
+   results and approves the `upload` job in the environment `snapshot`. The person
+   who dispatched the run cannot approve it.
+4. The run summary shows the timestamped snapshot version, for example
+   `0.4.0-20261110.123456-1`, and the SHA-256 of each uploaded file. Pin that
+   exact version in the test integration (not `0.4.0-SNAPSHOT`, which moves with
+   the next upload), with Central's snapshot repository
+   `https://central.sonatype.com/repository/maven-snapshots/` enabled for
+   snapshots only. Record the version and hashes in the acceptance evidence.
+
+What the lane guarantees: the bytes come from the reviewed branch head that was
+dispatched, built and tested in a job without credentials, with GitHub build
+provenance; the upload job runs no project code, checks the bytes against the
+recorded checksums and the provenance, uploads them once and reads them back;
+two people are involved. What it does not: a snapshot is not a release. It is not
+signed, Central may expire it, and `X.Y.Z-SNAPSHOT` resolves to the latest
+upload, so only the timestamped version identifies what was approved. A re-run
+of the upload refuses; dispatch a new run. The commit was the branch head at
+dispatch; a merge before the approval does not change what is uploaded. A
+version tagged by then gets no snapshot. See
+[snapshot lane](release-packaging.md#snapshot-lane) for the trust boundaries and
+repository settings.
+
+## Final release in CI
+
+Use this path only when the repository is public and the environments, tag
+ruleset and variables in
+[protected-tag release](release-packaging.md#protected-tag-release-in-ci) are in
+place. `sign-upload` and `publish` refuse to run otherwise.
+
+1. On the release commit, finish the dated `## X.Y.Z — YYYY-MM-DD` changelog
+   section and keep the POM at `X.Y.Z-SNAPSHOT`. The commit must be on `main` or
+   `release/0.3`.
+2. Confirm that `TRUSTED_TOOLING_SHA` on both environments names the reviewed
+   commit whose release tools you trust.
+3. After immutable-release approval, create and push the signed tag:
+
+   ```sh
+   git tag -s v0.4.0 <source-commit> -m "Release 0.4.0"
+   git push origin v0.4.0
+   ```
+
+4. Review the `build` evidence (`unsigned-central-candidate-X.Y.Z`: provenance,
+   effective POM, release notes; the build log) and the checksums in the
+   `attest` summary. A reviewer of `release` other than the tag author then
+   approves `sign-upload`. It signs with the CI signing subkey and uploads once,
+   stopping at `VALIDATED`.
+5. Review the deployment in the Central portal against `signing.json` in
+   `central-deployment-X.Y.Z`. Drop it in the portal if anything differs. A
+   reviewer of `release-publish` then approves `publish`.
+6. After `PUBLISHED`, run the `release-page.yml` command from the run summary to
+   read back the public bytes and create the GitHub Release.
+
+A failed or timed-out portal step is never re-run and never repeated by pushing
+another tag: a re-run refuses. Recover on the release workstation after checking
+the deployment in the Central portal, from the retained state when it matches the
+portal, otherwise by reconciling in the portal; see
+[release packaging](release-packaging.md#protected-tag-release-in-ci). Any
+re-run, also of a failed `build`, disables signing and publication for that
+run; when the Central portal shows no deployment for the version, finish such a
+release offline from that run's unsigned candidate and the existing tag.
+
+## Final release offline
+
+Follow the [release-manager runbook](release-packaging.md#release-manager-runbook):
+
+1. Dispatch unsigned inspection of the exact approved source commit and
+   explicitly selected version, then download its
+   `unsigned-central-candidate-X.Y.Z` artifact with `gh run download`.
+2. Verify the artifact offline with `sign-candidate.py verify` and review its
+   provenance, effective POM and release notes.
+3. Sign and bundle it on the release workstation with `sign-candidate.py sign`,
+   then review `signing.json`, including the bundle hash, entries digest and
+   trusted checkout commit.
+4. After immutable-release approval, create the final tag on the source commit:
+
+   ```sh
+   git tag -s v0.4.0 <source-commit> -m "Release 0.4.0"
+   git push origin v0.4.0
+   ```
+
+   Pushing the tag also starts `release.yml`. If `release` is configured,
+   cancel that run, or have a reviewer reject its `sign-upload`, so that only
+   the offline upload reaches Central.
+
+5. Upload the same bundle with `central-recovery.py --allow-upload`, review the
+   `VALIDATED` deployment in the Central portal, then publish it with
+   `--publish`. Revoke the per-release Central token afterward.
+6. Read back the public bytes locally, then run `release-page.yml` with the
+   tag, candidate run, signer and `entries_sha256` to repeat the readback and
+   create the GitHub Release.
+
+Resume by the saved deployment state; never rebuild, re-sign or start a second
+upload to repair a failed publication stage. The tools reject release-candidate,
+milestone, snapshot and malformed versions. Afterward, integrations can pin the final version. A later defect is fixed in
+a new patch release such as `0.4.1`; published Central artifacts are never
+replaced.
 
 ## Release session checks
 
@@ -106,6 +199,9 @@ order above.
 ## Release checklist
 
 - Adapter tests and strict Javadocs pass.
+- `signing.json` names the expected signer and a clean trusted tool commit: the
+  reviewed `main` checkout on the release workstation, or `TRUSTED_TOOLING_SHA`
+  in CI.
 - Schema upgrade regression passes, and shared message-store changes are
   compatible with the .NET adapter.
 - Validation integration passes the documented acceptance campaign.
@@ -119,8 +215,8 @@ order above.
 Before a final tag, finish a `## X.Y.Z — YYYY-MM-DD` section in `CHANGELOG.md`.
 Include changes, compatibility, upgrade steps, known limitations and artifact identity.
 The tag must match the source POM version. The manual release-page workflow
-verifies actual public bytes against the reviewed candidate and validates the
-section before creating a GitHub Release. Relative documentation links are
+verifies actual public bytes against the reviewed unsigned candidate and the
+signing receipt (offline or from the protected job), and validates the section before creating a GitHub Release. Relative documentation links are
 pinned to the released tag.
 
 Verify the actual Central artifacts and GitHub Release body before marking the

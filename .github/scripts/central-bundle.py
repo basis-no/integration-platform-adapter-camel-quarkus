@@ -31,6 +31,11 @@ def digest(data, algorithm='sha256'):
     return hashlib.new(algorithm, data).hexdigest()
 
 
+def entries_digest(entries):
+    """Stable identity of every signed bundle entry, reproducible from public bytes."""
+    return digest(json.dumps(entries, sort_keys=True, separators=(',', ':')).encode())
+
+
 def verify_signature(payload, signature, fingerprint):
     """Verify against the operator-provisioned GPG keyring and pinned signer."""
     if not re.fullmatch(r'[A-F0-9]{40}', fingerprint):
@@ -94,9 +99,9 @@ def validate(path, group, artifact, version, fingerprint, signature_verifier=ver
                     if any(properties.get(key) != value for key, value in
                            (('groupId', group), ('artifactId', artifact), ('version', version))):
                         raise ValueError('Runtime JAR coordinate mismatch')
+    entries = {name: digest(data) for name, data in sorted(blobs.items())}
     return {'coordinate': f'{group}:{artifact}:{version}', 'bundle_sha256': digest(Path(path).read_bytes()),
-            'signer_fingerprint': fingerprint,
-            'entries': {name: digest(data) for name, data in sorted(blobs.items())}}
+            'signer_fingerprint': fingerprint, 'entries': entries, 'entries_sha256': entries_digest(entries)}
 
 
 def clean(source, output, group, artifact, version):

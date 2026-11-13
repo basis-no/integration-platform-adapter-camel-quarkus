@@ -63,6 +63,7 @@ public record StepResult(
         if (error == null) {
             return null;
         }
-        return error.getMessage() == null ? error.getClass().getName() : error.getMessage();
+        // PostgreSQL text cannot hold a NUL; a failure's own text must not make its step unstorable.
+        return error.getMessage() == null ? error.getClass().getName() : error.getMessage().replace('\u0000', '\uFFFD');
     }
 }

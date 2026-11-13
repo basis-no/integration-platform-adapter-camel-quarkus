@@ -127,6 +127,74 @@ class KafkaFailureProgressTest {
     }
 
     @Test
+    void aClaimCheckThatCanNeverPassIsParkedAndTheNextRecordProceeds() throws Exception {
+        // A replayed claim check whose reference has expired, and one that cannot be read, park
+        // through a Kafka DLQ whose publish completes on the producer's thread; then a good record.
+        String input = "input-" + UUID.randomUUID();
+        String dlq = "dlq-" + UUID.randomUUID();
+        String group = "group-" + UUID.randomUUID();
+        String brokers = KAFKA.getBootstrapServers();
+        var client = Map.<String, Object>of("bootstrap.servers", brokers);
+        try (var admin = AdminClient.create(client); var context = new DefaultCamelContext()) {
+            admin.createTopics(List.of(new NewTopic(input, 1, (short) 1), new NewTopic(dlq, 1, (short) 1)))
+                    .all().get(20, TimeUnit.SECONDS);
+            var calls = new CopyOnWriteArrayList<String>();
+            var outcomes = new CopyOnWriteArrayList<String>();
+            var completed = new CountDownLatch(3);
+            bindShippedKafkaDefaults(context);
+            var properties = new Properties();
+            properties.setProperty("basis.message-store.dlq-uri", "kafka:" + dlq + "?brokers=" + brokers);
+            context.getPropertiesComponent().setOverrideProperties(properties);
+            context.addRoutePolicyFactory(new MessageStoreRoutePolicyFactory(row -> {
+                outcomes.add(row.status().name());
+                completed.countDown();
+            }, "order-pipeline", "postgres-inline", 100_000, 30, true, "dlq", "auto"));
+            context.addRoutes(new PlatformRouteConfiguration());
+            context.addRoutes(new PlatformDeadLetterRoute());
+            context.addRoutes(new RouteBuilder() {
+                public void configure() {
+                    from("kafka:" + input + "?brokers=" + brokers + "&groupId=" + group
+                            + "&autoOffsetReset=earliest&pollTimeoutMs=100")
+                            .routeId("input")
+                            .process(e -> calls.add(e.getMessage().getBody(String.class)));
+                }
+            });
+            String expired = new String(new no.basis.integrationplatform.camel.payload.PayloadReference(1,
+                    no.basis.integrationplatform.camel.payload.PayloadReference.STORAGE, "s3://bucket/payloads/orders/m-1",
+                    5, "0".repeat(64), "application/xml", java.time.Instant.now().minusSeconds(60).toString())
+                    .toJsonBytes(), StandardCharsets.UTF_8);
+            var producerProperties = new HashMap<String, Object>(client);
+            producerProperties.put("key.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            producerProperties.put("value.serializer", "org.apache.kafka.common.serialization.StringSerializer");
+            try (var producer = new KafkaProducer<String, String>(producerProperties)) {
+                for (String value : List.of(expired, "{\"schemaVersion\": 1, \"ref\":")) {
+                    var record = new ProducerRecord<>(input, "key", value);
+                    record.headers().add(PlatformHeaders.PAYLOAD_STORAGE, "s3_object".getBytes(StandardCharsets.UTF_8));
+                    producer.send(record).get(10, TimeUnit.SECONDS);
+                }
+                producer.send(new ProducerRecord<>(input, "key", "good")).get(10, TimeUnit.SECONDS);
+            }
+            context.start();
+            assertTrue(completed.await(30, TimeUnit.SECONDS), "Processing did not move on: " + calls + " / " + outcomes);
+            assertEquals(List.of("good"), calls, "Neither claim check reaches the route");
+            assertEquals(List.of("DLQ", "DLQ", "COMPLETED"), outcomes);
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(10);
+            long offset = -1;
+            while (System.nanoTime() < deadline && offset != 3) {
+                var offsets = admin.listConsumerGroupOffsets(group).partitionsToOffsetAndMetadata().get(5, TimeUnit.SECONDS);
+                var position = offsets.get(new TopicPartition(input, 0));
+                if (position != null) offset = position.offset();
+                if (offset != 3) Thread.sleep(50);
+            }
+            assertEquals(3, offset);
+            var dlqPartition = new TopicPartition(dlq, 0);
+            long dlqEnd = admin.listOffsets(Map.of(dlqPartition, OffsetSpec.latest())).partitionResult(dlqPartition)
+                    .get(10, TimeUnit.SECONDS).offset();
+            assertEquals(2, dlqEnd, "Each claim check is one DLQ record");
+        }
+    }
+
+    @Test
     void aCollectionBodyIsParkedAsOneRecord() throws Exception {
         // An input body the adapter cannot capture is parked as it is; here an empty list, which
         // a Kafka producer with useIterator=true would send as no record at all.

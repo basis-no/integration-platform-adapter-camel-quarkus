@@ -119,6 +119,18 @@ final class StepVisits {
     }
 
     /**
+     * As {@link #repeatedIn}, and when no other part sent the key, records this part as its
+     * sender in the same step, so that parallel parts cannot both take it.
+     */
+    synchronized String claim(String path, String idempotencyKey) {
+        String repeated = repeatedIn(path, idempotencyKey);
+        if (repeated == null) {
+            sent(path, idempotencyKey);
+        }
+        return repeated;
+    }
+
+    /**
      * For a skipped send inside a part: the kind of scope in which this part differs from
      * a part that sent the key in this attempt, when neither this part nor one of its own
      * parts sent it. Null for a normal skip, and whenever that is not certain.

@@ -80,14 +80,36 @@ component, and a `toD` that chooses its component only when it sends, such as
 `${header.receiverUrl}`, also withhold the credential headers around the send
 itself.
 
+A `rest:` send is covered too, through `http`, `vertx-http` or `netty-http` as
+its producer component, whichever EIP sends. Its producer puts a filter of its
+own on the HTTP endpoint it sends through: the endpoint's `headerFilterStrategy`
+producer parameter, else the component's rest filter, which leaves the headers
+bound into the path and query out of the request. The adapter sets that producer
+parameter when the `rest:` endpoint is registered: the component's rest filter,
+or the `rest` component's own `headerFilterStrategy` if one is set, together
+with the record's headers. The path and query bind from the exchange's headers
+as before, also from a header the request leaves out. A `rest:` send through
+another producer component, also with the `rest` component's own filter, fails
+when its producer is created or at its first request, instead of sending the
+headers. The consumer of a `rest:` endpoint that is a route's input, a REST DSL service,
+never sees that parameter: Camel's consumer creation reads the endpoint's
+parameters as they were, so the consumer keeps the consumer component's own
+header filter. (A `netty-http` consumer's endpoint is a `netty-http` endpoint
+like any other, so its filter is wrapped with the record's headers, as above;
+that affects only the headers of its response.) A send through a `rest:`
+endpoint that a route also consumes from is filtered like any other.
+
 An HTTP endpoint whose header filter the adapter cannot extend fails when it is
 created, so its route does not start. An endpoint without a header filter sends
 no headers and is left as it is. Not covered: an endpoint that Camel creates for
 a single send without registering it, such as one from a `toD` with
-`cacheSize=-1`; an endpoint whose header filter is replaced after the endpoint
-was registered; a `rest:` send, whose producer replaces the filter of the HTTP
-endpoint it sends through
-([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53));
+`cacheSize=-1`; an endpoint whose header filter an application replaces after
+the endpoint was registered; a rest producer factory that ignores the
+`headerFilterStrategy` producer parameter; a `rest-openapi:` send, which can
+replace the parameters of the `rest:` endpoint it sends through, and with them
+the adapter's filter, when it has parameters of its own or SSL context
+parameters
+([#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158));
 and components other than these four. Remove the headers before such a send:
 Camel's header that holds the record's whole header set, under both names, with
 `removeHeader("kafka.HEADERS")` and `removeHeader("CamelKafkaHeaders")`, and

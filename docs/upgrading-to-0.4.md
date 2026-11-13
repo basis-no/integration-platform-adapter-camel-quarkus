@@ -25,7 +25,7 @@ Start from 0.3.6; the 0.3.x notes in the changelog apply to earlier versions.
   no replacement yet; a durable resequencer is planned (#36). See
   [Holding Records in Memory](message-lifecycle.md#holding-records-in-memory).
 - **Kafka header names on the newer Quarkus line.** This branch builds against
-  Quarkus 3.33.4 (Camel 4.18.4), whose camel-kafka exchange headers are named
+  Quarkus 3.33.4.1 (Camel 4.18.4), whose camel-kafka exchange headers are named
   `CamelKafka*` instead of `kafka.*`. An integration that moves to this line
   and reads a header by its old literal name, such as `kafka.KEY` in a YAML
   route, must use the new name, such as `CamelKafkaKey`. A Java route that uses
@@ -228,9 +228,51 @@ the DLQ record is usable only while the object exists and its expiry has not
 passed. The object's expiry is fixed when it is captured, at capture time plus
 `basis.message-store.payload.retention-days` (30 days by default), and a
 replay does not extend it. The adapter refuses an expired or missing object,
-so a DLQ record resent after that fails processing. The adapter does not relate
-this to the DLQ topic's retention. Keep the payload retention, and the bucket's
-lifecycle expiry, at least as long as the DLQ topic's retention.
+so a DLQ record resent after that is parked again without reaching its route.
+The adapter does not relate this to the DLQ topic's retention. Keep the payload
+retention, and the bucket's lifecycle expiry, at least as long as the DLQ
+topic's retention.
+
+When such a claim check is read again, on a resend or a replay, the adapter
+checks the whole object, its size and SHA-256, before the route reads any of
+it; see [Object-stored inputs are checked in full first](#object-stored-inputs-are-checked-in-full-first).
+
+### Object-stored inputs are checked in full first
+
+An input whose payload is in object storage is copied to a local file and
+checked in full against its reference before its route reads any of it, on a
+replay or resend of a claim check and on the first attempt after the adapter
+stored a streamed input. The route then reads the checked copy, which is
+closed when the boundary exchange is done: a route that hands the stream to
+work that reads it later, such as a `wireTap` without stream caching, must read
+it first. The check holds one 64 KiB buffer in memory; Camel's stream caching,
+on by default, still reads the whole stream into memory at the route's first
+node unless its spooling to disk is turned on. Two new deployment settings:
+
+- `basis.message-store.payload.spool-directory`, by default
+  `<java.io.tmpdir>/basis-payload-spool` (a per-host subdirectory is used
+  inside it, owner-only where the file system supports POSIX permissions);
+- `basis.message-store.payload.spool-max-bytes`, by default `10737418240`
+  (10 GiB, as `object-max-bytes`): the checked copies one process holds at
+  once. In `tiered` mode startup refuses a value below `object-max-bytes`, so
+  raise both together.
+
+Mount a dedicated, size-limited volume at the spool directory with room for
+`spool-max-bytes`: on Linux a copy has no directory entry while it is read, and may not
+count toward a pod's ephemeral-storage accounting.
+
+A payload that cannot be captured or checked never reaches its route. A Kafka
+claim check that can never pass (a changed or deleted object, one the store
+reports with another size, an expired reference, a malformed claim check) is
+parked in the DLQ as its claim check and committed after the DLQ accepted it, so
+it does not hold up its partition. Any other failure (an object store that
+cannot be reached or refuses access, a full or unwritable spool, the first
+attempt of a streamed input) is `FAILED` with the claim check kept and not
+committed, so the record is read again; see
+[Payload Storage](payload-storage.md#object-metadata-and-verification) and
+[Troubleshooting](troubleshooting.md#s3-replay-fails). On 0.3.6 and 0.4.0-rc1, a
+failure while a payload was captured or resolved was only logged by Camel and
+the route ran anyway.
 
 ## Not in This Build Yet
 
@@ -347,6 +389,17 @@ The changelog's Unreleased section has the details; in short:
   `setHeader("Authorization", header("Authorization").convertToString())`. A
   receiver that read `kafka.*` request headers must get the values from
   headers the route sets itself.
+- **`rest:` sends withhold them too.** A `rest:` send through `http`,
+  `vertx-http` or `netty-http` now also leaves the record's credential headers
+  and the `kafka.*` / `CamelKafka*` headers out of its request; its path and
+  query bind as before, also through a `rest:` endpoint a route consumes from.
+  A REST DSL service (a `rest:` route input) is unchanged. A `rest:` send
+  through a producer component other than these three fails when its producer
+  is created, or at its first request, instead of sending the headers. A
+  `rest-openapi:` send is not covered yet
+  ([#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158));
+  remove the headers before it. See
+  [Kafka Consumers](ingress-and-scaling.md#kafka-consumers).
 - **No credential-like names in the output checkpoint's header list.**
   Output checkpoints are new in 0.4.0. When you configure one (or already did
   on a 0.4 development build), startup refuses a credential-like name in

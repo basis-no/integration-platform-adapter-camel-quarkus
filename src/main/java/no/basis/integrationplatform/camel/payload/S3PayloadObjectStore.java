@@ -12,7 +12,9 @@ import software.amazon.awssdk.services.s3.model.GetObjectRequest;
 import software.amazon.awssdk.services.s3.model.GetObjectResponse;
 import software.amazon.awssdk.services.s3.model.HeadObjectRequest;
 import software.amazon.awssdk.services.s3.model.HeadObjectResponse;
+import software.amazon.awssdk.services.s3.model.NoSuchKeyException;
 import software.amazon.awssdk.services.s3.model.PutObjectRequest;
+import software.amazon.awssdk.services.s3.model.S3Exception;
 import software.amazon.awssdk.services.s3.model.UploadPartRequest;
 
 import java.io.FilterInputStream;
@@ -172,7 +174,7 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
                     .bucket(location.bucket())
                     .key(location.key())
                     .build());
-            return new VerifyingInputStream(input, reference.sizeBytes(), reference.sha256());
+            return new VerifyingInputStream(input, reference.ref(), reference.sizeBytes(), reference.sha256());
         } catch (Exception e) {
             throw new PayloadStorageException("Failed to open payload object " + reference.ref(), e);
         }
@@ -187,14 +189,39 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
                     .key(location.key())
                     .build());
             if (head.contentLength() != reference.sizeBytes()) {
-                throw new PayloadStorageException(
+                throw new UnresolvablePayloadException(
                         "Payload object size mismatch for " + reference.ref()
                                 + ": expected " + reference.sizeBytes() + ", got " + head.contentLength());
             }
         } catch (PayloadStorageException e) {
             throw e;
+        } catch (S3Exception e) {
+            if (e.statusCode() == 404 && keyDoesNotExist(location)) {
+                throw new UnresolvablePayloadException("Payload object does not exist: " + reference.ref(), e);
+            }
+            throw new PayloadStorageException("Payload object is unavailable: " + reference.ref(), e);
         } catch (Exception e) {
             throw new PayloadStorageException("Payload object is unavailable: " + reference.ref(), e);
+        }
+    }
+
+    /**
+     * Whether the store answers that the key does not exist. A HEAD response has no body, so
+     * its 404 does not tell a missing key from a missing bucket; a one-byte GET does. Any other
+     * answer, a missing bucket, a refused access, a timeout or an object that is there after
+     * all, is not one.
+     */
+    private boolean keyDoesNotExist(ObjectLocation location) {
+        try (InputStream ignored = s3.getObject(GetObjectRequest.builder()
+                .bucket(location.bucket())
+                .key(location.key())
+                .range("bytes=0-0")
+                .build())) {
+            return false;
+        } catch (NoSuchKeyException e) {
+            return true;
+        } catch (Exception e) {
+            return false;
         }
     }
 
@@ -212,7 +239,7 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
         } catch (PayloadStorageException e) {
             throw e;
         } catch (Exception e) {
-            throw new PayloadStorageException("Invalid S3 payload reference: " + reference.ref(), e);
+            throw new UnresolvablePayloadException("Invalid S3 payload reference: " + reference.ref(), e);
         }
     }
 
@@ -274,14 +301,17 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
 
     private static final class VerifyingInputStream extends FilterInputStream {
         private final MessageDigest digest;
+        private final String ref;
         private final long expectedSize;
         private final String expectedSha256;
         private long count;
         private boolean verified;
 
-        private VerifyingInputStream(InputStream input, long expectedSize, String expectedSha256) throws Exception {
+        private VerifyingInputStream(InputStream input, String ref, long expectedSize, String expectedSha256)
+                throws Exception {
             super(input);
             this.digest = MessageDigest.getInstance("SHA-256");
+            this.ref = ref;
             this.expectedSize = expectedSize;
             this.expectedSha256 = expectedSha256;
         }
@@ -316,9 +346,22 @@ public final class S3PayloadObjectStore implements PayloadObjectStore {
             }
             verified = true;
             String actual = HexFormat.of().formatHex(digest.digest());
-            if (count != expectedSize || !actual.equals(expectedSha256)) {
-                throw new IOException("Payload object checksum mismatch: expected " + expectedSha256
-                        + "/" + expectedSize + ", got " + actual + "/" + count);
+            // The cause carries the reason, so a reader that unwraps it can report why.
+            PayloadStorageException mismatch = null;
+            if (count < expectedSize) {
+                // The HEAD before matched the reference's size: a GET whose connection closes
+                // early also ends the stream, so fewer bytes say nothing about the object.
+                mismatch = new PayloadStorageException("Object payload " + ref + " ended after " + count
+                        + " of its reference's " + expectedSize + " bytes");
+            } else if (count > expectedSize) {
+                mismatch = new UnresolvablePayloadException("Object payload " + ref + " has " + count
+                        + " bytes; its reference has " + expectedSize);
+            } else if (!actual.equals(expectedSha256)) {
+                mismatch = new UnresolvablePayloadException("Object payload " + ref
+                        + " does not match its reference's SHA-256");
+            }
+            if (mismatch != null) {
+                throw new IOException(mismatch.getMessage(), mismatch);
             }
         }
     }

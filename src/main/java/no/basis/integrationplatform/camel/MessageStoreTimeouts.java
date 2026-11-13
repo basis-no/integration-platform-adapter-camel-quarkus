@@ -41,6 +41,8 @@ public final class MessageStoreTimeouts {
 
     private static final long NETWORK_MARGIN_SECONDS = 5;
     private static final Duration MINIMUM = Duration.ofMillis(1);
+    /** The SQLSTATE of a commit that PostgreSQL reported with a warning: its outcome is not confirmed. */
+    static final String UNCONFIRMED_COMMIT = "08007";
     /**
      * The timeouts, and {@code client_min_messages} at {@code warning}: a role, database or
      * connection setting of {@code error} would suppress the warning of an unconfirmed
@@ -225,9 +227,11 @@ public final class MessageStoreTimeouts {
             String reason = isSynchronousReplicationWarning(warning)
                     ? "committed locally, but a synchronous standby did not confirm it"
                     : "committed, but the commit reported a warning";
+            // 08007, transaction resolution unknown: the warning's own SQLSTATE says nothing about
+            // the record's data, so it must not decide how the failure is classified.
             SQLException failure = new SQLException("The Message Store transaction was " + reason
-                    + "; treated as a store failure so that the outcome is written again: " + warning.getMessage(),
-                    state, warning);
+                    + "; treated as a store failure so that the outcome is written again: " + warning.getMessage()
+                    + " (warning SQLSTATE " + state + ")", UNCONFIRMED_COMMIT, warning);
             throw failure;
         }
     }

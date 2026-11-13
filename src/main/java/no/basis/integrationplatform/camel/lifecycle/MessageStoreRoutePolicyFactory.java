@@ -37,6 +37,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
     private final MessageFailureMode failureMode;
     private final boolean kafkaCommitEnabled;
     private final PayloadObjectStore objectStore;
+    private VerifiedPayloadSpool payloadSpool = VerifiedPayloadSpool.defaults();
     private final IngressNormalizationConfig ingressNormalizationConfig;
     private final IngressReplicaSafety ingressReplicaSafety;
     private final Set<String> seenNormalizationRoutes = ConcurrentHashMap.newKeySet();
@@ -90,6 +91,16 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         this.objectStore = objectStore;
         this.ingressNormalizationConfig = ingressNormalizationConfig;
         this.ingressReplicaSafety = ingressReplicaSafety;
+    }
+
+    /**
+     * Uses the configured spool for checked copies of object-stored inputs, after checking that
+     * it can hold the largest object payload the policy accepts.
+     */
+    @Inject
+    void setPayloadSpool(VerifiedPayloadSpool payloadSpool) {
+        payloadSpool.validateFor(payloadPolicy);
+        this.payloadSpool = payloadSpool;
     }
 
     static long resolveInlineThreshold(Optional<Long> configured, Optional<Long> legacy) {
@@ -173,6 +184,7 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
         }
         MessageStoreRoutePolicy policy = new MessageStoreRoutePolicy(
                 sink, integrationName, payloadPolicy, boundaryKind, kafkaCommitEnabled, objectStore);
+        policy.setPayloadSpool(payloadSpool);
         if (trafficSignals != null && boundaryKind == MessageBoundaryKind.KAFKA) {
             policy.setTrafficSignals(trafficSignals);
             trafficSignals.observeKafkaBoundary();

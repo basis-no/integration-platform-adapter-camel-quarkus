@@ -7,7 +7,7 @@
   <properties>
     <maven.compiler.release>21</maven.compiler.release>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
-    <quarkus.version>3.33.4</quarkus.version>
+    <quarkus.version>3.33.4.1</quarkus.version>
     <!-- No default: pass -Dadapter.version with the version just installed from the root project. -->
   </properties>
   <dependencyManagement><dependencies>
