@@ -38,9 +38,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * and a bidirectional control cannot reorder the text.
  */
 class StoreFailureLogEscapingTest {
-    private static final String MESSAGE_ID = "message-1\r\n2026-01-01 INFO forged‮";
+    private static final String MESSAGE_ID = "message-1\r\n2026-01-01 INFO forged\u202e";
     private static final String ESCAPED_ID = "message-1\\u000d\\u000a2026-01-01 INFO forged\\u202e";
-    private static final String STEP = "post order";
+    private static final String STEP = "post\u2028order";
     private static final String ESCAPED_STEP = "post\\u2028order";
 
     private final ReceiverComponent receiver = new ReceiverComponent();
@@ -122,7 +122,7 @@ class StoreFailureLogEscapingTest {
         assertEquals(1, matching.size(), marker + " in " + lines);
         String line = matching.getFirst();
         assertTrue(line.contains(ESCAPED_ID), "The message id is escaped: " + line);
-        assertFalse(line.contains("\r") || line.contains("\n") || line.contains("‮") || line.contains(" "),
+        assertFalse(line.contains("\r") || line.contains("\n") || line.contains("\u202e") || line.contains("\u2028"),
                 "No raw control: " + line);
         return line;
     }

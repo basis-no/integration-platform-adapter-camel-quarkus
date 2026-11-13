@@ -396,7 +396,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             readAgain(route, exchange, "Not parked: " + reason, null);
             return;
         }
-        MessageAttemptResult full = result(route, exchange);
+        MessageAttemptResult full;
+        try {
+            full = result(route, exchange);
+        } catch (RuntimeException e) {
+            // Nothing the outcome's build throws may leave the record looking processed. A record
+            // parked already is not parked again when it is read again.
+            if (!completed && position != null && dlqParked(exchange)) {
+                parkedForData.add(parkedKey);
+            }
+            LOG.error("Message {} at {} is not committed: its outcome could not be built", LogText.escape(messageId),
+                    position, e);
+            readAgain(route, exchange, "Failed to build the reduced outcome", e);
+            return;
+        }
         MessageAttemptResult reduced = new MessageAttemptResult(full.schemaVersion(), messageId, null, null, null, null,
                 full.payloadStorage(), full.payloadSizeBytes(), full.payloadBytes(), full.payloadExpiresAt(),
                 full.payloadDeletedAt(), full.replayable(),

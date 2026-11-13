@@ -130,7 +130,7 @@ class RedoHeaderBoundaryTest {
         assertAll(
                 () -> assertNull(requests.getFirst().getFirst(PlatformHeaders.REDO_STEPS), "No redo list on the HTTP request"),
                 () -> assertNull(header(record, PlatformHeaders.REDO_STEPS), "No redo list on the published record"),
-                // x-bip-replay is still forwarded: nothing in the adapter acts on it at a Kafka input.
+                // x-bip-replay is still forwarded: alone, without an audited replay, it makes no redo.
                 () -> assertEquals("true", requests.getFirst().getFirst(PlatformHeaders.REPLAY)),
                 () -> assertEquals("true", header(record, PlatformHeaders.REPLAY)));
         assertEquals(1, rows.size());

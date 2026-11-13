@@ -271,6 +271,21 @@ No Message Store schema change.
 What an integration notices when it moves from 0.3.6; the entries above give
 the details.
 
+- **Redo lists come only from the adapter's own replay.** A resend through the
+  resend endpoint redoes its listed steps as before. A redo list that a tool
+  writes on a record itself, or that an HTTP caller sends, is dropped with a
+  warning. Grant the Message Store login `SELECT` on `bip_message_replay_audit`
+  and `bip_message_attempt`, or a resend's redo is ignored with a warning. An
+  application's own `StepOutcomeStore` must implement `isAuthorisedReplay`, or
+  no redo is honoured. A `FAILED` outcome no longer replaces a `COMPLETED` or
+  `DLQ` row of the same attempt in `bip_message_attempt`; a consumer of
+  `bip.message.status` events that writes that table itself should keep the
+  same rule. See [Redo behavior](README.md#redo-behavior).
+- **Record values in log lines are escaped.** Control and invisible characters
+  in a message id or another value from a record show as `\uXXXX`, and a
+  backslash as `\\`. A record whose `x-bip-attempt` or `x-bip-schema-version`
+  is not a whole number is now recorded, with attempt or schema version 1 and a
+  warning that names the header.
 - **Kafka inputs start at `earliest`.** A new consumer group, a changed
   `groupId`, a group whose committed offsets expired on the broker, and a Kafka
   input without a `groupId` now read each partition's retained records from
