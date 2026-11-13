@@ -72,8 +72,9 @@ class DefaultStepTrackerTest {
         for (StepResult step : stepOutcomeStore.delivered) {
             assertFalse(step.endpointUri().contains("s3cr3t"), step.endpointUri());
         }
-        assertTrue(stepOutcomeStore.delivered.get(0).endpointUri().startsWith("sftp://transfer:"));
-        assertTrue(stepOutcomeStore.delivered.get(0).endpointUri().contains("files.example.com:22/outbound"));
+        // The whole user info is masked, as the .NET adapter records it.
+        assertEquals("sftp://xxxxxx@files.example.com:22/outbound?username=xxxxxx&password=xxxxxx",
+                stepOutcomeStore.delivered.get(0).endpointUri());
         assertTrue(stepOutcomeStore.delivered.get(1).endpointUri().startsWith("https://vendor.example.com/callback?"));
     }
 
@@ -99,6 +100,9 @@ class DefaultStepTrackerTest {
         assertEquals(StepStatus.SKIPPED, steps(skipped).getFirst().status());
         assertEquals("message-skipped:send-file", steps(skipped).getFirst().idempotencyKey());
         assertFalse(steps(skipped).getFirst().endpointUri().contains("s3cr3t"));
+        String recorded = "sftp://xxxxxx@files.example.com/outbound?password=xxxxxx";
+        assertEquals(recorded, steps(failed).getFirst().endpointUri());
+        assertEquals(recorded, steps(skipped).getFirst().endpointUri());
     }
 
     @Test

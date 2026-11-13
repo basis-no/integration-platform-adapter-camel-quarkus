@@ -1,8 +1,10 @@
 name: Verify published artifacts and create GitHub Release
 
-# No tag-push build/upload. release-candidate.yml retains the unsigned candidate;
-# signing, upload and publication happen only on the offline release workstation
-# (docs/release-packaging.md). This path only reads public artifacts and notes.
+# Manual trigger only; never builds, signs or uploads. The unsigned candidate
+# comes from release.yml (protected tag run) or release-candidate.yml (offline
+# signing). This path only reads public artifacts and notes with the public key.
+# It replaces publish-central.yml on this line, so that workflow, whose older
+# revisions on tags and branches publish on a tag push, can stay disabled.
 on:
   workflow_dispatch:
     inputs:
@@ -39,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
           persist-credentials: false
@@ -50,12 +52,12 @@ jobs:
           python3 .github/scripts/release-candidate.py selection --mode readback --version "$version" --commit "$source_commit" --signer "$SIGNER" --candidate-run "$CANDIDATE_RUN" --bundle-hash "$SIGNED_ENTRIES_SHA256"
           echo "RELEASE_VERSION=$version" >> "$GITHUB_ENV"
           echo "SOURCE_COMMIT=$source_commit" >> "$GITHUB_ENV"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag }}
           path: source
           persist-credentials: false
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: unsigned-central-candidate-${{ env.RELEASE_VERSION }}
           path: evidence
@@ -73,7 +75,7 @@ jobs:
           python3 -I .github/scripts/sign-candidate.py verify --candidate evidence --version "$RELEASE_VERSION" --source-commit "$SOURCE_COMMIT" --candidate-run "$CANDIDATE_RUN"
           python3 -I .github/scripts/verify-public-release.py --pom source/pom.xml --version "$RELEASE_VERSION" --signer "$SIGNER" --unsigned-receipt evidence/unsigned.json --entries-sha256 "$SIGNED_ENTRIES_SHA256" --output public-readback.json
       - name: Retain actual artifact readback
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: central-public-readback-${{ inputs.tag }}
           path: public-readback.json
@@ -95,10 +97,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ inputs.tag }}
           path: source

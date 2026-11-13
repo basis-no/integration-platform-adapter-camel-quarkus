@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.step;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
+import no.basis.integrationplatform.camel.EndpointUriMasking;
 import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
 import no.basis.integrationplatform.camel.HttpTimeoutOptions;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
@@ -28,7 +29,6 @@ import org.apache.camel.support.AsyncCallbackToCompletableFutureAdapter;
 import org.apache.camel.support.AsyncProcessorConverterHelper;
 import org.apache.camel.support.PluginHelper;
 import org.apache.camel.support.processor.DelegateAsyncProcessor;
-import org.apache.camel.util.URISupport;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -202,7 +202,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             return;
         }
         String routeId = routeId(definition);
-        String endpoint = URISupport.sanitizeUri(endpointSend.endpointUri());
+        String endpoint = EndpointUriMasking.mask(endpointSend.endpointUri());
         if (!allowGeneratedStepIds) {
             throw new IllegalStateException("Tracked send to " + endpoint + " in route " + routeId
                     + " has no explicit id; its step id would be the generated " + endpointSend.nodeId()
@@ -247,7 +247,23 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private record EndpointSend(String endpointUri, String nodeId) {
     }
 
-    private record Send(TrafficSignals.PublishSnapshot trafficSnapshot, java.util.Map<String, Object> withheld) {
+    /**
+     * A send in progress: the activity counters' snapshot, the credential headers it withheld,
+     * and its own step, which a send it makes in turn, such as a tracked send in a
+     * {@code direct:} route, replaces on the exchange.
+     */
+    private record Send(TrafficSignals.PublishSnapshot trafficSnapshot, java.util.Map<String, Object> withheld,
+            java.util.Map<String, Object> step) {
+        void restoreStep(Exchange exchange) {
+            for (String name : DefaultStepTracker.CURRENT_STEP_PROPERTIES) {
+                Object value = step.get(name);
+                if (value == null) {
+                    exchange.removeProperty(name);
+                } else {
+                    exchange.setProperty(name, value);
+                }
+            }
+        }
     }
 
     /** Fails the exchange. An exchange that already failed keeps its exception unchanged, since it may be shared. */
@@ -327,15 +343,40 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
         /** Prepares the send, or returns {@code null} when an earlier attempt delivered this step. */
         private Send prepare(Exchange exchange) {
+            Throwable earlier = StepOutcomeFailure.of(exchange);
+            if (earlier != null) {
+                // A store failure ends the attempt: no later send of it through to or toD, tracked or
+                // not, nor a redelivery of this one, is made, since nothing it does can be committed.
+                exchange.getExchangeExtension().setRedeliveryExhausted(true);
+                throw new StepOutcomeStoreException("Not sent: a step outcome of this attempt was not checked or "
+                        + "recorded, so the input is read again", earlier);
+            }
             stepOutcome(exchange, () -> stepTracker.beforeSend(exchangeWithInterceptProperties(exchange)));
             if (alreadyDelivered(exchange)) {
                 stepTracker.recordSkipped(exchange);
                 return null;
             }
-            return new Send(beforePublish(exchange), withholdCredentials(exchange));
+            return new Send(beforePublish(exchange), withholdCredentials(exchange), currentStep(exchange));
         }
 
-        /** Records the send's outcome. Never throws: a failure fails the exchange. */
+        private static java.util.Map<String, Object> currentStep(Exchange exchange) {
+            java.util.Map<String, Object> step = new java.util.HashMap<>();
+            for (String name : DefaultStepTracker.CURRENT_STEP_PROPERTIES) {
+                Object value = exchange.getProperty(name);
+                if (value != null) {
+                    step.put(name, value);
+                }
+            }
+            return step;
+        }
+
+        /**
+         * Records the send's outcome. Never throws: a failure fails the exchange. A send that
+         * ran another tracked send, for example through a {@code direct:} route, records its
+         * own step, not the one the inner send left on the exchange: the inner send recorded
+         * that one already, and an error handler in the inner route may have handled its
+         * failure.
+         */
         private void completed(Exchange exchange, Send send) {
             try {
                 warnAboutPublishedCredentials(exchange);
@@ -345,6 +386,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 markFailed(exchange, failure);
             }
             try {
+                send.restoreStep(exchange);
                 if (exchange.getException() == null) {
                     stepOutcome(exchange, () -> stepTracker.recordDelivered(exchange));
                 } else {
@@ -361,6 +403,8 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 work.run();
             } catch (RuntimeException | Error failure) {
                 StepOutcomeFailure.record(exchange, failure);
+                // No redelivery waits: a redelivery of this send fails before it sends.
+                exchange.getExchangeExtension().setRedeliveryExhausted(true);
                 throw failure;
             }
         }

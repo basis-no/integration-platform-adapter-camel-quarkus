@@ -27,11 +27,13 @@ and the schema it expects ships in `src/main/resources/db/message-store/`.
 
 See the [changelog](CHANGELOG.md) for changes, upgrade actions and
 limitations. [Release tooling](docs/release-packaging.md) builds unsigned candidates
-without production credentials. Final releases are signed with the offline
-signer and uploaded by the release manager from reviewed tooling; CI holds no
-publishing credentials. A tag never rebuilds or uploads a release. Final notes
-need an approved date and exact artifact provenance; source preparation does not
-authorize publication. See [Releasing](docs/releasing.md).
+without production credentials. Final releases are signed and uploaded either by
+a protected tag run that waits for reviewer approval before signing with a CI
+signing subkey, or offline by the release manager; the primary release key never
+exists in GitHub. A reviewed snapshot is published only through the
+approval-gated, manual snapshot lane. Final notes need an approved
+date and exact artifact provenance; source preparation does not authorize
+publication. See [Releasing](docs/releasing.md).
 
 ## 0.3 maintenance line
 
@@ -47,14 +49,15 @@ application.
 
 A release is built as an unsigned candidate in CI, without credentials, from the
 reviewed source commit; the release tooling sets the release version, while the
-source POM stays at `X.Y.Z-SNAPSHOT`. The release manager signs that candidate
-offline and uploads it to Maven Central. Select the stable package explicitly
-when upgrading an integration.
+source POM stays at `X.Y.Z-SNAPSHOT`. It is signed and uploaded to Maven
+Central by the protected tag run after reviewer approval, or offline by the
+release manager. Select the stable package explicitly when upgrading an
+integration.
 
-For acceptance, use a locally built `X.Y.Z-SNAPSHOT` or a snapshot of a reviewed
-commit published from the release manager's workstation. See
-[Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts) and
-[published snapshots](docs/releasing.md#published-snapshots).
+For acceptance, use locally built `X.Y.Z-SNAPSHOT` artifacts, or, to test in
+another environment, a reviewed snapshot from the approval-gated snapshot lane.
+See [Releasing](docs/releasing.md#acceptance-with-locally-built-artifacts) and
+[Testing a published snapshot](docs/releasing.md#testing-a-published-snapshot).
 Snapshots are test artifacts; production integrations keep an explicitly
 selected stable version.
 
@@ -146,7 +149,7 @@ eight requests before the message is parked. Set
 `camel.component.http.automatic-retries-disabled=true` to leave every retry to
 the adapter's retry policy. Set it for receivers that send a long `Retry-After`,
 and for routes on the `ip-slow-backend` configuration, whose own redeliveries
-already use much of the poll interval.
+already use about a third of the poll interval.
 
 - `COMPLETED`: route processing finished and the outcome was safely recorded.
 - `DLQ`: retries were exhausted and the message was parked for operator action.
@@ -180,13 +183,32 @@ camel.component.kafka.auto-commit-enable=false
 camel.component.kafka.allow-manual-commit=true
 camel.component.kafka.break-on-first-error=true
 camel.component.kafka.poll-on-error=RECONNECT
+camel.component.kafka.auto-offset-reset=earliest
 ```
+
+From 0.3.7 the adapter ships `auto-offset-reset=earliest`. A record whose
+outcome was not durable is not committed, and Camel's reconnect resumes from
+the committed offset. On a partition where the consumer group has none yet, it
+resumes from `auto.offset.reset`: with Camel's default `latest` that is the
+end of the partition, so the record was never read again and a later record's
+commit moved past it. A managed Kafka input whose consumer uses another value
+(on the component, the endpoint's `autoOffsetReset` or
+`additionalProperties.auto.offset.reset`) still starts, with a warning at
+startup that names the route, its endpoint without options and the value. So
+does a managed Kafka input without a `groupId`: Camel then gives its consumer a
+new group on every start, which has no committed offsets, so with `earliest` it
+reads every retained record of its partitions again on each start. Give every
+Kafka input a stable `groupId`, on the endpoint or as
+`camel.component.kafka.group-id`; Camel's consumer does not use
+`additionalProperties.group.id`, it replaces it.
 
 The offset is committed only after `MessageStoreSink.record(...)` succeeds and
 processing completed or DLQ publication was confirmed. An unparked `FAILED`
 outcome, failed journal write or failed commit leaves the exchange failed. A
-step outcome that cannot be checked or recorded fails the send's exchange after
-Camel's retries; the input is then recorded as `FAILED` and neither parked nor
+step outcome that cannot be checked or recorded fails the send's exchange (up
+to 0.3.6 after Camel's retries; from 0.3.7 at once, without redeliveries, the
+dead letter channel or an application's own `onException`); the input is then
+recorded as `FAILED` and neither parked nor
 committed, also when the route catches the failure or it happens in a split
 part. A separate request, such as one sent with a `ProducerTemplate`, fails in
 the same case but does not hold back the input that sent it: an input that
@@ -217,9 +239,30 @@ within-attempt event-ordering guarantee.
 The global route configuration applies to all routes unless a route opts into a
 named variant:
 
-- default: 3 redeliveries, 1 second initial delay, exponential backoff.
-- `ip-slow-backend`: 6 redeliveries, 5 second initial delay, exponential backoff.
+- default: 3 redeliveries after 1, 2 and 4 seconds, 7 seconds of waiting in
+  all.
+- `ip-slow-backend`: 6 redeliveries after 5, 10, 20, 20, 20 and 20 seconds, 95
+  seconds in all. From 0.3.7 each delay is capped at 20 seconds; before, the
+  delays doubled up to Camel's default cap of 60 seconds and waited 195
+  seconds.
 - `ip-no-retry`: no redelivery before DLQ.
+
+On a Kafka input the waits run on the consumer thread, between attempts that
+take their own time. `max.poll.interval.ms` (300 seconds by default) bounds the
+time between two polls, and the consumer processes every record of a poll
+before it polls again (up to 500 records, Camel's default `maxPollRecords`), so
+the budget covers all records of one poll, not one record. If they take longer,
+Kafka removes the consumer from its group and the uncommitted records are
+delivered again, so a record can run, and be parked, more than once. With
+`ip-slow-backend`, one record that exhausts its retries waits 95 seconds, so
+three such records in one poll already take most of the interval. For a route
+on `ip-slow-backend`, set `maxPollRecords=1` on the Kafka input, or raise
+`maxPollIntervalMs` on it to cover the records of a poll. With one record per
+poll, about 200 seconds remain for its seven attempts: bound each receiver call
+well inside that with `responseTimeout` and `connectTimeout` (see the timeout
+table below for the forms Camel applies), and turn the HTTP client's own retry
+off with `camel.component.http.automatic-retries-disabled=true`, since it can
+double the requests in each attempt.
 
 All variants use `basis.message-store.dlq-uri`, defaulting to
 `kafka:bip.message.dlq`. When the dead letter channel parks a message, the
@@ -250,39 +293,43 @@ once and records `DLQ`. Per-part identity is not part of 0.3.x; 0.4 adds it. See
 [split step identity advisory](docs/split-step-identity.md) for the exact
 conditions under which a part is not sent, and the safe configuration.
 
-Known sub-route limitation in 0.3.x, found after the 0.3.6 release
-([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)):
-a tracked send in a route that another send calls, such as a `direct:`
-sub-route, is recorded twice. The calling send records the sub-route's step
-again when it completes, so a successful call is listed twice as `DELIVERED`.
-When the sub-route's dead letter channel parks the message after the send
-failed, the calling send sees no failure and records the step `DELIVERED` with
-no error. A resend or replay then skips the send, and the receiver never gets
-the message. To recover such a message, either:
+Sends in a sub-route: from 0.3.7, a tracked send in a route that another send
+calls, such as a `direct:` sub-route, records its outcome once per try, like a
+send in the input route. The calling `to("direct:…")` is internal and records
+nothing. When the sub-route's dead letter channel parks the message after the
+send failed, the step stays `FAILED`, so a later read of the record, a resend
+or a replay sends it again. The same holds when the sub-route has no error
+handler of its own and the input route's handler retries the call.
 
-- resend it with the step in `redoSteps`, together with any step whose output
-  it uses (see [Redo behavior](#redo-behavior)); redo repeats the call with the
-  same `Idempotency-Key`; or
-- check at the receiver whether it got the message.
+A later read can still follow a parked message. A commit fails after the DLQ
+publish when a receiver that accepts the connection and never answers kept the
+route busy for longer than the consumer's `max.poll.interval.ms` (5 minutes by
+default; with the `http` component's default timeouts, four tries take about
+12 minutes). The record is then read again, its route runs again and parks one
+more copy, for as long as the receiver hangs. When the receiver answers again,
+that read delivers the message and records it `COMPLETED`; the copies already
+parked stay on the DLQ topic, and a resend of one skips the delivered step. Keep
+a receiver call's timeouts times its tries well under the poll interval, as
+described below for the processing time budget and the `http` component's
+timeout options.
 
-The same loss also happens without a resend. With the `postgres` step store,
-any later read of a parked record that carries `x-bip-message-id` skips the
-send and, when the rest of the route succeeds, records the message
-`COMPLETED`, although the receiver never got it. A record without that header
-gets a new message id on every read, so its send is tried again. Such a read
-comes from:
+Adapter 0.3.5 and 0.3.6 also recorded the sub-route's step when the calling
+send completed
+([#48](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/48)).
+A successful call was listed twice as `DELIVERED`. When the sub-route's dead
+letter channel parked the message after the send failed, the calling send saw
+no failure and recorded the step `DELIVERED` with no error. A resend or replay
+then skipped the send, and the receiver never got the message. With the
+`postgres` step store, any later read of a parked record that carries
+`x-bip-message-id` skipped it too and, when the rest of the route succeeded,
+recorded the message `COMPLETED`. Such a read came from:
 
-- a commit that fails after the DLQ publish, for example because a receiver
-  that accepts the connection and never answers kept the route busy for longer
-  than the consumer's `max.poll.interval.ms` (5 minutes by default; with the
-  `http` component's default timeouts, four tries take about 12 minutes);
-- a rebalance that takes the partition away before the commit;
+- a commit that failed after the DLQ publish, as above;
+- a rebalance that took the partition away before the commit;
 - a crash between the DLQ publish and the commit.
 
-The Message Store then shows `COMPLETED`, so there is no parked message to
-resend.
-
-To find the messages this happened to:
+A message that 0.3.5 or 0.3.6 recorded this way keeps its `DELIVERED` step
+after the upgrade, so it is still skipped. To find these messages:
 
 1. Read the `x-bip-message-id` header of the records on the DLQ topic
    (`bip.message.dlq` unless `basis.message-store.dlq-uri` names another), as
@@ -307,76 +354,134 @@ To find the messages this happened to:
 3. For each of them, read its attempts in `bip_message_attempt` (see
    [Read Model](#read-model)). A sub-route step listed as `SKIPPED` in
    `steps_json` points to this case. Check at the receiver whether it got the
-   message, and if not, resend it with that step in `redoSteps`, as above.
+   message.
+4. Resend a message the receiver did not get with the step in `redoSteps`,
+   together with any step whose output it uses (see
+   [Redo behavior](#redo-behavior)). Redo repeats the call with the same
+   `Idempotency-Key`.
 
-The 0.4.0 development line, not yet released, records the send once per try.
-A message that 0.3.x parked keeps its `DELIVERED` step after the upgrade, so
-its resend needs the redo too.
+Every message that 0.3.5 or 0.3.6 parked after a failed send in a sub-route
+has that step recorded `DELIVERED`, also when it is still in the DLQ: resend it
+with the step in `redoSteps`.
 
-Known Message Store outage limitation in 0.3.x
+Message Store outages in 0.3.x
 ([#84](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/84),
 [#66](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/66)):
 while the Message Store cannot be written, a Kafka record's outcome cannot be
-recorded, so its offset is not committed and the consumer reads the record again
-at once, without waiting, for as long as the outage lasts. Every read runs the
-route with its redeliveries (by default 3, after 1, 2 and 4 seconds) and logs
-the failure at ERROR with its stack trace, so the log grows quickly. The
-partition waits; no record is committed early.
+recorded, so its offset is not committed and the consumer reads the record
+again, for as long as the outage lasts. Up to 0.3.6 every read runs the route
+with its redeliveries (by default 3, after 1, 2 and 4 seconds) and logs the
+failure at ERROR with its stack trace. From 0.3.7 a failed step outcome check
+or write ends the read at once, without redeliveries. The partition waits; no
+record is committed early.
+
+From 0.3.7 the record is read again with a growing wait. This applies to every
+record whose outcome could not be made durable, because the outcome write, a
+step outcome check or write, or the DLQ publish failed. The first time, it is
+read again at once. If the same record comes back with its outcome still not
+durable, the adapter waits before handing it back: 1 second, doubling on each
+further read, at most 30 seconds. The wait is also kept to half the consumer's
+effective `max.poll.interval.ms` (an `additionalProperties` value overrides the
+named option) less the time since the records of the poll that returned it
+began to be processed, including the records before it, so that the consumer
+polls again within its interval. This relies on `break-on-first-error=true`,
+the adapter's default, under which a record that is read again ends its poll;
+without it there is no wait. A committed outcome on the partition, or a later
+record, starts again at once. The consumer waits for it, also when the route
+completes on another thread, so the consumer's other partitions wait too, as
+they do after any record that is read again. The wait ends early when the
+application stops. A record whose topic, partition and offset the adapter did
+not see at the start, or one without the adapter's manual commit, is read again
+at once. Up to 0.3.6 every record was read
+again at once, about twice a second, for as long as the failure lasted, and
+each read ran the route again, so the log grew quickly.
 
 - With `basis.message-store.step-outcome-store=postgres`, a tracked send
   checks the store before it runs. While the store cannot be read, that check
   fails before the send reaches its receiver, so the send is not repeated. A
   send that ran just before the store went down, whose `DELIVERED` outcome could
-  not be recorded, can run once more after the store is back. With the `noop`
-  step store, every read runs the route's sends again.
-- **When the store can be read but not written, a tracked send is repeated on
-  every read, without end.** Examples: the database is read-only (after a
-  failover onto a standby, or for maintenance), or the integration's database
-  role has lost its write privilege; a full disk probably does the same. With
-  the `postgres` step store, on every read:
+  not be recorded, can run once more after the store is back; from 0.3.7 only
+  after a restart or a rebalance to another process, since the outcome is kept
+  in memory until it can be written. With the `noop` step store, every read
+  runs the route's sends again.
+- **When the store can be read but not written, 0.3.6 and earlier repeat a
+  tracked send on every read, without end.** Examples: the database is
+  read-only (after a failover onto a standby, or for maintenance), or the
+  integration's database role has lost its write privilege; a full disk
+  probably does the same. With the `postgres` step store, on every read:
   - the store check passes, and the send reaches its receiver;
   - its `DELIVERED` outcome cannot be written, so the offset is not committed;
   - the next read sends again. The route's redeliveries can also repeat the
     send within one read.
 
-  One message can be sent dozens of times a minute. Readiness stays `UP`. The
-  ERROR log says that the message was not parked because a step outcome was
-  not checked or recorded, with the database's error. For a record that
-  carries `x-bip-message-id`, every repeat has the same `Idempotency-Key`, so
-  only a receiver that deduplicates by that key is safe. A record without that
-  header gets a new message id, and so a new key, on every read; deduplication
-  by key does not stop its repeats.
+  Up to 0.3.6 one message could be sent dozens of times a minute. From 0.3.7
+  the outcome write is tried again in place, and an outcome that still cannot
+  be written is kept in memory, so the record's next read in the same process
+  writes it and does not send again; a store failure also ends the attempt, so
+  no redelivery repeats the send. See
+  [A send whose `DELIVERED` outcome could not be written](#a-send-whose-delivered-outcome-could-not-be-written).
+  A restart, or a rebalance to another process, loses what was kept, so the
+  next read there sends once more. Readiness stays `UP`. Up to 0.3.6 the ERROR
+  log says that the message was not parked because a step outcome was not
+  checked or recorded, with the database's error. From 0.3.7 that line no
+  longer appears for an attempt that a store failure ended, since the dead
+  letter channel does not run for it (it can still appear when the route caught
+  the store failure and a later step that is not a send failed); alert on the
+  ERROR line `Message <id> is not committed: a step outcome was not checked or
+  recorded, so it is consumed again`, which is logged in every case, with the
+  database's error, and it ends
+  with `storeError=read-only` or `storeError=privilege` and the SQLSTATE. For a
+  record that carries `x-bip-message-id`, every repeat has the same
+  `Idempotency-Key`, so only a receiver that deduplicates by that key is safe.
+  A record without that header gets a new message id, and so a new key, on
+  every read up to 0.3.6; deduplication by key does not stop its repeats. From
+  0.3.7 it keeps its generated id while it is read again in the same process,
+  and gets a new one after a restart or a rebalance.
 - With the `postgres` step store, a message that fails at a tracked send's
-  store check is not parked: the adapter logs at ERROR that it was not parked
-  because a step outcome was not checked or recorded, and the record is read
-  again.
+  store check is not parked, and the record is read again. Up to 0.3.6 the
+  adapter logs at ERROR that it was not parked because a step outcome was not
+  checked or recorded; from 0.3.7 it logs the `is not committed` line above,
+  and neither the dead letter channel nor an application's own `onException`
+  runs for that attempt.
 - With the `noop` step store, or when the route fails before its first tracked
   send (in a processor, a validation or an internal endpoint), a failing message
   is parked in the DLQ on each read, before its outcome write fails again, so
   the DLQ can hold several copies of it. Copies of a record that carries
   `x-bip-message-id` have that id; a record without it gets a new id on every
-  read, so its copies have different ids. After the store is back, its last
-  read may complete or park it once more.
+  read, so its copies have different ids. From 0.3.7 the copies come at most at
+  the pace of the growing wait above. After the store is back, its last read
+  may complete or park it once more.
 
 What to do:
 
 - When the store can be read but not written, scale the integrations that use
-  it down to zero replicas at once, without waiting. Every read until then
-  repeats their outside sends. The ERROR log shows a database error such as
-  `cannot execute INSERT in a read-only transaction` or
-  `permission denied for table bip_step_outcome`. Scale them back up once writes
-  work again. Receivers should deduplicate by `Idempotency-Key`; this helps
+  it down to zero replicas at once, without waiting. Up to 0.3.6 every read
+  until then repeats their outside sends; from 0.3.7 their partitions wait, and
+  a restart or a rebalance can repeat a send once. The ERROR log shows a
+  database error such as `cannot execute INSERT in a read-only transaction` or
+  `permission denied for table bip_step_outcome`, and from 0.3.7
+  `storeError=read-only` or `storeError=privilege`. Scale them back up once
+  writes work again. Receivers should deduplicate by `Idempotency-Key`; this helps
   only for records that carry `x-bip-message-id`.
+- From 0.3.7 each statement of the Postgres sink and the Postgres step outcome
+  store is bounded by `basis.message-store.statement-timeout` (10 s) and
+  `basis.message-store.lock-timeout` (5 s), and a call by a network timeout, so
+  a held lock or a database that stopped answering fails the call instead of
+  holding the consumer thread past `max.poll.interval.ms`; see
+  [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts).
+  Set `loginTimeout` in the JDBC URL as well, for example `?loginTimeout=10`.
 - When the store cannot be read either, and the outage lasts longer than a
   few minutes, scale the integration down to zero replicas until the store
   accepts writes again, then scale it back up. Its uncommitted records are read
   again from the committed offsets.
-- Set `autoOffsetReset=earliest` on the Kafka input, or
-  `camel.component.kafka.auto-offset-reset=earliest`, before relying on this.
-  A partition that has no committed offset yet starts where the consumer's
-  `auto.offset.reset` says, and Camel's default is `latest`: after a restart or
-  a rebalance, the consumer would start after a record that was never
-  committed. The adapter does not set or check this in 0.3.x.
+- Keep `auto.offset.reset` at `earliest`, the adapter's default from 0.3.7, on
+  every Kafka input; on 0.3.6 and earlier, set
+  `camel.component.kafka.auto-offset-reset=earliest` yourself. A partition that
+  has no committed offset yet starts where the consumer's `auto.offset.reset`
+  says, and Camel's default is `latest`: after a restart or a rebalance, the
+  consumer would start after a record that was never committed. From 0.3.7 a
+  managed Kafka input with another value logs a warning at startup; it is not
+  refused.
 - After an outage, before resending anything from the DLQ, check it for copies
   of the same message (the same `x-bip-message-id`; for records that arrived
   without one, the same payload), check the message's latest status in the
@@ -478,7 +583,10 @@ no 0.3.x fix. Remove that one header before an HTTP send:
 
 The consumer's other `kafka.*` headers, such as the record key, topic,
 partition, offset and timestamp, still reach the receiver, but they hold no
-other header's value. Do not remove them all with `removeHeaders("kafka.*")`:
+other header's value. To remove every header but the adapter's, see
+[Removing headers before a tracked send](#removing-headers-before-a-tracked-send):
+`removeHeaders("*")` alone also removes `x-bip-message-id`, and with it the
+send's stable step key. Do not remove the `kafka.*` headers with `removeHeaders("kafka.*")`:
 that also removes `kafka.KEY`, which Camel's Kafka producer uses as the key of
 the record that the adapter parks in the DLQ, so a parked record loses its
 key. Alternatively, upgrade to a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3 or
@@ -516,6 +624,114 @@ changelog.
   them; see [Redo behavior](#redo-behavior).
 - the attempt is recorded with status `DLQ`, and the Kafka offset is committed
   only after the outcome record (and DLQ publish) succeeded.
+
+### A send whose `DELIVERED` outcome could not be written
+
+From 0.3.7, with the `postgres` step store, when a send returned but its
+`DELIVERED` outcome cannot be written, for example because the Message Store is
+read-only after a failover or the login lost its write privilege, the send is
+not made again only because its outcome was lost:
+
+1. On the thread that processes the record, and outside an application
+   transaction, the adapter writes the same outcome again in place, up to 3
+   more times after 0.5, 1 and 2 seconds, starting no try more than 10 seconds
+   after the first failure. Each try is bounded by the
+   [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts),
+   so when the store stops answering the write takes up to about 40 seconds in
+   all at the defaults (about 30 when every try runs to the network timeout). A write that succeeds lets the attempt go on.
+2. If it still fails, the adapter keeps a mark in memory for the input route,
+   the record's topic, partition and offset, and the step key. The attempt
+   fails, and the record is not committed and is read again with the growing
+   wait above.
+3. When the same record is read again, a step whose step key has a mark gets
+   its outcome written from the mark before the store check. If that
+   succeeds, the send is skipped, the step is listed as `DELIVERED` with the
+   time of the send, and a WARN says so. If it fails, nothing is sent and the
+   record is read again later. A mark wins over a redo list: the earlier read
+   of the same record already made that send.
+
+A failed store call ends the attempt: every send through `to` or `toD` after it
+in the same attempt fails before it sends, with the same failure, tracked or not
+(such as a `direct:` call), including a redelivery of the same send and a later
+send after a `doCatch`. Other processing goes on as the route says, but nothing
+is committed. Sends already running in parallel parts still finish.
+
+A record without `x-bip-message-id` keeps the id generated for it while the
+same offset is read again in the process, so its marks match. Split parts with
+their own `x-bip-message-id` have their own marks; a part whose id is random on
+every read never matches. Marks are kept in memory only, at most 10,000 of
+them (a dropped one is logged), and are dropped when a record at or after their
+offset is committed, or when a record at any other offset of the partition
+begins. A restart, or a rebalance to another process, loses them, so the next
+read there can send once more with the same `Idempotency-Key`. A mark whose
+step the next read does not reach, because the route takes another path, is
+not written. When parts of one attempt share a step key, only the part that
+reaches it first is written from the mark; the others are skipped and reported
+as not delivered, as for a ledger skip. Marks and kept ids match by offset only,
+so after a topic is deleted and created again, restart the integrations that
+consume it.
+
+The adapter's ERROR lines for a record that is not committed end with
+`storeError=<class>` and the SQLSTATE, so an alert can tell these cases apart:
+`read-only` (`25006`), `privilege` (`42501`, class `28`), `schema` (another
+class `42`, class `23`, `3D000`, `3F000`), `record-data` (class `22`, `54000`;
+see [A record whose own values the store cannot hold](#a-record-whose-own-values-the-store-cannot-hold))
+and `unavailable` (everything else, including timeouts).
+
+### A record whose own values the store cannot hold
+
+A record whose envelope values PostgreSQL cannot store would otherwise block
+its partition: every write for it fails, so it is neither recorded nor parked.
+From 0.3.7, before the route runs, the adapter checks the raw bytes of the
+headers the store keeps as text, `x-bip-message-id`, `x-bip-correlation-id`,
+`x-bip-content-type`, `x-bip-source-system` and `x-bip-target-system`, and
+refuses a value that contains a NUL byte or is longer than 1,024 bytes. Header
+names are matched ignoring case. A refused record's route does not run, so
+nothing is sent. This applies to a managed Kafka input, one with the adapter's
+manual commit.
+
+The same terminal path runs when the step outcomes that failed all failed with
+a SQLSTATE of class `22` or `54000` for the record's own data, for example an id
+the route set itself that is too long for the step ledger's index, also when
+the route caught the failure, or when the outcome write fails so while every
+step outcome was written. When a step outcome failed for another reason, the
+record is read again instead:
+
+1. The record is parked, unless it was parked already or, for the outcome
+   write, its route completed. `x-bip-error` gives the reason, which header was
+   refused and why or the SQLSTATE, says whether a send had returned, and ends
+   with the record's position as `(record <topic>/<partition>@<offset>)`; the
+   refused value is not copied into it.
+2. A reduced outcome is recorded under the record's own `x-bip-message-id`,
+   with its own attempt, `DLQ` (or `COMPLETED` when its route completed), the
+   payload as captured, the reason as its error, and no correlation id, content
+   type, source or target system or steps. No step outcome is written. If the
+   store refuses that too, it is written without the payload, not replayable,
+   and the record is not parked again on its next reads in the process.
+3. The offset is committed only after both are durable; otherwise the record is
+   read again and the path runs again. The consumer then goes on with the next
+   record, and an ERROR line says `Message <id> from record <position> was
+   parked: <reason> storeError=record-data`, or, when the route completed and
+   nothing was parked, `... was recorded without its envelope values: <reason>
+   storeError=record-data`.
+
+When `x-bip-message-id` itself is refused, the record is parked and recorded
+under an id derived from its position: the UUID made from the first 16 bytes of
+SHA-256 over `kafka-record`, the integration name, the topic, the partition and
+the offset, joined by line feeds, with the version and variant bits of a
+name-based UUID. The .NET adapter derives the same id.
+
+After three records in a row on a partition took this path because the store
+refused their data (records the boundary check refused do not count), the next
+one is held back, not committed, with `storeError=schema`, so that a setting or
+column that fails every record does not drain the topic into the DLQ. The
+held-back record is read again with the growing wait and goes on once the store
+takes it, for example after the setting or column is fixed. A normal commit on
+the partition resets the count, and a restart does too: if the records really
+carry data the store cannot hold, each restart parks three more of them.
+
+A failure text the adapter stores has U+0000 replaced with U+FFFD, so that a
+failure's own message cannot make its step or record unstorable.
 
 ## Read Model
 
@@ -790,13 +1006,14 @@ guess. Confirm the ids before the upgrade:
   `camel.main.dump-routes-resolve-placeholders=false`. The routes are logged at
   startup with their node ids. Without the last setting the dump can contain
   resolved credentials.
-- In the Message Store, list the step ids an integration has recorded. Older
-  rows can contain endpoint credentials; this query masks the common forms:
+- In the Message Store, list the step ids an integration has recorded. Rows
+  recorded before 0.3.7 can contain endpoint credentials (see the stored
+  endpoint rule below); this query masks the common forms:
 
   ```sql
   select o.step_id,
          regexp_replace(regexp_replace(o.endpoint_uri, '//[^/@]*@', '//xxxxxx@'),
-           '(?i)((password|passphrase|secret[a-z_]*|[a-z_]*token|authpassword)=)[^&]*',
+           '(?i)([?&](code|sig|key|pwd|[^=&]*(password|passphrase|passcode|secret|token|signature|credential|auth|apikey|api-key|api_key|[-_]key|accesskey|accountkey|privatekey|connectionstring)[^=&]*)=)[^&]*',
            '\1xxxxxx', 'g') as endpoint,
          count(*) as steps, max(o.occurred_at) as last_occurred_at
   from bip_step_outcome o
@@ -838,14 +1055,108 @@ send was skipped. Every later `to`/`toD`, including `log:` and `direct:`, resets
 it, so read it in the step that follows the send, for example a `choice` or
 `setProperty`. Do not log "delivered" without checking it.
 
-Each recorded step keeps its endpoint URI with credentials masked the way Camel
-masks them in logs: a password in the user info and options such as `password`,
-`passphrase`, `secretKey` or `accessToken` are stored as `xxxxxx`. Step ids are
-derived from the exact URI, so masking does not change them. Failed and skipped
-step entries use the same masked endpoint, as does the warning emitted when a
-send has no stable Camel node id. This masks the endpoint field, not arbitrary
+Each recorded step keeps its endpoint URI, in `bip_step_outcome.endpoint_uri`
+and the attempt's `steps_json`, with its credentials masked as `xxxxxx`. From
+0.3.7 the rule is the one the .NET adapter applies to the steps it records, so
+both adapters store the same value for the same URI:
+
+- what Camel's `URISupport.sanitizeUri` masks: the value of every query
+  parameter whose name contains one of Camel's sensitive option names (such as
+  `password`, `token`, `secret`, `apikey`, `user` or `clientId`), and the
+  password in a `user:password@` part, including inside a parameter value;
+- the whole user info of the endpoint's authority (`https://xxxxxx@host/…`),
+  not only its password;
+- the value of every query parameter with a credential-like name, by the rule
+  the adapter uses for the headers it masks in a DLQ record: `Authorization`,
+  cookies, authentication challenges, names containing secret, token, password,
+  passwd, credential, session, signature, apikey, api-key, api_key,
+  subscription-key, private-key or auth (such as `Signature` or
+  `X-Amz-Credential`), or ending in `-key` or `_key` (such as
+  `subscription-key`), but not `x-bip-*` or `Idempotency-Key`; also the names
+  `key`, `code`, `sig` and `pwd`, and names containing `passphrase`,
+  `passcode`, `privatekey`, `accesskey`, `accountkey` or `connectionstring`.
+  Parameter names are compared after percent-decoding (an escape that is not
+  valid UTF-8 is compared as written), ignoring case.
+
+A run of masked characters becomes one `xxxxxx`. Keywords an application adds
+with `URISupport.addSanitizeKeywords` are masked too (the .NET adapter has no
+such setting). An endpoint the adapter's patterns cannot mask within about a
+second is stored as `xxxxxx`; when an application has added keywords, Camel's
+own sanitizer also runs on it, and that pass has no such bound. Up to 0.3.6
+only Camel's own sanitizer ran: a function key `?code=…`, a signature
+`?sig=…` and the user name in `sftp://user:pass@host` were stored in clear.
+
+Step ids are derived from the exact URI, so masking does not change them. The
+route still sends to the real endpoint; only the stored and logged copy is
+masked. Failed and skipped step entries use the same masked endpoint, as do the
+warning emitted when a send has no stable Camel node id and the startup
+refusal for a send without an id. This masks the endpoint field, not arbitrary
 exception messages or application logs. Existing rows, logs and backups are not
-rewritten; review their access and retention separately.
+rewritten, unless the same step is recorded again; review their access and
+retention separately. A query or tool that matched a stored endpoint's user
+name or one of these parameter values no longer finds it in rows recorded from
+0.3.7.
+
+### Removing headers before a tracked send
+
+A tracked send in a Kafka input route builds its step key
+`<x-bip-message-id>:<step-id>` and its `Idempotency-Key` from the exchange's
+`x-bip-message-id` header at the moment it sends. A route that removes every
+header first, for example
+`removeHeaders("*").to("https://receiver.example/orders").id("send-order")`,
+also removes that header. The send then generates a new random id and logs a
+warning (`Message missing x-bip-message-id; generated <id>`)
+([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)):
+
+- The step key and the `Idempotency-Key` change on every delivery. A
+  redelivery, a read again, a resend or a replay sends again under another key,
+  so the step store never skips the send, and even a receiver that
+  deduplicates by `Idempotency-Key` applies it twice.
+- A message whose send completes is journaled under the random id, so the
+  consumed message cannot be found or resent by its own id. The fallback to
+  the consumed input's id that 0.3.6 added applies only when no tracked send
+  follows the removal: the send sets the generated id as the header, and that
+  value is journaled. A message that fails and is parked is still parked and
+  journaled under the consumed input's id.
+
+Keep the adapter's headers when you remove the others:
+
+```java
+.removeHeaders("*", "x-bip-.*")
+.to("https://receiver.example/orders").id("send-order")
+```
+
+`x-bip-message-id` is the header a tracked send needs. The other `x-bip-*`
+headers are the message's envelope; the adapter reads them when the input
+arrives and journals the values it read then, but keeping the whole prefix is
+the simplest rule. The adapter sets `x-bip-idempotency-key` and
+`Idempotency-Key` itself at each tracked send, and reads a replay's
+`x-bip-redo-steps` when the input arrives, so removing those does not change
+the send.
+
+Removing every header also removes Camel's Kafka record key header:
+`kafka.KEY` on camel-kafka versions before 4.14.8, 4.18.3 and 4.21.0, such as
+4.18.0, and `CamelKafkaKey` from those versions, which rename the `kafka.*`
+headers. Camel's Kafka producer uses it as the key of a record the adapter
+parks in the DLQ, so keep it too if a parked record should keep its key:
+
+```java
+.removeHeaders("*", "x-bip-.*", "kafka.KEY", "CamelKafkaKey")
+```
+
+Both forms still remove the record's credential headers, such as
+`Authorization`, and `kafka.HEADERS` (see [Retry and DLQ](#retry-and-dlq)). A
+record parked after the removal carries only the headers that were kept, so
+also keep any application header a parked record must carry.
+
+Inside a `split`, do not rely on removed headers to give each part its own
+step key: the generated ids change on every delivery, so every part is sent
+again on each redelivery and resend. Use one of the safe forms in
+[Splitting before a tracked send in 0.3.x](#splitting-before-a-tracked-send-in-03x).
+
+Keeping the consumed record's id when a route removes it is tracked in
+[#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143);
+0.3.7 does not change the send.
 
 ### Splitting before a tracked send in 0.3.x
 
@@ -982,8 +1293,11 @@ Adapter defaults:
 basis.message-store.sink=log
 basis.message-store.status-topic=bip.message.status
 basis.message-store.step-outcome-store=noop
+basis.message-store.statement-timeout=10s
+basis.message-store.lock-timeout=5s
 camel.component.kafka.auto-commit-enable=false
 camel.component.kafka.allow-manual-commit=true
+camel.component.kafka.auto-offset-reset=earliest
 basis.message-store.dlq-uri=kafka:bip.message.dlq
 basis.message-store.payload.mode=postgres-inline
 basis.message-store.payload.max-bytes=1048576
@@ -1001,6 +1315,8 @@ Configuration reference:
 | `basis.message-store.key-value.sweep-interval-seconds` | integer seconds, `1..3600` | `3600` | Once the Key-Value Store is used, sweep this integration’s expired keys in bounded batches. |
 | `basis.message-store.sink` | `log`, `postgres`, `kafka` | `log` | Selects where terminal message outcomes go. |
 | `basis.message-store.step-outcome-store` | `noop`, `postgres` | `noop` | Selects whether delivered-step checks are durable. |
+| `basis.message-store.statement-timeout` | duration, at least `1ms` | `10s` | From 0.3.7: bounds each statement of a Postgres sink or step outcome store call. See [Message Store call timeouts](docs/configuration.md#message-store-call-timeouts). |
+| `basis.message-store.lock-timeout` | duration, at least `1ms` and at most the statement timeout | `5s` | From 0.3.7: bounds each such statement's wait for a lock. |
 | `basis.message-store.step-ids.emergency-allow-generated` | `true`, `false` | `false` | Emergency escape hatch: start even though a tracked send has no explicit id, with a warning for each. See [step tracking](#step-tracking). |
 | `basis.message-store.payload.mode` | `postgres-inline`, `metadata-only` | `postgres-inline` | Selects whether safely capturable payloads are stored inline for replay. |
 | `basis.message-store.status-topic` | Kafka topic name | `bip.message.status` | Used only when `basis.message-store.sink=kafka`. |
@@ -1011,6 +1327,7 @@ Configuration reference:
 | `basis.message-store.replay.input-topic-pattern` | Java format string with one `%s`, or fixed topic | `bip.%s.in` | Used by `MessageReplayService` to choose the replay target topic. |
 | `camel.component.kafka.auto-commit-enable` | `true`, `false` | `false` | Must stay false for adapter-managed commit. |
 | `camel.component.kafka.allow-manual-commit` | `true`, `false` | `true` | Must stay true for adapter-managed commit. |
+| `camel.component.kafka.auto-offset-reset` | `earliest`, `latest`, `none` | `earliest` | Must stay `earliest` for every managed Kafka input, on the component, the endpoint (`autoOffsetReset`) and `additionalProperties.auto.offset.reset`; another value is logged as a warning at startup. A new consumer group starts at the beginning of each partition's retained records. Give every Kafka input a stable `groupId`. |
 
 Direct Postgres production mode:
 
