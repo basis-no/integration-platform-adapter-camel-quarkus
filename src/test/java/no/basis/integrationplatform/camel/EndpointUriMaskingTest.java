@@ -193,7 +193,6 @@ class EndpointUriMaskingTest {
         assertEquals(expected, EndpointUriMasking.mask(endpointUri));
     }
 
-    /** Mirrors .NET MaskEndpointUriRecordsNothingOfAUriThePatternsCannotMaskInTime. */
     @Test
     void masksTheCredentialNamesAddedToTheHeaderRule() {
         assertEquals("https://idp.example/token?assertion=xxxxxx&jwt=xxxxxx&bearer=xxxxxx&page=2",
@@ -202,6 +201,7 @@ class EndpointUriMaskingTest {
                 EndpointUriMasking.mask("https://receiver.example/x?x-bip-partner-key=k-1&x-bip-message-id=m-1"));
     }
 
+    /** Mirrors .NET MaskEndpointUriRecordsNothingOfAUriThePatternsCannotMaskInTime. */
     @Test
     void recordsNothingOfAUriThePatternsCannotMaskInTime() {
         String pathological = "https://target.example/a?" + "&token".repeat(20_000);
