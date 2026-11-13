@@ -17,8 +17,10 @@ updates:
       actions:
         patterns: ["*"]
         update-types: [minor, patch]
+  # The fixtures under integration-tests/ are Maven projects of their own, not
+  # modules of the root, so each is listed with the glob.
   - package-ecosystem: maven
-    directory: /
+    directories: ["/", "/integration-tests/*"]
     schedule:
       interval: weekly
     cooldown:
@@ -39,6 +41,9 @@ updates:
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
       - dependency-name: "io.quarkus:*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      # The fixtures test the adapter built from the same branch, never a
+      # released one.
+      - dependency-name: "no.basis.integrationplatform:integration-platform-adapter-camel-quarkus"
 
   # The release/0.3 maintenance line takes patch updates only.
   - package-ecosystem: github-actions
@@ -56,7 +61,7 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
   - package-ecosystem: maven
-    directory: /
+    directories: ["/", "/integration-tests/*"]
     target-branch: release/0.3
     schedule:
       interval: weekly
@@ -69,3 +74,4 @@ updates:
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-minor", "version-update:semver-major"]
+      - dependency-name: "no.basis.integrationplatform:integration-platform-adapter-camel-quarkus"
