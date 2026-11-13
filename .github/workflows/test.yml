@@ -41,12 +41,17 @@ jobs:
           java-version: "21"
           cache: maven
 
-      - name: Test and install adapter for the startup fixture
+      - name: Test and install adapter for the fixtures
         run: >-
           ./mvnw
           --batch-mode
           --no-transfer-progress
           install
+
+      - name: Read the installed adapter version
+        run: |
+          version="$(./mvnw --batch-mode --no-transfer-progress -q help:evaluate -Dexpression=project.version -DforceStdout)"
+          echo "ADAPTER_VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Verify Quarkus registration and dependency defaults
         run: >-
@@ -54,7 +59,39 @@ jobs:
           --batch-mode
           --no-transfer-progress
           -f integration-tests/maintenance-smoke/pom.xml
+          -Dadapter.version="$ADAPTER_VERSION"
           verify
+
+      # The fixtures below never pull an image themselves, so the pinned images
+      # are pulled here. Each fixture run needs a unique run ID.
+      - name: Pull the fixtures' pinned container images
+        run: |
+          docker pull postgres@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+          docker pull confluentinc/cp-kafka@sha256:620734d9fc0bb1f9886932e5baf33806074469f40e3fe246a3fdbb59309535fa
+
+      - name: Verify an existing application database keeps working
+        run: |
+          run_id="$(cat /proc/sys/kernel/random/uuid)"
+          ./mvnw --batch-mode --no-transfer-progress \
+            -f integration-tests/application-data-smoke/pom.xml \
+            -Dadapter.version="$ADAPTER_VERSION" \
+            -Dbip.test.run-id="$run_id" -DargLine="-Dbip.test.run-id=$run_id" verify
+
+      - name: Verify Kafka ACL recovery and readiness
+        run: |
+          run_id="$(cat /proc/sys/kernel/random/uuid)"
+          ./mvnw --batch-mode --no-transfer-progress \
+            -f integration-tests/kafka-recovery-smoke/pom.xml \
+            -Dadapter.version="$ADAPTER_VERSION" \
+            -Dbip.test.run-id="$run_id" -DargLine="-Dbip.test.run-id=$run_id" verify
+
+      - name: Verify the Key-Value Store and metrics at runtime
+        run: |
+          run_id="$(cat /proc/sys/kernel/random/uuid)"
+          ./mvnw --batch-mode --no-transfer-progress \
+            -f integration-tests/key-value-smoke/pom.xml \
+            -Dadapter.version="$ADAPTER_VERSION" \
+            -Dbip.test.run-id="$run_id" -DargLine="-Dbip.test.run-id=$run_id" verify
 
       - name: Verify public API documentation
         run: >-
