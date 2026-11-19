@@ -19,11 +19,24 @@ import java.util.List;
 public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
     private static final Logger LOG = LoggerFactory.getLogger(PlatformRouteConfiguration.class);
     static final String MASKED = "xxxxxx";
+    // Camel's own logger names for its error handlers, kept so that log settings still apply.
+    private static final String DEAD_LETTER_LOG = "org.apache.camel.processor.errorhandler.DeadLetterChannel";
+    private static final String DEFAULT_ERROR_LOG = "org.apache.camel.processor.errorhandler.DefaultErrorHandler";
     private static final Set<String> CREDENTIAL_HEADERS = Set.of(
             "authorization", "proxy-authorization", "cookie", "set-cookie", "www-authenticate", "proxy-authenticate");
     private static final List<String> CREDENTIAL_PARTS = List.of(
             "secret", "token", "password", "passwd", "credential", "session", "signature",
-            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth");
+            "apikey", "api-key", "api_key", "subscription-key", "private-key", "auth",
+            "assertion", "privatekey", "jwt", "bearer");
+    // The adapter's own envelope headers carry no credential and stay readable; any other name,
+    // also one that starts with x-bip-, is judged by the rule.
+    private static final Set<String> ENVELOPE_HEADERS = Set.of(
+            PlatformHeaders.MESSAGE_ID, PlatformHeaders.CORRELATION_ID, PlatformHeaders.SCHEMA_VERSION,
+            PlatformHeaders.CONTENT_TYPE, PlatformHeaders.IDEMPOTENCY_KEY, PlatformHeaders.SOURCE_SYSTEM,
+            PlatformHeaders.SOURCE_EVENT_ID, PlatformHeaders.TARGET_SYSTEM, PlatformHeaders.REPLAY,
+            PlatformHeaders.ATTEMPT, PlatformHeaders.REDO_STEPS, PlatformHeaders.ERROR, PlatformHeaders.DLQ_AT,
+            PlatformHeaders.PAYLOAD_STORAGE, PlatformHeaders.PAYLOAD_REF, PlatformHeaders.PAYLOAD_SIZE,
+            PlatformHeaders.PAYLOAD_SHA256, "idempotency-key");
     /** Named profile for slow external backends. */
     public static final String SLOW_BACKEND = "ip-slow-backend";
     // The slow-backend waits run on the Kafka consumer thread: 5, 10, 20, 20, 20 and 20 seconds,
@@ -62,6 +75,13 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         this.failureMode = failureMode;
     }
 
+    /** An error handler whose own log lines are masked, as the adapter's are. */
+    private static <T extends org.apache.camel.model.errorhandler.DefaultErrorHandlerDefinition> T masked(T handler,
+            String logName) {
+        handler.setLoggerBean(new MaskingCamelLogger(logName));
+        return handler;
+    }
+
     @Override
     public void configuration() {
         HttpClientRetries.disableByDefault(getContext());
@@ -71,7 +91,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
 
         routeConfiguration()
-                .errorHandler(deadLetterChannel(DLQ_URI)
+                .errorHandler(masked(deadLetterChannel(DLQ_URI), DEAD_LETTER_LOG)
                         .deadLetterHandleNewException(false)
                         .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(3, 1000, null)))
                         .onRedelivery(this::timedRedelivery)
@@ -82,7 +102,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .backOffMultiplier(2));
 
         routeConfiguration(SLOW_BACKEND)
-                .errorHandler(deadLetterChannel(DLQ_URI)
+                .errorHandler(masked(deadLetterChannel(DLQ_URI), DEAD_LETTER_LOG)
                         .deadLetterHandleNewException(false)
                         .onExceptionOccurred(new HttpRetryAfter(HttpRetryAfter.policy(
                                 SLOW_BACKEND_REDELIVERIES, SLOW_BACKEND_FIRST_DELAY_MS, SLOW_BACKEND_MAX_DELAY_MS)))
@@ -95,7 +115,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .maximumRedeliveryDelay(SLOW_BACKEND_MAX_DELAY_MS));
 
         routeConfiguration(NO_RETRY)
-                .errorHandler(deadLetterChannel(DLQ_URI)
+                .errorHandler(masked(deadLetterChannel(DLQ_URI), DEAD_LETTER_LOG)
                         .deadLetterHandleNewException(false)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(0));
@@ -105,7 +125,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
 
     private void recordFailedConfigurations() {
         routeConfiguration()
-                .errorHandler(defaultErrorHandler()
+                .errorHandler(masked(defaultErrorHandler(), DEFAULT_ERROR_LOG)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
@@ -113,7 +133,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .backOffMultiplier(2));
 
         routeConfiguration(SLOW_BACKEND)
-                .errorHandler(defaultErrorHandler()
+                .errorHandler(masked(defaultErrorHandler(), DEFAULT_ERROR_LOG)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(SLOW_BACKEND_REDELIVERIES)
                         .redeliveryDelay(SLOW_BACKEND_FIRST_DELAY_MS)
@@ -122,7 +142,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
                         .maximumRedeliveryDelay(SLOW_BACKEND_MAX_DELAY_MS));
 
         routeConfiguration(NO_RETRY)
-                .errorHandler(defaultErrorHandler()
+                .errorHandler(masked(defaultErrorHandler(), DEFAULT_ERROR_LOG)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(0));
 
@@ -134,7 +154,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         // source consumer so that files are not moved and queue messages are
         // not acknowledged before the durable Kafka boundary is reached.
         routeConfiguration(INGRESS_NORMALIZATION)
-                .errorHandler(defaultErrorHandler()
+                .errorHandler(masked(defaultErrorHandler(), DEFAULT_ERROR_LOG)
                         .onRedelivery(this::captureRedeliveryDiagnostics)
                         .maximumRedeliveries(3)
                         .redeliveryDelay(1000)
@@ -194,10 +214,10 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
         if (failure != null && StepOutcomeFailure.of(exchange) != null) {
             LOG.error("Message {} exhausted retries and is not parked: a step outcome was not checked or recorded",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(failure));
         } else if (failure != null) {
             LOG.error("Message {} exhausted retries and is being parked in the DLQ",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), failure);
+                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(failure));
         }
 
         // The DLQ record must carry the ORIGINAL consumed payload, not a body the route
@@ -241,9 +261,16 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
     }
 
-    static boolean isCredentialHeader(String name) {
+    /**
+     * Whether a header name is credential-like, by the rule that masks parked headers and
+     * withholds a consumed record's credential headers from HTTP sends.
+     *
+     * @param name a header name
+     * @return whether its value is treated as a credential
+     */
+    public static boolean isCredentialHeader(String name) {
         String lower = name.toLowerCase(Locale.ROOT);
-        if (lower.startsWith("x-bip-") || lower.equals("idempotency-key")) {
+        if (ENVELOPE_HEADERS.contains(lower)) {
             return false;
         }
         return CREDENTIAL_HEADERS.contains(lower) || CREDENTIAL_PARTS.stream().anyMatch(lower::contains)
@@ -258,6 +285,7 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         if (failure == null) {
             return "unknown failure";
         }
-        return failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
+        // Published on the shared DLQ topic: a receiver URI in the text keeps no credential.
+        return ErrorTextMasking.message(failure);
     }
 }

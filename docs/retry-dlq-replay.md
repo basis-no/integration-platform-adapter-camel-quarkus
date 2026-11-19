@@ -176,6 +176,41 @@ captured payload to `basis.message-store.dlq-uri`, preserves the envelope, adds
 `x-bip-error` and `x-bip-dlq-at`, records `DLQ`, and only then commits the input
 offset. A replay's `x-bip-redo-steps` is not carried; see [Redo Steps](#redo-steps).
 
+The failure text in `x-bip-error`, in the Message Store's error columns, in the
+attempt's steps and in the adapter's log lines has every URI in it masked by
+the stored-endpoint rule ([Stored Endpoints](steps-and-idempotency.md#stored-endpoints)):
+a receiver URL that a failed send's exception names keeps no user info, key or
+signature. Each text is masked once, where the adapter takes it from the
+failure, as the .NET adapter does, so both adapters store the same text: a
+second pass would mask some texts further (`http://host:8080/a?b=c@d` is stored
+as `http://host:xxxxxx@d`, and a second pass would make it `http://xxxxxx@d`),
+and no sink or log line masks a masked text again. A URI is a scheme (a
+letter, then letters, digits, `+`, `-` or `.`) followed by `://`, up to the next white space, `<` or `>`; a quote that
+ends it is not part of it. One deadline of about a second covers the whole
+text, and at most 20 URIs are masked; any URI past either is replaced by
+`xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
+needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`, which a
+structured log shows as the exception class) whose text names each original
+class, with the stack traces kept and the messages of the failure, its causes
+and its suppressed failures masked the same way. The lines of Camel's error
+handlers that the adapter installs are masked too, and so is the failure that
+Camel's `FatalFallbackErrorHandler` logs when parking a managed Kafka input
+fails, as are the causes of the adapter's own not-parked, not-committed and
+reduced-outcome failures and of the Message Store contract check's startup
+failure. Not covered: a failure of the parking endpoint or route itself, whose
+text Camel logs as it is (keep credentials out of a `direct:` parking route's
+exceptions and out of `basis.message-store.dlq-uri`); for an input that is not a managed Kafka input, which gets
+its original failure back, Camel's `FatalFallbackErrorHandler` line and the
+consumer's own failure line (for example a timer's or file consumer's
+`LoggingExceptionHandler`, or camel-kafka's line for an exchange that ends
+failed); the Kafka client's own log lines; other text in an exception message,
+and credentials that are not in a `scheme://` URI, such as Camel's
+`scheme:path?query` form, a fragment (`#access_token=…`), `;` parameters, a
+`user:pass@host` without a scheme or a URI nested in a query value. Do not put
+credentials in exception messages of your own.
+Headers the record or the route carries are masked in the parked copy by the
+credential-name rule below.
+
 The message counts as parked only after the DLQ endpoint accepted the record; a
 Kafka producer with Camel's default `requestRequiredAcks=all` returns once the
 broker acknowledged it. The publish runs in the adapter's
@@ -363,6 +398,16 @@ refuses a message:
 The endpoint answers `409 Conflict` with the reason. A message recorded by a
 route that has since changed needs review; send its payload again as a new
 message once it is safe to process.
+
+The answer is JSON with `status` (`SUCCEEDED` or `FAILED`), `messageId` and,
+for a failure, `error`. A message that is not stored is answered
+`404 Not Found`; a replay that is refused or fails, and a request body that is
+not JSON, `409 Conflict` with the reason. A failure the endpoint does not
+expect, also one that carries an HTTP answer of its own, is answered
+`500 Internal Server Error` with a fixed `error`: whether the replay was
+published is not known, so check the replay audit and the integration's log
+before you resend. No answer carries a failure's type or
+stack trace, in any launch mode; the log keeps the failure, masked.
 
 The caller, typically an operator's tool, supplies operator identity and reason
 through the `x-dashboard-user` and `x-dashboard-reason` headers or the JSON

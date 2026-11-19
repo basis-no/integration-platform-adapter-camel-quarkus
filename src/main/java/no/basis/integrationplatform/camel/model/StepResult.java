@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.model;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import java.time.Instant;
 
 /**
@@ -10,7 +11,8 @@ import java.time.Instant;
  * @param idempotencyKey stable side-effect identity
  * @param endpointUri intercepted endpoint URI
  * @param targetRef receiver-specific reference, when known
- * @param error failure description, when applicable
+ * @param error failure description, when applicable; {@link #failed} masks the URIs in a
+ *        failure's text, and a text given here is kept as it is
  * @param occurredAt observation timestamp
  */
 public record StepResult(
@@ -63,7 +65,8 @@ public record StepResult(
         if (error == null) {
             return null;
         }
+        // Stored in the step ledger and the attempt's steps: a receiver URI keeps no credential.
         // PostgreSQL text cannot hold a NUL; a failure's own text must not make its step unstorable.
-        return error.getMessage() == null ? error.getClass().getName() : error.getMessage().replace('\u0000', '\uFFFD');
+        return ErrorTextMasking.message(error).replace('\u0000', '\uFFFD');
     }
 }

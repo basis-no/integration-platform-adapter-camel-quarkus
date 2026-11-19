@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lease;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import com.fasterxml.jackson.databind.node.JsonNodeFactory;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import no.basis.integrationplatform.camel.keyvalue.KeyValueStore;
@@ -335,7 +336,7 @@ final class Lease {
             }
         } catch (RuntimeException e) {
             LOG.warn("Single-active route {} could not release {}; it expires in {}",
-                    name, key, timing.leaseDuration(), e);
+                    name, key, timing.leaseDuration(), ErrorTextMasking.forLog(e));
         }
     }
 
@@ -449,21 +450,21 @@ final class Lease {
         if (status == Status.HELD) {
             if (deadlinePassed()) {
                 LOG.warn("Single-active route {} stops: {} held by {} could not be renewed within {}",
-                        name, key, holder, timing.stopDeadline(), failure);
+                        name, key, holder, timing.stopDeadline(), ErrorTextMasking.forLog(failure));
                 lose();
                 return;
             }
             retrying = true;
             if (reported != Reported.UNREACHABLE) {
                 LOG.warn("Single-active route {} could not renew {}; retrying every {} until {} after the last renewal",
-                        name, key, timing.retryInterval(), timing.stopDeadline(), failure);
+                        name, key, timing.retryInterval(), timing.stopDeadline(), ErrorTextMasking.forLog(failure));
                 reported = Reported.UNREACHABLE;
             }
             return;
         }
         // Waiting replicas keep waiting; an uncoordinated one learns nothing new about the table.
         if (status == Status.WAITING && reported != Reported.UNREACHABLE) {
-            LOG.warn("Single-active route {} waits: the Key-Value Store is unreachable", name, failure);
+            LOG.warn("Single-active route {} waits: the Key-Value Store is unreachable", name, ErrorTextMasking.forLog(failure));
             reported = Reported.UNREACHABLE;
         }
     }
@@ -474,7 +475,7 @@ final class Lease {
         }
         if (status != Status.DETACHED && reported != Reported.LIMIT) {
             LOG.error("Single-active route {} stays stopped: {} cannot be written because the integration is at"
-                    + " a Key-Value Store limit", name, key, failure);
+                    + " a Key-Value Store limit", name, key, ErrorTextMasking.forLog(failure));
             reported = Reported.LIMIT;
         }
     }

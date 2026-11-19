@@ -132,6 +132,7 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                 PlatformRouteConfiguration.prepareDlq(exchange);
             } catch (RuntimeException e) {
                 exchange.setException(e);
+                maskCaughtFailure(exchange);
                 callback.done(true);
                 return true;
             }
@@ -139,7 +140,9 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
             if (unrecorded != null) {
                 // The input is consumed again once step outcomes can be recorded; a parked copy would repeat it.
                 exchange.setException(new IllegalStateException("Not parked: a step outcome was not checked or "
-                        + "recorded, so the Kafka offset is not committed and the input is consumed again", unrecorded));
+                        + "recorded, so the Kafka offset is not committed and the input is consumed again",
+                        ErrorTextMasking.forLog(unrecorded)));
+                maskCaughtFailure(exchange);
                 callback.done(true);
                 return true;
             }
@@ -148,15 +151,30 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
                 processor = send();
             } catch (Exception e) {
                 exchange.setException(e);
+                maskCaughtFailure(exchange);
                 callback.done(true);
                 return true;
             }
             return processor.process(exchange, doneSync -> {
                 if (exchange.getException() == null) {
                     exchange.setProperty(PlatformExchangeProperties.DLQ_PARKED, true);
+                } else {
+                    maskCaughtFailure(exchange);
                 }
                 callback.done(doneSync);
             });
+        }
+
+        /**
+         * When parking fails, Camel's fallback error handler logs the failure the route caught,
+         * whose text may name a receiver's URI with credentials: it gets the masked copy. A
+         * parked message no longer needs it, and its record is read again.
+         */
+        private static void maskCaughtFailure(Exchange exchange) {
+            Throwable caught = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
+            if (caught != null) {
+                exchange.setProperty(Exchange.EXCEPTION_CAUGHT, ErrorTextMasking.forLog(caught));
+            }
         }
 
         private static boolean managedKafkaInput(Exchange exchange) {

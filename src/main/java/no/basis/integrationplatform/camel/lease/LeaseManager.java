@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lease;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.quarkus.runtime.StartupEvent;
@@ -301,7 +302,8 @@ public class LeaseManager extends ServiceSupport {
             } catch (TimeoutException e) {
                 pending++;
             } catch (ExecutionException e) {
-                LOG.warn("A first lease attempt failed; it is retried every {}", timing.attemptInterval(), e.getCause());
+                LOG.warn("A first lease attempt failed; it is retried every {}", timing.attemptInterval(),
+                        ErrorTextMasking.forLog(e.getCause()));
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return;
@@ -533,7 +535,8 @@ public class LeaseManager extends ServiceSupport {
                     try {
                         lease.attempt();
                     } catch (RuntimeException e) {
-                        LOG.warn("Single-active route {} lease attempt failed; trying again", lease.name(), e);
+                        LOG.warn("Single-active route {} lease attempt failed; trying again", lease.name(),
+                                ErrorTextMasking.forLog(e));
                     }
                     // A holder whose read or renewal failed retries sooner than the attempt interval.
                     return lease.nextAttemptDelay();
