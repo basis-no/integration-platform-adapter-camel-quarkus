@@ -34,27 +34,42 @@ public final class RedoClaim {
         this.redoStepsJson = redoStepsJson;
     }
 
-    /** @return the record's message id */
+    /**
+     * Returns the record's message id.
+     * @return the record's message id
+     */
     public String messageId() {
         return messageId;
     }
 
-    /** @return this integration's name */
+    /**
+     * Returns this integration's name.
+     * @return this integration's name
+     */
     public String integration() {
         return integration;
     }
 
-    /** @return the topic the record was consumed from */
+    /**
+     * Returns the topic the record was consumed from.
+     * @return the topic the record was consumed from
+     */
     public String topic() {
         return topic;
     }
 
-    /** @return the record's attempt */
+    /**
+     * Returns the record's attempt.
+     * @return the record's attempt
+     */
     public int attempt() {
         return attempt;
     }
 
-    /** @return the record's redo list as a JSON array */
+    /**
+     * Returns the record's redo list as a JSON array.
+     * @return the record's redo list as a JSON array
+     */
     public String redoStepsJson() {
         return redoStepsJson;
     }
