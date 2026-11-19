@@ -3,6 +3,8 @@ package no.basis.integrationplatform.camel.replay;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.inject.Instance;
 import jakarta.inject.Inject;
+import no.basis.integrationplatform.camel.ErrorTextMasking;
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import org.apache.camel.CamelContext;
 import org.apache.camel.component.kafka.KafkaEndpoint;
@@ -14,6 +16,8 @@ import org.apache.kafka.common.header.internals.RecordHeader;
 import org.apache.kafka.common.serialization.ByteArraySerializer;
 import org.apache.kafka.common.serialization.StringSerializer;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import javax.sql.DataSource;
 import java.nio.charset.StandardCharsets;
@@ -30,6 +34,8 @@ import java.util.stream.Collectors;
 
 @ApplicationScoped
 public class PostgresKafkaMessageReplayService implements MessageReplayService {
+    private static final Logger LOG = LoggerFactory.getLogger(PostgresKafkaMessageReplayService.class);
+
     private static final String LOAD_REPLAYABLE_MESSAGE_SQL = """
             select message_id,
                    correlation_id,
@@ -154,10 +160,17 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             addHeader(record, PlatformHeaders.ATTEMPT, Integer.toString(nextAttempt));
             addHeader(record, PlatformHeaders.REDO_STEPS, redoStepsHeader(request.redoSteps()));
             producer.send(record).get();
-            markReplayPublished(replayId);
         } catch (Exception e) {
             markReplayFailed(replayId, e);
-            throw new MessageReplayException("Failed to replay message " + messageId + " to " + topic, e);
+            throw new MessageReplayException("Failed to replay message " + LogText.escape(messageId) + " to " + topic, e);
+        }
+        // Published: a row left REQUESTED still lets the record redo, which FAILED would not.
+        try {
+            markReplayPublished(replayId);
+        } catch (MessageReplayException e) {
+            // A request made again would publish a second replay with its own redo.
+            LOG.warn("Replay {} of message {} was published, but could not be marked PUBLISHED; it is still REQUESTED. "
+                    + "Do not request it again", replayId, LogText.escape(messageId), ErrorTextMasking.forLog(e));
         }
 
         return new MessageReplayResult(replayId, message.messageId(), message.integration(), topic, nextAttempt);
@@ -169,7 +182,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             statement.setString(1, messageId);
             try (ResultSet resultSet = statement.executeQuery()) {
                 if (!resultSet.next()) {
-                    throw new MessageReplayException("Message " + messageId + " was not found in bip_message_log");
+                    throw new MessageReplayException("Message " + LogText.escape(messageId) + " was not found in bip_message_log");
                 }
                 ReplayableMessage message = new ReplayableMessage(
                         resultSet.getString("message_id"),
@@ -192,7 +205,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
         } catch (MessageReplayException e) {
             throw e;
         } catch (Exception e) {
-            throw new MessageReplayException("Failed to load message " + messageId + " for replay", e);
+            throw new MessageReplayException("Failed to load message " + LogText.escape(messageId) + " for replay", e);
         }
     }
 
@@ -201,19 +214,19 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             String reason = message.replayDisabledReason() == null
                     ? "message is marked non-replayable"
                     : message.replayDisabledReason();
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: " + reason);
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: " + reason);
         }
         if (message.payloadDeletedAt() != null) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: payload was deleted");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: payload was deleted");
         }
         if (message.payloadExpiresAt() != null && message.payloadExpiresAt().isBefore(Instant.now())) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: payload has expired");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: payload has expired");
         }
         if (message.payloadBytes() == null) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: payload bytes are missing");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: payload bytes are missing");
         }
         if (message.integration() == null || message.integration().isBlank()) {
-            throw new MessageReplayException("Message " + message.messageId() + " is not replayable: integration is missing");
+            throw new MessageReplayException("Message " + LogText.escape(message.messageId()) + " is not replayable: integration is missing");
         }
     }
 
@@ -268,7 +281,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
             statement.setTimestamp(9, Timestamp.from(Instant.now()));
             statement.executeUpdate();
         } catch (Exception e) {
-            throw new MessageReplayException("Failed to audit replay request for message " + message.messageId(), e);
+            throw new MessageReplayException("Failed to audit replay request for message " + LogText.escape(message.messageId()), e);
         }
     }
 
@@ -286,7 +299,7 @@ public class PostgresKafkaMessageReplayService implements MessageReplayService {
     private void markReplayFailed(String replayId, Exception failure) {
         try (Connection connection = requiredDataSource().getConnection();
              PreparedStatement statement = connection.prepareStatement(MARK_REPLAY_FAILED_SQL)) {
-            statement.setString(1, failure.getMessage());
+            statement.setString(1, ErrorTextMasking.message(failure));
             statement.setString(2, replayId);
             statement.executeUpdate();
         } catch (Exception auditFailure) {

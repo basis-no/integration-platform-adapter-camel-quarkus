@@ -61,7 +61,7 @@ public final class ForwardedCredentialHeaders {
                 if (WARNED.add(stepId + "\n" + name.toLowerCase(Locale.ROOT))) {
                     LOG.warn("Header {} from the consumed Kafka record was not sent by step {}. A credential "
                             + "received with a message must not reach the next receiver; the publishing route "
-                            + "should remove caller headers before it publishes", name, stepId);
+                            + "should remove caller headers before it publishes", LogText.escape(name), stepId);
                 }
             }
         }

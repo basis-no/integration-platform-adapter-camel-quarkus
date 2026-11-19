@@ -135,6 +135,21 @@ class ForwardedCredentialHeadersTest {
     }
 
     @Test
+    void anHttpSendWithholdsTheCommonCredentialNamesFromTheRecord() {
+        var exchange = new org.apache.camel.support.DefaultExchange(new DefaultCamelContext());
+        for (String name : List.of("X-JWT-Assertion", "PrivateKey", "X-Bearer")) {
+            exchange.getMessage().setHeader(name, "credential".getBytes(StandardCharsets.UTF_8));
+        }
+        exchange.getMessage().setHeader("X-Order-Ref", "ref".getBytes(StandardCharsets.UTF_8));
+
+        var withheld = ForwardedCredentialHeaders.withhold(exchange, "post-order");
+
+        assertEquals(java.util.Set.of("X-JWT-Assertion", "PrivateKey", "X-Bearer"), withheld.keySet());
+        assertNull(exchange.getMessage().getHeader("X-JWT-Assertion"));
+        assertArrayEquals("ref".getBytes(StandardCharsets.UTF_8), exchange.getMessage().getHeader("X-Order-Ref", byte[].class));
+    }
+
+    @Test
     void coversCamelsHttpComponentOnly() {
         assertTrue(ForwardedCredentialHeaders.isHttp("https://receiver.example/orders"));
         assertTrue(ForwardedCredentialHeaders.isHttp("HTTP://receiver.example/orders"));

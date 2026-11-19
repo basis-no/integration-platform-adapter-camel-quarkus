@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.EndpointUriMasking;
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.StoreErrorClass;
@@ -14,6 +15,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import java.nio.charset.StandardCharsets;
+import java.sql.SQLException;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.util.ArrayList;
@@ -32,7 +34,9 @@ public class DefaultStepTracker implements StepTracker {
             "bean", "controlbus", "dataformat", "direct", "language", "log", "mock",
             "micrometer", "seda", "stub", "timer", "validator", "vm", "xslt", "xslt-saxon");
 
-    private static final ObjectMapper REDO_STEPS_READER = new ObjectMapper();
+    // Text after the array makes the list malformed: it is not the replay service's.
+    private static final ObjectMapper REDO_STEPS_READER = new ObjectMapper()
+            .enable(com.fasterxml.jackson.databind.DeserializationFeature.FAIL_ON_TRAILING_TOKENS);
 
     // A DELIVERED write that fails is tried again in place: after these waits, but no try starts
     // more than RETRY_IN_PLACE_FOR_MS after the first failure.
@@ -106,12 +110,14 @@ public class DefaultStepTracker implements StepTracker {
         }
         boolean alreadyDelivered = stepOutcomeStore.wasDelivered(idempotencyKey);
 
-        // Steps listed in x-bip-redo-steps MUST be
-        // re-executed even when the durable ledger already has them DELIVERED.
-        boolean redoRequested = redoSteps.contains(stepId) || redoSteps.contains(idempotencyKey);
+        // A step listed in x-bip-redo-steps is sent again although the ledger has it DELIVERED,
+        // but only for the adapter's own replay, confirmed by the store once it matters.
+        boolean listed = redoSteps.contains(stepId) || redoSteps.contains(idempotencyKey);
+        boolean redoRequested = listed && alreadyDelivered && redoAuthorised(exchange);
         boolean skip = alreadyDelivered && !redoRequested;
-        if (alreadyDelivered && redoRequested) {
-            LOG.info("Step {} was already DELIVERED but is listed in {}; re-executing", stepId, PlatformHeaders.REDO_STEPS);
+        if (redoRequested) {
+            LOG.info("Step {} was already DELIVERED but is listed in {}; re-executing", LogText.escape(stepId),
+                    PlatformHeaders.REDO_STEPS);
         }
 
         exchange.setProperty(PlatformExchangeProperties.CURRENT_STEP_ID, stepId);
@@ -129,11 +135,16 @@ public class DefaultStepTracker implements StepTracker {
     }
 
     /**
-     * Reads a replay's {@code x-bip-redo-steps} into the exchange once and removes the header.
+     * Removes {@code x-bip-redo-steps} from the exchange and returns the attempt's redo list.
      * The list belongs to this integration's replayed attempt: a receiver or a downstream
      * integration that got it would send its own steps with the same ids again for the same
-     * message id. With the adapter installed, every route reads it when an exchange enters
-     * the route; a tracked send and DLQ parking read it again in case a route restored it.
+     * message id. With the adapter installed, every route removes it when an exchange enters
+     * the route; a tracked send and DLQ parking remove it again in case a route restored it.
+     *
+     * <p>Only a managed Kafka input's record may carry a list, read by
+     * {@link #acceptRedoSteps}. On any other exchange, such as an HTTP request or a timer's,
+     * the header is dropped with a warning and the list is empty.</p>
+     *
      * @param exchange the exchange
      * @return the step ids to send again in this attempt
      */
@@ -144,9 +155,112 @@ public class DefaultStepTracker implements StepTracker {
         if (cached != null) {
             return cached;
         }
-        Set<String> redoSteps = parseRedoSteps(redoStepsHeaderValue(header));
+        String value = redoStepsHeaderValue(header);
+        if (value != null && !value.isBlank()) {
+            LOG.warn("Ignoring {} on an exchange that is not a managed Kafka input: only a replay the adapter "
+                    + "published may carry it", PlatformHeaders.REDO_STEPS);
+        }
+        exchange.setProperty(PlatformExchangeProperties.REDO_STEPS, Set.of());
+        return Set.of();
+    }
+
+    /**
+     * Reads a managed Kafka input's {@code x-bip-redo-steps} into the exchange once and removes
+     * the header. The list is kept only on a record marked {@code x-bip-replay: true} while
+     * replay is enabled; otherwise it is dropped with a warning. A kept list is honoured only
+     * when the Message Store confirms that the record is the replay the adapter published for
+     * this message, integration, topic and attempt, and that attempt has no outcome yet (see
+     * {@link RedoClaim}).
+     *
+     * @param exchange the input exchange, when its route begins
+     * @param messageId the record's message id
+     * @param integration this integration's name
+     * @param topic the topic the record was consumed from
+     * @param attempt the record's attempt
+     * @param replayEnabled whether this integration accepts replays
+     */
+    public static void acceptRedoSteps(Exchange exchange, String messageId, String integration, String topic,
+            int attempt, boolean replayEnabled) {
+        String value = redoStepsHeaderValue(exchange.getMessage().removeHeader(PlatformHeaders.REDO_STEPS));
+        if (exchange.getProperty(PlatformExchangeProperties.REDO_STEPS) != null) {
+            // Read already, for example by a second policy on the route.
+            return;
+        }
+        Set<String> redoSteps = parseRedoSteps(value);
+        String ignored = null;
+        if (redoSteps.isEmpty()) {
+            // Nothing to honour or to warn about.
+        } else if (!replayEnabled) {
+            ignored = "replay is disabled for this integration";
+        } else if (!"true".equalsIgnoreCase(String.valueOf(redoStepsHeaderValue(
+                exchange.getMessage().getHeader(PlatformHeaders.REPLAY))).trim())) {
+            ignored = "the record is not marked as a replay";
+        } else if (topic == null || messageId == null) {
+            ignored = "the record's topic or message id is unknown";
+        }
+        if (ignored != null) {
+            LOG.warn("Ignoring {} on message {}: {}", PlatformHeaders.REDO_STEPS, LogText.escape(messageId), ignored);
+            redoSteps = Set.of();
+        }
         exchange.setProperty(PlatformExchangeProperties.REDO_STEPS, redoSteps);
-        return redoSteps;
+        exchange.removeProperty(PlatformExchangeProperties.REDO_CLAIM);
+        if (!redoSteps.isEmpty()) {
+            exchange.setProperty(PlatformExchangeProperties.REDO_CLAIM,
+                    new RedoClaim(messageId, integration, topic, attempt, value.trim()));
+        }
+    }
+
+    /**
+     * Whether the store confirms the record's redo claim. Asked once per attempt, when a
+     * delivered step is listed. A store that cannot be read fails the send as any step outcome
+     * check does, so the record is read again; a login that may not read the replay audit gets
+     * no redo.
+     */
+    private boolean redoAuthorised(Exchange exchange) {
+        RedoClaim claim = exchange.getProperty(PlatformExchangeProperties.REDO_CLAIM, RedoClaim.class);
+        if (claim == null) {
+            return false;
+        }
+        Boolean verdict = claim.verdict();
+        if (verdict != null) {
+            return verdict;
+        }
+        boolean authorised;
+        try {
+            authorised = stepOutcomeStore.isAuthorisedReplay(claim);
+        } catch (RuntimeException failure) {
+            String sqlState = sqlState(failure);
+            if ("42501".equals(sqlState)) {
+                LOG.warn("Ignoring {} on message {}: the Message Store login may not read the replay audit, so the "
+                        + "replay cannot be confirmed", PlatformHeaders.REDO_STEPS, LogText.escape(claim.messageId()));
+            } else if (sqlState != null && sqlState.startsWith("22")) {
+                // The record's own values, such as its message id, are not valid for the store: it
+                // cannot be the adapter's replay, and reading it again would not change that.
+                LOG.warn("Ignoring {} on message {}: the Message Store cannot read the record's values (SQLSTATE {})",
+                        PlatformHeaders.REDO_STEPS, LogText.escape(claim.messageId()), sqlState);
+            } else {
+                throw failure;
+            }
+            claim.decide(false);
+            return false;
+        }
+        if (!authorised) {
+            LOG.warn("Ignoring {} on message {}: it is not a replay the adapter published for this integration, topic "
+                            + "and attempt {}, or that attempt already has an outcome", PlatformHeaders.REDO_STEPS,
+                    LogText.escape(claim.messageId()), claim.attempt());
+        }
+        claim.decide(authorised);
+        return authorised;
+    }
+
+    private static String sqlState(Throwable failure) {
+        int depth = 0;
+        for (Throwable cause = failure; cause != null && depth++ < 20; cause = cause.getCause() == cause ? null : cause.getCause()) {
+            if (cause instanceof SQLException sql && sql.getSQLState() != null) {
+                return sql.getSQLState();
+            }
+        }
+        return null;
     }
 
     private static String redoStepsHeaderValue(Object value) {
@@ -226,7 +340,7 @@ public class DefaultStepTracker implements StepTracker {
                 try {
                     stepOutcomeStore.recordDelivered(step);
                     LOG.info("Step {} of message {}: its DELIVERED outcome was written when tried again in place",
-                            step.step(), exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID));
+                            LogText.escape(step.step()), LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)));
                     return;
                 } catch (RuntimeException again) {
                     failure = again;
@@ -272,8 +386,8 @@ public class DefaultStepTracker implements StepTracker {
         }
         exchange.setProperty(PlatformExchangeProperties.STEP_FROM_MARK, mark.step());
         LOG.warn("Step {} of message {} was sent in an earlier read of record {}, and its DELIVERED outcome is "
-                        + "written now; the send is not repeated", mark.step().step(),
-                exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), mark.position());
+                        + "written now; the send is not repeated", LogText.escape(mark.step().step()),
+                LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)), mark.position());
     }
 
     @Override
@@ -297,14 +411,14 @@ public class DefaultStepTracker implements StepTracker {
                                 + PlatformHeaders.MESSAGE_ID + ", so they share one step key. Give each part its own "
                                 + PlatformHeaders.MESSAGE_ID + " before the send, or publish each part with its own id. "
                                 + "See docs/split-step-identity.md",
-                        stepId, part(repeatedIn), exchange.getFromRouteId());
+                        LogText.escape(stepId), part(repeatedIn), exchange.getFromRouteId());
                 return;
             }
             // A replayed message otherwise looks delivered in the logs although nothing was sent.
             LOG.info("Step {} SKIPPED for message {}: an earlier attempt recorded it as delivered, so the send to {} "
                             + "was not repeated in this attempt; list the step in {} to repeat it",
-                    stepId, exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID),
-                    currentEndpointUri(exchange), PlatformHeaders.REDO_STEPS);
+                    LogText.escape(stepId), LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)),
+                    LogText.escape(currentEndpointUri(exchange)), PlatformHeaders.REDO_STEPS);
         }
     }
 

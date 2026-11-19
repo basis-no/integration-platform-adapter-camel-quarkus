@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.model;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import java.time.Instant;
 
 public record StepResult(
@@ -10,7 +11,6 @@ public record StepResult(
         String targetRef,
         String error,
         Instant occurredAt) {
-
     public static StepResult delivered(String step, String idempotencyKey, String endpointUri) {
         return new StepResult(step, StepStatus.DELIVERED, idempotencyKey, endpointUri, null, null, Instant.now());
     }
@@ -27,7 +27,8 @@ public record StepResult(
         if (error == null) {
             return null;
         }
+        // Stored in the step ledger and the attempt's steps: a receiver URI keeps no credential.
         // PostgreSQL text cannot hold a NUL; a failure's own text must not make its step unstorable.
-        return error.getMessage() == null ? error.getClass().getName() : error.getMessage().replace('\u0000', '\uFFFD');
+        return ErrorTextMasking.message(error).replace('\u0000', '\uFFFD');
     }
 }

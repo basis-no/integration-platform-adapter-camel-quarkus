@@ -4,6 +4,118 @@
 
 No Message Store schema change.
 
+### Security
+
+- Credentials in error texts no longer reach the Message Store, the
+  shared DLQ topic or the log. A failed send's exception names the receiver's
+  URL, query included, and the adapter stored that text in the message log, the
+  attempt and its steps and the step ledger, published it in `x-bip-error` on
+  the DLQ topic, and logged it. Every URI in such a text is now masked by the
+  stored-endpoint rule (user info, and parameters such as `code`, `sig`, `key`
+  or a credential-like name), also in the failures the adapter logs, whose class
+  names and stack traces stay, and in the lines of Camel's error handlers the
+  adapter installs, including the failure logged when parking fails. Each text
+  is masked once, as the .NET adapter does, so that both adapters store the same
+  text for the same failure. Not
+  covered: a failure of the parking endpoint or route itself; for an input that
+  is not a managed Kafka input, Camel's
+  `FatalFallbackErrorHandler` line and the consumer's own failure line; the
+  Kafka client's own logs; and credentials that are not in a `scheme://` URI.
+  See [Retry and DLQ](README.md#retry-and-dlq).
+  Upgrade: error texts show `xxxxxx` where they showed credentials; a DLQ reader
+  or alert that matched an unmasked value in `x-bip-error` must match the
+  masked form. A text with a URI that cannot be masked within about a second,
+  or with more than 20 URIs, shows `xxxxxx` for the rest. An application's own `direct:` parking route
+  (`basis.message-store.dlq-uri=direct:…`) now sees the caught failure as
+  `ErrorTextMasking.MaskedFailure`, whose text keeps the original class name
+  and the masked message, instead of the original exception: a parking route
+  that checks the exception's type or status code must read the text instead. A structured log shows
+  a masked failure's class as `ErrorTextMasking$MaskedFailure`, with the
+  original class in its text. Rows and DLQ records written before keep their
+  text: rotate any credential that has appeared in the URL of a failed send.
+- The credential-name rule masks `X-JWT-Assertion`, `PrivateKey` and
+  other names containing `assertion`, `privatekey`, `jwt` or `bearer`, and no
+  longer exempts every `x-bip-*` name: only the adapter's own envelope headers
+  and `Idempotency-Key` stay readable. The rule decides which header values are
+  masked in a parked DLQ record, which of a consumed record's credential headers
+  an HTTP send withholds, which published headers the Kafka-publish warning
+  names, and which query parameters a stored endpoint masks.
+  Upgrade: a consumed record's `X-JWT-Assertion` or `PrivateKey` header no
+  longer reaches HTTP receivers; an application's own `x-bip-…-key` or
+  `x-bip-…-token` header is masked in the parked copy, stays bytes at the Kafka
+  boundary instead of turning into text, and so is withheld from HTTP sends
+  like any other consumed credential header; the Kafka-publish warning names
+  these headers too; stored endpoints mask
+  `?jwt=`, `?assertion=` and `?bearer=` values. The .NET adapter needs the same
+  names for its stored endpoints to stay identical.
+- A Key-Value Store write that the database refuses no longer copies
+  the row into the error. PostgreSQL's text for a constraint or data error names
+  the failing row, the stored value included, and the adapter stored, parked and
+  logged it as the message's failure. The error now names the key's operation,
+  the limit and the SQLSTATE only.
+- A failed HTTP input no longer sends its caller the failure text. When an
+  input that is not a managed Kafka input failed, for example a `platform-http`
+  route, the adapter's dead-letter route set `x-bip-error` and `x-bip-dlq-at`
+  on the exchange before it handed the failure back, and `platform-http` copies
+  an exchange's headers into its answer. The caller so received the failure
+  text, which names a failed send's receiver URL, query included; before 0.3.7
+  that text was not masked, so the caller could read a key or signature in the
+  URL. An exchange that is not parked no longer carries these headers. The
+  answer keeps its status and Camel's empty body (`platform-http` leaves the
+  failure out unless the endpoint sets `muteException=false`). The adapter's
+  own log lines keep the masked failure, and so does the Message Store for an
+  input selected by `basis.input-audit.routes`. An answer the route makes
+  itself, in its own `onException` or `doCatch`, is unchanged.
+  Upgrade: an HTTP caller that read `x-bip-error` from the answer gets the
+  status only, and the caller of an internal request (a `direct:` route or a
+  `ProducerTemplate`) that read `x-bip-error` or `x-bip-dlq-at` from the failed
+  exchange must read its exception instead.
+- The resend endpoint answers a failure it does not expect itself. It caught
+  only its own replay failures, and any other exception went to Quarkus's error
+  handling, which in dev and test mode answers the caller with the failure's
+  class, text, source lines and stack trace, and in every mode logs the failure
+  unmasked. Such a failure is now answered `500` with `status` `FAILED` and a
+  fixed `error` saying that whether the replay was published is not known, as
+  the .NET adapter's `RESEND_FAILED` does, and is logged once, masked. The
+  endpoint's other answers are unchanged. A failure that carries an HTTP
+  answer of its own, such as a `WebApplicationException` from an
+  application's own `MessageReplayService` or one an application's
+  `ExceptionMapper` handled, is now answered the same way.
+  Upgrade: a caller that read Quarkus's `details` from such an answer reads the
+  endpoint's `error` instead; the failure itself is in the log. An application
+  whose own replay service or exception mapper chose the answer to a failure
+  gets the `500` instead.
+- A consumed record's `x-bip-redo-steps` makes the adapter send a
+  delivered step again only for the adapter's own replay, and only once. Before,
+  any record that carried the header and the id of a delivered message, from
+  any producer on the input topic, and any HTTP request to a route the adapter
+  tracks, re-ran the listed steps past the delivered-step ledger, with no replay
+  audit and no new attempt. Now the list is honoured only on a managed Kafka
+  input, while replay is enabled, on a record marked `x-bip-replay: true` that
+  matches a `REQUESTED` or `PUBLISHED` replay audit row for its message id,
+  integration, topic, attempt and redo list, as long as that attempt is not
+  completed or parked. A `FAILED` outcome no longer replaces a completed or
+  parked attempt's row, so a copy of a replay record that fails cannot reopen
+  its redo. A replay whose record was published but whose audit row cannot be
+  marked `PUBLISHED` now succeeds, with a warning, instead of failing: the row
+  stays `REQUESTED`, and requesting it again would publish a second replay. Any
+  other record's list is dropped with a warning. See
+  [Redo behavior](README.md#redo-behavior).
+  Upgrade: an operator's resend works as before. A tool that writes
+  `x-bip-redo-steps` on records itself, not through the resend endpoint, no
+  longer redoes anything. The Message Store login needs read access to
+  `bip_message_replay_audit` and `bip_message_attempt` for redo; without it, a
+  redo is ignored with a warning. A record with a redo list that names a
+  delivered step costs one more store read. An application's own
+  `StepOutcomeStore` must implement `isAuthorisedReplay`, or no redo is
+  honoured.
+- Message ids and the other values the adapter takes from a record
+  are written to the log with control characters, line and paragraph
+  separators, bidirectional controls and invisible format characters escaped as
+  `\uXXXX` (and a backslash as
+  `\\`), so a value with CR/LF can no longer forge or hide log lines. The same
+  applies to the adapter's error texts that name a message id or step key.
+
 ### Changed
 
 - The `ip-slow-backend` route configuration caps each redelivery delay at 20
@@ -172,6 +284,13 @@ No Message Store schema change.
   See [A record whose own values the store cannot hold](README.md#a-record-whose-own-values-the-store-cannot-hold).
   Upgrade: an envelope value over 1,024 bytes, which the store accepted
   before, is now refused and its record parked.
+- A record whose `x-bip-attempt` or `x-bip-schema-version` is not a whole number
+  is recorded with attempt 1 or schema version 1 and a warning that names the
+  header. Before, the outcome write failed after the route had run, the failure
+  was ignored, and a later commit moved past the record: the message was
+  processed, or parked, but had no row in the Message Store and could not be
+  resent. An unexpected failure while the outcome is built now leaves the record
+  uncommitted, so it is read again.
 
 ### Documentation
 
@@ -231,6 +350,49 @@ No Message Store schema change.
 What an integration notices when it moves from 0.3.6; the entries above give
 the details.
 
+- **Error texts show `xxxxxx` where they showed credentials.** Every URI in a
+  failure text that is stored, published in `x-bip-error` or logged is masked
+  by the stored-endpoint rule, once; a DLQ reader or alert that matched an
+  unmasked value in `x-bip-error` must match the masked form. A structured log
+  shows a masked failure's class as `ErrorTextMasking$MaskedFailure`, with the
+  original class in its text. An application's own `direct:` parking route
+  sees the caught failure as that masked copy instead of the original
+  exception, so a parking route that checks the exception's type or status
+  code must read its text instead. Rows, DLQ records and logs written before
+  keep their text: rotate any credential that has appeared in the URL of a
+  failed send.
+- **More header names are credential-like.** A consumed record's
+  `X-JWT-Assertion`, `PrivateKey` or other header whose name contains
+  `assertion`, `privatekey`, `jwt` or `bearer`, and an application's own
+  `x-bip-…-key` or `x-bip-…-token` header, is masked in the parked copy and no
+  longer reaches HTTP receivers; stored endpoints mask `?jwt=`, `?assertion=`
+  and `?bearer=` values.
+- **A failed exchange that is not parked has no `x-bip-error`.** An input
+  that is not a managed Kafka input, such as a `platform-http` route, and an
+  internal request get their failure back without the parking headers
+  `x-bip-error` and `x-bip-dlq-at`: an HTTP caller no longer receives the
+  failure text in the answer, and a caller that read these headers from the
+  failed exchange must read its exception instead.
+- **The resend endpoint answers an unexpected failure itself:** `500` with
+  `status` `FAILED` and a fixed `error`, not Quarkus's error page; the log
+  keeps the failure, masked. A failure that carries an HTTP answer of its own,
+  from an application's replay service or exception mapper, gets that `500`
+  too.
+- **Redo lists come only from the adapter's own replay.** A resend through the
+  resend endpoint redoes its listed steps as before. A redo list that a tool
+  writes on a record itself, or that an HTTP caller sends, is dropped with a
+  warning. Grant the Message Store login `SELECT` on `bip_message_replay_audit`
+  and `bip_message_attempt`, or a resend's redo is ignored with a warning. An
+  application's own `StepOutcomeStore` must implement `isAuthorisedReplay`, or
+  no redo is honoured. A `FAILED` outcome no longer replaces a `COMPLETED` or
+  `DLQ` row of the same attempt in `bip_message_attempt`; a consumer of
+  `bip.message.status` events that writes that table itself should keep the
+  same rule. See [Redo behavior](README.md#redo-behavior).
+- **Record values in log lines are escaped.** Control and invisible characters
+  in a message id or another value from a record show as `\uXXXX`, and a
+  backslash as `\\`. A record whose `x-bip-attempt` or `x-bip-schema-version`
+  is not a whole number is now recorded, with attempt or schema version 1 and a
+  warning that names the header.
 - **Kafka inputs start at `earliest`.** A new consumer group, a changed
   `groupId`, a group whose committed offsets expired on the broker, and a Kafka
   input without a `groupId` now read each partition's retained records from

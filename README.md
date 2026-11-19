@@ -272,7 +272,12 @@ status becomes `DLQ`. A send that returns without an error counts as success, so
 reference below). The internal parking route bypasses business-step tracking;
 parking must never be skipped because of a previously delivered business step.
 An internal request without a managed Kafka input propagates its failure back
-to its caller rather than parking transformed receiver bytes independently.
+to its caller rather than parking transformed receiver bytes independently, and
+so does any other input, such as `platform-http`. From 0.3.7 the exchange it
+hands back carries no `x-bip-error` or `x-bip-dlq-at`: `platform-http` copies an
+exchange's headers into its answer, so its HTTP caller received the failure
+text there. The answer has the error status and, unless the endpoint sets
+`muteException=false`, an empty body.
 
 A competing application `onException` can bypass this recovery handler. Do not
 install a catch-all recovery policy alongside the adapter's handler. Nested
@@ -535,9 +540,57 @@ The DLQ record has the shape listed below. It also carries the other message
 headers present at failure, because the Kafka producer forwards them. From 0.3.6
 the values of credential-like headers are masked as `xxxxxx`: `Authorization`,
 `Cookie`, `Set-Cookie`, `WWW-Authenticate`, and names containing secret, token,
-password, credential, session, signature or auth, or ending in `-key` or `_key`. The
-names stay visible. Remove any other receiver header you do not want on the
-shared DLQ before the failing step.
+password, credential, session, signature or auth, or ending in `-key` or `_key`. From
+0.3.7 also names containing assertion, privatekey, jwt or bearer (such as
+`X-JWT-Assertion` or `PrivateKey`), and an application's own `x-bip-` header
+with such a name; only the adapter's own envelope headers and `Idempotency-Key`
+are exempt. The names stay visible. Remove any other receiver header you do not
+want on the shared DLQ before the failing step. The same rule decides which of
+a consumed record's credential headers an HTTP send withholds, which published
+headers the Kafka-publish warning names and which query parameters a stored
+endpoint masks.
+
+From 0.3.7 the failure text in `x-bip-error`, in the Message Store's error
+columns, in the attempt's steps and in the adapter's log lines has every URI in
+it masked by the stored-endpoint rule (see [Step Tracking](#step-tracking)): a
+receiver URL that a failed send's exception names keeps no user info, key or
+signature. Each text is masked once, where the adapter takes it from the
+failure, as the .NET adapter does, so both adapters store the same text: a
+second pass would mask some texts further (`http://host:8080/a?b=c@d` is stored
+as `http://host:xxxxxx@d`, and a second pass would make it `http://xxxxxx@d`),
+and no sink or log line masks a masked text again. The one exception is the
+dead letter channel's line about a `direct:` parking route that throws the
+masked failure it was handed (see below): that line quotes the masked text and
+is masked as a whole once more. A URI is a scheme (a
+letter, then letters, digits, `+`, `-` or `.`) followed by `://`, up to the next white space, `<` or `>`; a quote that
+ends it is not part of it. One deadline of about a second covers the whole
+text, and at most 20 URIs are masked; any URI past either is replaced by
+`xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
+needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`, which a
+structured log shows as the exception class) whose text names each original
+class, with the stack traces kept and the messages of the failure, its causes
+and its suppressed failures masked the same way. The lines of Camel's error
+handlers that the adapter installs are masked too, and so is the failure that
+Camel's `FatalFallbackErrorHandler` logs when parking a managed Kafka input
+fails, as are the causes of the adapter's own not-parked, not-committed and
+reduced-outcome failures and of the Message Store contract check's startup
+failure. Not covered: a failure of the parking endpoint or route itself, whose
+text Camel logs as it is (keep credentials out of a `direct:` parking route's
+exceptions and out of `basis.message-store.dlq-uri`); for an input that is not a managed Kafka input, which gets
+its original failure back, Camel's `FatalFallbackErrorHandler` line and the
+consumer's own failure line (for example a timer's or file consumer's
+`LoggingExceptionHandler`, or camel-kafka's line for an exchange that ends
+failed); the Kafka client's own log lines; other text in an exception message,
+and credentials that are not in a `scheme://` URI, such as Camel's
+`scheme:path?query` form, a fragment (`#access_token=…`), `;` parameters, a
+`user:pass@host` without a scheme or a URI nested in a query value. Do not put
+credentials in exception messages of your own. From 0.3.7 an application's own `direct:` parking
+route sees the caught failure (`Exchange.EXCEPTION_CAUGHT`) as
+`ErrorTextMasking.MaskedFailure`, whose text keeps the original class name and
+the masked message: a parking route that checks the exception's type or status
+code must read its text instead. Up to 0.3.6 these texts were stored,
+parked and logged as they were: rotate any credential that has appeared in the
+URL of a failed send.
 
 An HTTP intake that publishes to Kafka must remove the caller's headers first,
 for example with `removeHeaders("*")` and then setting only the headers the
@@ -854,6 +907,13 @@ The endpoint calls `MessageReplayService`, reads `x-dashboard-user` and
 `status`, `messageId`, `replayId`, `integration`, `topic`, and `attempt`.
 Optional JSON request fields `requestedBy`, `reason`, and `redoSteps` are also
 accepted for future callers that prefer a body over headers.
+A replay failure is answered with `status` `FAILED` and `error`: `404` when
+the message is not stored, `409` with the reason otherwise. From 0.3.7 a
+failure the endpoint does not expect, also one that carries an HTTP answer of
+its own, is answered `500` with a fixed `error`: whether the replay was
+published is not known, so check the replay audit and the integration's log
+before you resend. No answer carries a failure's type or
+stack trace, in any launch mode; the log keeps the failure, masked.
 
 Callers can use `MessageReplayRequest` to include operator context:
 
@@ -892,6 +952,47 @@ idempotency key. A malformed header value is logged as a warning and treated as
 empty — it never fails message processing. Redo intentionally repeats an
 external side effect, so external systems still need domain idempotency for it.
 
+From 0.3.7 only the adapter's own replay can redo a step, and only once. A
+consumed record's `x-bip-redo-steps` is honoured only when all of these hold:
+
+- the record comes from a managed Kafka input; on any other input, such as an
+  HTTP request, a timer or a file, the header is dropped with a warning;
+- replay is enabled (`basis.message-store.replay.enabled`), and the record
+  carries `x-bip-replay: true`;
+- `bip_message_replay_audit` has a row for the record's `x-bip-message-id`,
+  this integration, the topic the record was consumed from and the record's
+  `x-bip-attempt`, with the same redo list (compared as JSON), in state
+  `REQUESTED` or `PUBLISHED`. Both count, because the record can be consumed
+  before the replay service marks its row `PUBLISHED`; `FAILED` does not;
+- `bip_message_attempt` has no completed or parked row for that message id and
+  attempt. Once the replay's attempt is completed or parked, its record, or a
+  copy of it, no longer redoes anything. An attempt recorded `FAILED` was not
+  committed and is read again, so it may still redo. A later read of a
+  completed or parked attempt that fails, such as a copy of its record, does
+  not turn it `FAILED`: the Message Store keeps the attempt as it ended. Its
+  summary in `bip_message_log` still shows the failed read until the copy is
+  parked or completes. Every writer of `bip_message_attempt` on the store must
+  keep this rule, the .NET adapter and older adapter versions included.
+
+On any other record the list is ignored with a warning, and its delivered
+steps are skipped as on any redelivery. The Message Store is asked once per
+attempt, when the list names a delivered step. If it cannot be read, the send
+fails as when a step outcome cannot be checked: the record is not committed and
+is read again. A login that may not read `bip_message_replay_audit` gets no
+redo, with a warning, and so does a record whose values the store cannot read
+(SQLSTATE class 22). The lists are compared by the adapter, as JSON; the
+database never parses the record's own list, and a list with text after the
+array is malformed. A record read again before its attempt was completed or
+parked, for example after a crash, redoes once more. An application's own
+`StepOutcomeStore` bean must implement `isAuthorisedReplay` for redo to work;
+the default answers no.
+
+An `x-bip-attempt` or `x-bip-schema-version` that is not a whole number in the
+`int` range (ASCII digits with an optional sign; surrounding spaces, tabs and
+line breaks are ignored) is read as 1, with a warning that names the header; an
+attempt below 1 is read as 1 too. A readable schema version, also 0 or a
+negative number, is kept as it is, as the .NET adapter keeps it.
+
 From 0.3.6 the list stays inside the integration. When an exchange enters a
 route, the adapter reads `x-bip-redo-steps`, keeps the list for the attempt's
 step tracking and removes the header: a Kafka input with the Message Store
@@ -902,9 +1003,9 @@ the original message, for example with `useOriginalMessage()`, gets the header
 back; the next `to` or `toD` and DLQ parking remove it again. Before, a receiver
 got the list, and a downstream integration that consumed a published record
 with the same message id sent its own steps with the same ids again.
-`x-bip-replay` and `x-bip-attempt` are still forwarded; nothing in the adapter
-acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
-the header only, not its value.
+`x-bip-replay` and `x-bip-attempt` are still forwarded; at a Kafka input,
+`x-bip-replay` is one of the conditions above. The warning for a malformed list
+names the header only, not its value.
 
 ## Step Tracking
 
@@ -1029,9 +1130,11 @@ both adapters store the same value for the same URI:
   the adapter uses for the headers it masks in a DLQ record: `Authorization`,
   cookies, authentication challenges, names containing secret, token, password,
   passwd, credential, session, signature, apikey, api-key, api_key,
-  subscription-key, private-key or auth (such as `Signature` or
-  `X-Amz-Credential`), or ending in `-key` or `_key` (such as
-  `subscription-key`), but not `x-bip-*` or `Idempotency-Key`; also the names
+  subscription-key, private-key, auth, assertion, privatekey, jwt or bearer
+  (such as `Signature`, `X-Amz-Credential` or `X-JWT-Assertion`), or ending in
+  `-key` or `_key` (such as `subscription-key`), but not the adapter's own
+  envelope headers (such as `x-bip-message-id` or `x-bip-idempotency-key`) or
+  `Idempotency-Key`; also the names
   `key`, `code`, `sig` and `pwd`, and names containing `passphrase`,
   `passcode`, `privatekey`, `accesskey`, `accountkey` or `connectionstring`.
   Parameter names are compared after percent-decoding (an escape that is not
@@ -1049,8 +1152,9 @@ Step ids are derived from the exact URI, so masking does not change them. The
 route still sends to the real endpoint; only the stored and logged copy is
 masked. Failed and skipped step entries use the same masked endpoint, as do the
 warning emitted when a send has no stable Camel node id and the startup
-refusal for a send without an id. This masks the endpoint field, not arbitrary
-exception messages or application logs. Existing rows, logs and backups are not
+refusal for a send without an id. From 0.3.7 the URIs in failure texts are
+masked by the same rule (see [Retry and DLQ](#retry-and-dlq)); other text in
+exception messages and application logs is not. Existing rows, logs and backups are not
 rewritten, unless the same step is recorded again; review their access and
 retention separately. A query or tool that matched a stored endpoint's user
 name or one of these parameter values no longer finds it in rows recorded from

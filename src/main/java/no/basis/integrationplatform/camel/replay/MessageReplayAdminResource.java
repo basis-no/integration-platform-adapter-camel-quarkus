@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.replay;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -10,6 +11,8 @@ import jakarta.ws.rs.PathParam;
 import jakarta.ws.rs.Produces;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -17,8 +20,12 @@ import java.util.List;
 @ApplicationScoped
 @Path("/admin/messages")
 public class MessageReplayAdminResource {
+    private static final Logger LOG = LoggerFactory.getLogger(MessageReplayAdminResource.class);
     private static final String DASHBOARD_USER_HEADER = "x-dashboard-user";
     private static final String DASHBOARD_REASON_HEADER = "x-dashboard-reason";
+    /** The answer to a failure the endpoint does not expect, as the .NET adapter's {@code RESEND_FAILED} gives it. */
+    static final String RESEND_FAILED = "The resend failed, and whether its replay was published is not known:"
+            + " check the replay audit and the integration's log before you resend.";
 
     private final MessageReplayService replayService;
     private final ObjectMapper objectMapper;
@@ -46,8 +53,26 @@ public class MessageReplayAdminResource {
             return Response.ok(ReplayResponse.succeeded(result)).build();
         } catch (MessageReplayException e) {
             return Response.status(statusFor(e))
-                    .entity(ReplayResponse.failed(messageId, e.getMessage()))
+                    .entity(ReplayResponse.failed(messageId, ErrorTextMasking.message(e)))
                     .build();
+        } catch (Throwable e) {
+            // Any other failure, an Error or a checked exception thrown unchecked included: not
+            // its text, type or stack, which Quarkus's error page shows in dev and test mode. The
+            // log keeps the failure, masked. The line leaves out the message id, which the caller
+            // chose.
+            logUnexpected(e);
+            return Response.serverError().entity(ReplayResponse.failed(messageId, RESEND_FAILED)).build();
+        }
+    }
+
+    private static void logUnexpected(Throwable failure) {
+        try {
+            LOG.error("A resend request failed; whether its replay was published is not known",
+                    ErrorTextMasking.forLog(failure));
+        } catch (Throwable unreadable) {
+            // A failure whose text cannot be read must not take the answer with it.
+            LOG.error("A resend request failed; whether its replay was published is not known;"
+                    + " its {} could not be logged", failure.getClass().getName());
         }
     }
 

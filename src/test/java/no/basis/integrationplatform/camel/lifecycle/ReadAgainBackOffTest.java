@@ -34,6 +34,7 @@ class ReadAgainBackOffTest {
     private final List<Long> waits = new ArrayList<>();
     private final AtomicBoolean journalDown = new AtomicBoolean(true);
     private final AtomicInteger commits = new AtomicInteger();
+    private String messageIdPrefix = "message-";
 
     @AfterEach
     void close() throws Exception {
@@ -50,6 +51,23 @@ class ReadAgainBackOffTest {
 
         assertEquals(List.of(1_000L, 2_000L, 4_000L, 8_000L, 16_000L, 30_000L, 30_000L, 30_000L), waits);
         assertEquals(0, commits.get());
+    }
+
+    @Test
+    void theReadAgainLineEscapesTheMessageId() {
+        messageIdPrefix = "message-\r\n2026-01-01 INFO forged\u202e-";
+        MessageStoreRoutePolicy policy = policy();
+
+        try (var log = no.basis.integrationplatform.camel.LogCapture.of(MessageStoreRoutePolicy.class)) {
+            readFailingToRecord(policy, route(null), 7);
+            readFailingToRecord(policy, route(null), 7);
+
+            List<String> lines = log.records().stream().map(no.basis.integrationplatform.camel.LogCapture::text)
+                    .filter(line -> line.contains("could not be made durable")).toList();
+            assertEquals(1, lines.size(), log.records().toString());
+            assertTrue(lines.getFirst().startsWith("Message message-\\u000d\\u000a2026-01-01 INFO forged\\u202e-7 at "),
+                    lines.getFirst());
+        }
     }
 
     @Test
@@ -256,7 +274,7 @@ class ReadAgainBackOffTest {
 
     private Exchange begin(MessageStoreRoutePolicy policy, long offset, int partition) {
         Exchange exchange = new DefaultExchange(context);
-        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-" + offset);
+        exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, messageIdPrefix + offset);
         exchange.getMessage().setHeader(KafkaConstants.TOPIC, "input");
         exchange.getMessage().setHeader(KafkaConstants.PARTITION, partition);
         exchange.getMessage().setHeader(KafkaConstants.OFFSET, offset);

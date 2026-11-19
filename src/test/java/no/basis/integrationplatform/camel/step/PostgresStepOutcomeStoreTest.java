@@ -71,6 +71,19 @@ class PostgresStepOutcomeStoreTest {
     }
 
     @Test
+    void aFailedStepStoresItsErrorTextMaskedOnce() {
+        store.recordFailed(StepResult.failed(
+                "write-product",
+                "message-123:write-product",
+                "sql:insert-product",
+                new RuntimeException("Refused by http://host:8080/a?b=c@d")));
+
+        // One pass; a second would also mask the host.
+        assertEquals("Refused by http://host:xxxxxx@d",
+                singleValue("select error from bip_step_outcome where idempotency_key = 'message-123:write-product'"));
+    }
+
+    @Test
     void duplicateDeliveredRecordIsIdempotent() {
         StepResult first = StepResult.delivered(
                 "write-product",

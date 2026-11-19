@@ -9,6 +9,7 @@ import no.basis.integrationplatform.camel.model.MessageStatus;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
+import no.basis.integrationplatform.camel.step.RedoClaim;
 import no.basis.integrationplatform.camel.step.StepOutcomeStore;
 import no.basis.integrationplatform.camel.step.StepTrackingInterceptStrategy;
 import org.apache.camel.AggregationStrategy;
@@ -218,6 +219,8 @@ class CorrelationContinuityTest {
             public boolean wasDelivered(String key) { return durableSteps && delivered.contains(key); }
             public void recordDelivered(StepResult step) { delivered.add(step.idempotencyKey()); }
             public void recordFailed(StepResult step) { }
+            // The resends in these tests are the adapter's own replays.
+            public boolean isAuthorisedReplay(RedoClaim claim) { return true; }
         };
         context = new DefaultCamelContext();
         var properties = new Properties();

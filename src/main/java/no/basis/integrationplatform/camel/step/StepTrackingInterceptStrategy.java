@@ -3,6 +3,7 @@ package no.basis.integrationplatform.camel.step;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import no.basis.integrationplatform.camel.traffic.TrafficSignals;
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import no.basis.integrationplatform.camel.EndpointUriMasking;
 import no.basis.integrationplatform.camel.ForwardedCredentialHeaders;
 import no.basis.integrationplatform.camel.HttpTimeoutOptions;
@@ -273,7 +274,7 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             exchange.setException(failure);
         } else if (current != failure) {
             LOG.warn("Completing a send of exchange {} failed after the send itself had failed",
-                    exchange.getExchangeId(), failure);
+                    exchange.getExchangeId(), ErrorTextMasking.forLog(failure));
         }
     }
 

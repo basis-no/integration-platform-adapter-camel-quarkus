@@ -167,6 +167,41 @@ class RecordDataTerminalPathTest {
     }
 
     @Test
+    void theReasonForARecordParkedForItsOwnDataIsMaskedOnceInItsRowAndItsParkedCopy() throws Exception {
+        deliveredWriteFails = new SQLException("index row size 2712 exceeds btree version 4 maximum 2704", "54000");
+        // A step id that names a URI a second pass would mask further.
+        String step = "http://host:8080/a?b=c@d";
+        start(route -> route.doTry().to("receiver:orders").id(step).doCatch(Exception.class).end());
+
+        read(7, "message-1", null);
+
+        assertEquals(1, parked.size());
+        String header = parked.getFirst().getMessage().getHeader(PlatformHeaders.ERROR, String.class);
+        String row = rows.getLast().error();
+        assertTrue(row.contains("the send of step http://host:xxxxxx@d had returned"), row);
+        assertEquals(row, header, "The row and the parked copy hold the same text, masked once");
+    }
+
+    @Test
+    void aFailureWhileTheOutcomeOfAParkedRecordIsBuiltKeepsItUncommittedAndParksItOnce() throws Exception {
+        deliveredWriteFails = new SQLException("index row size 2712 exceeds btree version 4 maximum 2704", "54000");
+        // The route leaves a header the outcome cannot be built from.
+        start(route -> route.process(e -> e.getMessage().setHeader(PlatformHeaders.CONTENT_TYPE, new Object() {
+                    @Override public String toString() { throw new IllegalStateException("unreadable"); }
+                }))
+                .doTry().to("receiver:orders").id("post-order").doCatch(Exception.class).end());
+
+        Exchange first = read(7, "message-1", null);
+        Exchange second = read(7, "message-1", null);
+
+        assertEquals(1, orders.received().size(), "Sent once");
+        assertEquals(1, parked.size(), "Parked once, not again on the next read");
+        assertEquals(0, commits.get(), "Not committed, so a later commit cannot move past it");
+        assertNotNull(first.getException());
+        assertNotNull(second.getException());
+    }
+
+    @Test
     void noLaterSendOfAnAttemptIsMadeAfterAStepOutcomeCheckFailed() throws Exception {
         checkFails = new SQLException("connection refused", "08001");
         start(route -> route.doTry().to("receiver:orders").id("post-order").doCatch(Exception.class).end()
