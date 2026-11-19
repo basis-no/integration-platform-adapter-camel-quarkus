@@ -318,8 +318,9 @@ No Message Store schema change.
 - A replay record read again before its attempt has an outcome, for example
   after the attempt's own write failed, no longer redoes its listed steps on
   every read: a step whose redo this process already recorded for that attempt
-  is skipped, for each split part, loop iteration or branch. After a crash or in another process it redoes once more, as
-  before. Adapter 0.3.6 redid listed steps on every read.
+  is skipped, for each split part or multicast branch. The process remembers
+  its last 10,000 such redo sends. After a crash or in another process it
+  redoes once more, as before. Adapter 0.3.6 redid listed steps on every read.
 - Error-text masking also masks a URI that a value of another URI holds, as
   when URIs follow each other without white space in JSON
   (`{"next":"https://a/cb?state=1","upload":"https://b/up?sig=…"}`): before,

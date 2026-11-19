@@ -991,8 +991,9 @@ redo, with a warning, and so does a record whose values the store cannot read
 database never parses the record's own list, and a list with text after the
 array is malformed. A record read again before its attempt was completed or
 parked does not redo a step whose redo this process already recorded for that
-attempt (each split part, loop iteration or branch redoes it once), for example
-after the attempt's own write failed; after a crash or in
+attempt (each split part or multicast branch redoes it once; the process
+remembers its last 10,000 redo sends), for example after the attempt's own
+write failed; after a crash or in
 another process, it redoes once more. An application's own
 `StepOutcomeStore` bean must implement `isAuthorisedReplay` for redo to work;
 the default answers no.
