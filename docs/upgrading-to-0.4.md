@@ -340,6 +340,10 @@ The changelog's Unreleased section has the details; in short:
   longer reaches HTTP receivers; stored endpoints mask `?jwt=`, `?assertion=`
   and `?bearer=` values. An output checkpoint's `header-names` that names such a header refuses to
   start.
+- **A failed HTTP input's answer has no `x-bip-error`.** The caller of a
+  `platform-http` input whose processing failed gets the status and Camel's
+  empty body, without `x-bip-error` or `x-bip-dlq-at`; a caller that read the
+  failure text from that header gets the status only.
 - **Redo lists come only from the adapter's own replay.** A resend through the
   resend endpoint redoes its listed steps as before. A redo list that a tool
   writes on a record itself, or that an HTTP caller sends, is dropped with a
