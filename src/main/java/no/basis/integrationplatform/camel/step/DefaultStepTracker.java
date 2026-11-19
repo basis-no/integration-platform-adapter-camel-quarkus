@@ -344,11 +344,15 @@ public class DefaultStepTracker implements StepTracker {
         }
     }
 
-    /** The replay attempt and step of a redo, or {@code null} when the record claims no redo. */
+    /**
+     * The replay attempt, step and part of a redo, or {@code null} when the record claims no
+     * redo. Split parts, loop iterations and branches share a step key in 0.3.x; each redoes its
+     * send once.
+     */
     private static String redoKey(Exchange exchange, String idempotencyKey) {
         RedoClaim claim = exchange.getProperty(PlatformExchangeProperties.REDO_CLAIM, RedoClaim.class);
         return claim == null ? null : String.join("\n", claim.messageId(), claim.integration(), claim.topic(),
-                Integer.toString(claim.attempt()), idempotencyKey);
+                Integer.toString(claim.attempt()), idempotencyKey, StepVisits.path(exchange));
     }
 
     /**

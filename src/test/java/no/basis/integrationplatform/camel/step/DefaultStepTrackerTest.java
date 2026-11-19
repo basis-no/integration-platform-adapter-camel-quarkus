@@ -318,6 +318,26 @@ class DefaultStepTrackerTest {
     }
 
     @Test
+    void eachPartOfASplitRedoesItsSendOnceInAReplayAttempt() {
+        // In 0.3.x split parts share the step key; a redo still sends each part once.
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        for (int read = 0; read < 2; read++) {
+            for (String part : new String[]{"split#1[0]", "split#1[1]"}) {
+                Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+                exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+                exchange.setProperty(StepVisits.PATH, part);
+                replayRecord(exchange, "[\"notify-vendor\"]");
+                tracker.beforeSend(exchange);
+                assertEquals(read == 1, exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class),
+                        "Part " + part + ", read " + (read + 1));
+                if (read == 0) {
+                    tracker.recordDelivered(exchange);
+                }
+            }
+        }
+    }
+
+    @Test
     void redoStepsHeaderMatchesFullIdempotencyKeyToo() {
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");

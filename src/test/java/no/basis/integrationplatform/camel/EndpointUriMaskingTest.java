@@ -162,6 +162,15 @@ class EndpointUriMaskingTest {
     }
 
     @Test
+    void masksTheAdaptersNamesInsideAnotherParametersRawValue() {
+        // A raw value of a name the rule does not mask is split at '&' as any other value.
+        assertEquals("https://h/p?cb=RAW(https://x/cb?a=1&sig=xxxxxx&page=2",
+                EndpointUriMasking.mask("https://h/p?cb=RAW(https://x/cb?a=1&sig=s-1)&page=2"));
+        assertEquals("https://h/p?cb=RAW(a&key=xxxxxx&page=2", EndpointUriMasking.mask("https://h/p?cb=RAW(a&key=k-1)&page=2"));
+        assertEquals("https://h/p?cb=RAW{a&pwd=xxxxxx&page=2", EndpointUriMasking.mask("https://h/p?cb=RAW{a&pwd=p-1}&page=2"));
+    }
+
+    @Test
     void masksTheCredentialNamesAddedToTheHeaderRule() {
         assertEquals("https://idp.example/token?assertion=xxxxxx&jwt=xxxxxx&bearer=xxxxxx&page=2",
                 EndpointUriMasking.mask("https://idp.example/token?assertion=a-1&jwt=j-1&bearer=b-1&page=2"));

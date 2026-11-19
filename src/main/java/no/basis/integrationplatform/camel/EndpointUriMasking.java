@@ -244,11 +244,11 @@ public final class EndpointUriMasking {
             int ampersand = indexWithin(uri, '&', parameterStart, queryEnd);
             int parameterEnd = ampersand < 0 ? queryEnd : ampersand;
             int equals = indexWithin(uri, '=', parameterStart, parameterEnd);
-            if (equals >= 0) {
-                // Camel's RAW(...) or RAW{...} value may hold an '&': it ends at its closing bracket.
-                parameterEnd = rawValueEnd(uri, equals + 1, parameterEnd, queryEnd);
-            }
             if (equals >= 0 && isCredentialParameter(uri.substring(parameterStart, equals))) {
+                // Camel's RAW(...) or RAW{...} value may hold an '&': it ends at its closing bracket.
+                // Another parameter's raw value is still split at '&', so that a credential-like
+                // pair inside it is masked as before.
+                parameterEnd = rawValueEnd(uri, equals + 1, parameterEnd, queryEnd);
                 for (int index = equals + 1; index < parameterEnd; index++) {
                     masked[index] = true;
                 }
