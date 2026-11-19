@@ -251,7 +251,11 @@ No Message Store schema change.
   route busy past the poll interval. When the input route's error handler
   retried the call instead, each failed try was listed twice as `FAILED`. A
   calling send now records only its own step, and a `direct:` send records
-  none. Adapter 0.3.5 and 0.3.6 have the fault.
+  none. Nor does a `toD` whose target is known only when it sends, such as
+  `toD("${header.next}")`, when that target turns out to be such a route:
+  before, it was recorded `DELIVERED` when the route's dead letter channel
+  parked the message, so a resend skipped the whole route and recorded the
+  message `COMPLETED` without the send. Adapter 0.3.5 and 0.3.6 have the fault.
   Upgrade: a message that 0.3.5 or 0.3.6 recorded this way keeps its
   `DELIVERED` step and is still skipped. The README gives a way to find such
   messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);

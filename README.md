@@ -304,7 +304,10 @@ send in the input route. The calling `to("direct:…")` is internal and records
 nothing. When the sub-route's dead letter channel parks the message after the
 send failed, the step stays `FAILED`, so a later read of the record, a resend
 or a replay sends it again. The same holds when the sub-route has no error
-handler of its own and the input route's handler retries the call.
+handler of its own and the input route's handler retries the call. A `toD`
+whose target is known only when it sends, such as `toD("${header.next}")`, is
+tracked; when its target turns out to be such a route, it records nothing
+either, so a resend or a redo runs the route again.
 
 A later read can still follow a parked message. A commit fails after the DLQ
 publish when a receiver that accepts the connection and never answers kept the
@@ -358,11 +361,12 @@ after the upgrade, so it is still skipped. To find these messages:
 
 3. For each of them, read its attempts in `bip_message_attempt` (see
    [Read Model](#read-model)). A sub-route step listed as `SKIPPED` in
-   `steps_json` points to this case. Check at the receiver whether it got the
-   message.
+   `steps_json` points to this case, and so does a `toD` step listed as
+   `SKIPPED` with none of the sub-route's steps after it, when the `toD` calls
+   the sub-route. Check at the receiver whether it got the message.
 4. Resend a message the receiver did not get with the step in `redoSteps`,
-   together with any step whose output it uses (see
-   [Redo behavior](#redo-behavior)). Redo repeats the call with the same
+   together with the `toD` step that calls its sub-route, if any, and any step
+   whose output it uses (see [Redo behavior](#redo-behavior)). Redo repeats the call with the same
    `Idempotency-Key`.
 
 Every message that 0.3.5 or 0.3.6 parked after a failed send in a sub-route
