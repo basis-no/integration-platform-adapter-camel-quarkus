@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.util.List;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertNotSame;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -137,7 +138,10 @@ class PlatformRouteConfigurationTest {
 
             var errors = logs.at(java.util.logging.Level.SEVERE);
             assertEquals(1, errors.size());
-            assertSame(failure, errors.getFirst().getThrown());
+            // A masked copy, with the failure's class, message and stack trace.
+            assertEquals(failure.toString(), errors.getFirst().getThrown().toString());
+            org.junit.jupiter.api.Assertions.assertArrayEquals(failure.getStackTrace(),
+                    errors.getFirst().getThrown().getStackTrace());
             assertEquals("Message message-123 failed after its configured retries and is being sent to the dead letter queue",
                     LogCapture.text(errors.getFirst()));
         }
@@ -158,7 +162,10 @@ class PlatformRouteConfigurationTest {
 
             var errors = logs.at(java.util.logging.Level.SEVERE);
             assertEquals(1, errors.size());
-            assertSame(failure, errors.getFirst().getThrown());
+            // A masked copy, with the failure's class, message and stack trace.
+            assertEquals(failure.toString(), errors.getFirst().getThrown().toString());
+            org.junit.jupiter.api.Assertions.assertArrayEquals(failure.getStackTrace(),
+                    errors.getFirst().getThrown().getStackTrace());
             assertEquals("Message message-123 failed after its configured retries and is not parked: a step outcome "
                     + "was not checked or recorded, so it is consumed again", LogCapture.text(errors.getFirst()));
         }
@@ -257,5 +264,50 @@ class PlatformRouteConfigurationTest {
 
     private Exchange exchange() {
         return new DefaultExchange(new DefaultCamelContext());
+    }
+
+    @Test
+    void dlqParkingMasksTheCommonCredentialNamesAndAnApplicationsOwnBipKeyHeader() {
+        Exchange exchange = exchange();
+        exchange.setProperty(Exchange.EXCEPTION_CAUGHT, new IllegalStateException("HTTP operation failed invoking "
+                + "https://receiver.example/hook?code=fn-key-1&sig=sas-sig-1&page=2 with statusCode: 500"));
+        var message = exchange.getMessage();
+        for (String name : java.util.List.of("X-JWT-Assertion", "PrivateKey", "X-Bearer", "x-bip-partner-key",
+                "x-bip-upstream-token")) {
+            message.setHeader(name, "credential-value");
+        }
+        for (String name : java.util.List.of(PlatformHeaders.MESSAGE_ID, PlatformHeaders.CORRELATION_ID,
+                PlatformHeaders.IDEMPOTENCY_KEY, PlatformHeaders.SOURCE_SYSTEM, PlatformHeaders.TARGET_SYSTEM,
+                PlatformHeaders.CONTENT_TYPE, PlatformHeaders.SCHEMA_VERSION, PlatformHeaders.ATTEMPT,
+                PlatformHeaders.REPLAY)) {
+            message.setHeader(name, "envelope-value");
+        }
+
+        PlatformRouteConfiguration.prepareDlq(exchange);
+
+        for (String name : java.util.List.of("X-JWT-Assertion", "PrivateKey", "X-Bearer", "x-bip-partner-key",
+                "x-bip-upstream-token")) {
+            assertEquals("xxxxxx", message.getHeader(name), name);
+        }
+        for (String name : java.util.List.of(PlatformHeaders.MESSAGE_ID, PlatformHeaders.CORRELATION_ID,
+                PlatformHeaders.IDEMPOTENCY_KEY, PlatformHeaders.SOURCE_SYSTEM, PlatformHeaders.TARGET_SYSTEM,
+                PlatformHeaders.CONTENT_TYPE, PlatformHeaders.SCHEMA_VERSION, PlatformHeaders.ATTEMPT,
+                PlatformHeaders.REPLAY)) {
+            assertEquals("envelope-value", message.getHeader(name), name);
+        }
+        assertEquals("HTTP operation failed invoking https://receiver.example/hook?code=xxxxxx&sig=xxxxxx&page=2 "
+                + "with statusCode: 500", message.getHeader(PlatformHeaders.ERROR));
+    }
+
+    @Test
+    void theCredentialNameRuleKeepsOnlyTheAdaptersOwnEnvelopeNamesReadable() {
+        for (String name : java.util.List.of("X-JWT-Assertion", "jwt", "PrivateKey", "bearer", "x-bip-api-key",
+                "x-bip-custom-token", "x-bip-message-id-key")) {
+            assertTrue(PlatformRouteConfiguration.isCredentialHeader(name), name);
+        }
+        for (String name : java.util.List.of("x-bip-message-id", "X-BIP-IDEMPOTENCY-KEY", "Idempotency-Key",
+                "x-bip-redo-steps", "x-bip-error", "x-bip-dlq-at", "x-bip-custom", "Content-Type")) {
+            assertFalse(PlatformRouteConfiguration.isCredentialHeader(name), name);
+        }
     }
 }

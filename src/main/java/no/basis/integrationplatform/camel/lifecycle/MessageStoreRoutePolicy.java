@@ -1,8 +1,10 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import no.basis.integrationplatform.camel.KafkaRecordHeaders;
 import no.basis.integrationplatform.camel.PlatformExchangeProperties;
 import no.basis.integrationplatform.camel.PlatformHeaders;
+import no.basis.integrationplatform.camel.PlatformRouteConfiguration;
 import no.basis.integrationplatform.camel.StoreErrorClass;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.model.MessageStatus;
@@ -293,7 +295,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             }
             if (managed(exchange)) {
                 LOG.error("Message {} is not committed: its outcome could not be recorded, so it is consumed again{}",
-                        exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e), e);
+                        exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), StoreErrorClass.logSuffix(e),
+                        ErrorTextMasking.forLog(e));
             }
             readAgain(route, exchange, "Failed to record message outcome; Kafka offset was not committed", e);
             return;
@@ -303,7 +306,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             if (managed(exchange)) {
                 LOG.error("Message {} is not committed: a step outcome was not checked or recorded, so it is consumed "
                         + "again{}", exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID),
-                        StoreErrorClass.logSuffix(unrecorded), unrecorded);
+                        StoreErrorClass.logSuffix(unrecorded), ErrorTextMasking.forLog(unrecorded));
             }
             readAgain(route, exchange, "A step outcome was not checked or recorded; Kafka offset was not committed",
                     unrecorded);
@@ -363,18 +366,20 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 && recordDataInARow.getOrDefault(partition(position), 0) >= MAX_RECORD_DATA_IN_A_ROW) {
             LOG.error("Message {} at {} is not committed: {} records in a row on this partition could not be stored for "
                             + "their own data, so this one is held back; check the Message Store's settings and schema. "
-                            + "{} storeError=schema", messageId, position, MAX_RECORD_DATA_IN_A_ROW, reason);
-            readAgain(route, exchange, reason + "; held back after " + MAX_RECORD_DATA_IN_A_ROW + " such records in a row",
-                    null);
+                            + "{} storeError=schema", messageId, position, MAX_RECORD_DATA_IN_A_ROW,
+                    ErrorTextMasking.mask(reason));
+            readAgain(route, exchange, ErrorTextMasking.mask(reason) + "; held back after " + MAX_RECORD_DATA_IN_A_ROW
+                    + " such records in a row", null);
             return;
         }
         // The parked copy and the row name the record: the DLQ copy carries no Kafka position,
         // and a derived id is traced back to the record only through it.
+        // The parked copy's x-bip-error masks this text once, and so does the row below.
         String stored = position == null ? reason : reason + " (record " + position + ")";
         if (!completed && !dlqParked(exchange) && !parkedForData.contains(parkedKey) && !park(route, exchange, stored)) {
             LOG.error("Message {} at {} is not committed: it could not be parked for its own data; {} storeError=record-data",
-                    messageId, position, reason);
-            readAgain(route, exchange, "Not parked: " + reason, null);
+                    messageId, position, ErrorTextMasking.mask(reason));
+            readAgain(route, exchange, "Not parked: " + ErrorTextMasking.mask(reason), null);
             return;
         }
         MessageAttemptResult full = result(route, exchange);
@@ -383,7 +388,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
                 full.payloadDeletedAt(), full.replayable(),
                 full.replayDisabledReason(), full.integration(), full.routeId(), full.attempt(), full.autoRedelivered(),
                 full.autoRedeliveryCount(), full.autoRedeliveryMax(), full.occurredAt(),
-                completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), stored);
+                completed ? MessageStatus.COMPLETED : MessageStatus.DLQ, List.of(), ErrorTextMasking.mask(stored));
         if (!completed && position != null) {
             parkedForData.add(parkedKey);
         }
@@ -391,7 +396,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             recordReduced(reduced);
         } catch (Exception e) {
             LOG.error("Message {} at {} is not committed: its reduced outcome could not be recorded{}", messageId,
-                    position, StoreErrorClass.logSuffix(e), e);
+                    position, StoreErrorClass.logSuffix(e), ErrorTextMasking.forLog(e));
             readAgain(route, exchange, "Failed to record the reduced outcome", e);
             return;
         }
@@ -409,7 +414,7 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         // Parked and recorded: the consumer goes on with the next record.
         exchange.setException(null);
         LOG.error("Message {} from record {} was {}: {} storeError=record-data", messageId, position,
-                completed ? "recorded without its envelope values" : "parked", reason);
+                completed ? "recorded without its envelope values" : "parked", ErrorTextMasking.mask(reason));
     }
 
     /**
@@ -477,7 +482,8 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
     }
 
     private void fail(Exchange exchange, String message, Throwable cause) {
-        var failure = new IllegalStateException(message, cause);
+        // Camel logs the failure a route policy throws; a store's text may name a URI.
+        var failure = new IllegalStateException(message, ErrorTextMasking.forLog(cause));
         // Camel logs/ignores exceptions thrown by route-policy completion. Keep
         // the exchange failed as well, so the Kafka consumer can seek/retry.
         exchange.setException(failure);
@@ -835,7 +841,10 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
             return;
         }
         for (String name : List.copyOf(exchange.getMessage().getHeaders().keySet())) {
+            // A credential-like name stays bytes, so that an HTTP send withholds it like any
+            // other credential header of the consumed record.
             if (name.regionMatches(true, 0, ENVELOPE_PREFIX, 0, ENVELOPE_PREFIX.length())
+                    && !PlatformRouteConfiguration.isCredentialHeader(name)
                     && exchange.getMessage().getHeader(name) instanceof byte[] bytes) {
                 exchange.getMessage().setHeader(name, new String(bytes, StandardCharsets.UTF_8));
             }
@@ -925,12 +934,12 @@ public class MessageStoreRoutePolicy extends RoutePolicySupport {
         return Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
     }
 
+    // Stored, published as a status event and shown to operators: URIs keep no credential.
     private String errorMessage(Throwable failure) {
         if (failure == null) {
             return null;
         }
-        String message = failure.getMessage() == null ? failure.getClass().getName() : failure.getMessage();
         // PostgreSQL text cannot hold a NUL; a failure's own text must not make its record unstorable.
-        return message.replace('\u0000', '\uFFFD');
+        return ErrorTextMasking.message(failure).replace('\u0000', '\uFFFD');
     }
 }

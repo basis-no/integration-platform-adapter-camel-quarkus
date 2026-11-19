@@ -59,12 +59,24 @@ public final class EndpointUriMasking {
      * @return the URI to store or log, or null for null
      */
     public static String mask(String endpointUri) {
+        return mask(endpointUri, System.nanoTime() + MASK_TIMEOUT_NANOS);
+    }
+
+    /**
+     * Masks the credentials in an endpoint URI within a deadline the caller sets, for example
+     * one shared by every URI of an error text.
+     *
+     * @param endpointUri the URI, or null
+     * @param deadlineNanos the {@link System#nanoTime()} after which the URI is stored as a mask
+     * @return the URI to store or log, or null for null
+     */
+    static String mask(String endpointUri, long deadlineNanos) {
         if (endpointUri == null) {
             return null;
         }
         Sanitized camel;
         try {
-            camel = camelSanitized(endpointUri, System.nanoTime() + MASK_TIMEOUT_NANOS);
+            camel = camelSanitized(endpointUri, deadlineNanos);
         } catch (MaskTimeout e) {
             return MASK;
         }
@@ -374,7 +386,7 @@ public final class EndpointUriMasking {
 
         @Override
         public char charAt(int index) {
-            if ((++reads & 0xFFF) == 0 && System.nanoTime() > deadline) {
+            if ((++reads & 0xFFF) == 0 && System.nanoTime() - deadline > 0) {
                 throw new MaskTimeout();
             }
             return text.charAt(index);

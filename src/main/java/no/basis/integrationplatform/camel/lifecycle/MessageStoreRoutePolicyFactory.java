@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.lifecycle;
 
+import no.basis.integrationplatform.camel.ErrorTextMasking;
 import io.quarkus.runtime.StartupEvent;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.enterprise.event.Observes;
@@ -159,7 +160,8 @@ public class MessageStoreRoutePolicyFactory implements RoutePolicyFactory {
             group = kafka.getConfiguration().getGroupId();
         } catch (RuntimeException unreadable) {
             // The route fails on its own when Camel creates its consumer; this check only warns.
-            LOG.debug("Could not read the Kafka consumer settings of route {}", routeId, unreadable);
+            LOG.debug("Could not read the Kafka consumer settings of route {}", routeId,
+                    ErrorTextMasking.forLog(unreadable));
             return;
         }
         Object effective = consumer.get("auto.offset.reset");
