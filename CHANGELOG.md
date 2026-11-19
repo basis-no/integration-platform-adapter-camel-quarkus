@@ -65,6 +65,17 @@
   endpoint's `error` instead; the failure itself is in the log. An application
   whose own replay service or exception mapper chose the answer to a failure
   gets the `500` instead.
+- Security: a failed HTTP input no longer sends its caller the failure text.
+  In 0.3.1 to 0.3.6 and 0.4.0-rc1 the adapter set `x-bip-error` and
+  `x-bip-dlq-at` on the exchange of an input that is not a managed Kafka input
+  before it handed the failure back, and `platform-http` copies an exchange's
+  headers into its answer, so the caller received the failure text, which
+  names a failed send's receiver URL, query included, unmasked. The dead-letter
+  route now hands such a failure back before anything sets these headers (see
+  the `onException` entry below), so the caller gets the status and Camel's
+  empty body; `HttpCallerErrorAnswerTest` holds this.
+  Upgrade: an HTTP caller that read `x-bip-error` from the answer gets the
+  status only.
 - Security: a consumed record's `x-bip-redo-steps` makes the adapter send a
   delivered step again only for the adapter's own replay, and only once. Before,
   any record that carried the header and the id of a delivered message, from

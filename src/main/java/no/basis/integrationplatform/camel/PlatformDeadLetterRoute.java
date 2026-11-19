@@ -117,9 +117,11 @@ public class PlatformDeadLetterRoute extends RouteBuilder {
         @Override
         public boolean process(Exchange exchange, AsyncCallback callback) {
             if (!managedKafkaInput(exchange)) {
-                // As in 0.3.6, only a managed Kafka input is parked. A request on an exchange of its
-                // own, or an input from another source, fails back to its caller with its own
-                // failure, without a parked record or the parking ERROR: the caller owns recovery.
+                // Only a managed Kafka input is parked. A request on an exchange of its own, or an
+                // input from another source, fails back to its caller with its own failure: the
+                // caller owns recovery. It is handed back before prepareDlq, so it gets no parking
+                // ERROR and no x-bip-error or x-bip-dlq-at, which platform-http would copy into its
+                // answer. 0.3.6 and 0.4.0-rc1 set both headers and logged that ERROR first.
                 Throwable original = exchange.getProperty(Exchange.EXCEPTION_CAUGHT, Throwable.class);
                 Throwable unrecorded = StepOutcomeFailure.of(exchange);
                 exchange.setException(original != null ? original : unrecorded != null ? unrecorded
