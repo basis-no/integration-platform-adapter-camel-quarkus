@@ -1,14 +1,18 @@
 package no.basis.integrationplatform.camel.step;
 
 import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.model.StepStatus;
 
 import javax.sql.DataSource;
+import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.sql.Timestamp;
 import java.util.Map;
 import java.util.Optional;
@@ -18,6 +22,7 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     /** Canonical durable step-outcome table. */
     public static final String TABLE_NAME = "bip_step_outcome";
     private static final ObjectMapper JSON = new ObjectMapper();
+    private static final String SAVEPOINT = "bip_replay_audit_read";
     private static final TypeReference<Map<String, Object>> MAP_TYPE = new TypeReference<>() {
     };
 
@@ -108,6 +113,27 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             where bip_step_outcome.status <> 'DELIVERED'
             """;
 
+    // Only the adapter's own replay carries a redo list: the replay service writes its audit
+    // row before it publishes and marks it PUBLISHED after, so both states count. A FAILED row
+    // does not, nor does an attempt that is completed or parked: a redo runs once. A FAILED
+    // attempt is read again, so it may still redo. The lists are compared here, not by the
+    // database, which never parses the record's own text.
+    private static final String AUTHORISED_REPLAY_SQL = """
+            select a.redo_steps::text
+            from bip_message_replay_audit a
+            where a.message_id = ?
+              and a.integration = ?
+              and a.target_topic = ?
+              and a.replay_attempt = ?
+              and a.status in ('REQUESTED', 'PUBLISHED')
+              and not exists (
+                      select 1
+                      from bip_message_attempt m
+                      where m.message_id = a.message_id
+                        and m.attempt = a.replay_attempt
+                        and m.status <> 'FAILED')
+            """;
+
     private final DataSource dataSource;
     private final MessageStoreTimeouts timeouts;
 
@@ -142,7 +168,7 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
                 }
             });
         } catch (Exception e) {
-            throw new StepOutcomeStoreException("Failed to check step outcome for idempotency key " + idempotencyKey, e);
+            throw new StepOutcomeStoreException("Failed to check step outcome for idempotency key " + LogText.escape(idempotencyKey), e);
         }
     }
 
@@ -173,7 +199,66 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             });
         } catch (Exception e) {
             throw new StepOutcomeStoreException(
-                    "Failed to read output checkpoint for idempotency key " + idempotencyKey, e);
+                    "Failed to read output checkpoint for idempotency key " + LogText.escape(idempotencyKey), e);
+        }
+    }
+
+    @Override
+    public boolean isAuthorisedReplay(RedoClaim claim) {
+        try {
+            return timeouts.inTransactionOrJoin(dataSource, connection -> {
+                // A failed statement aborts the whole transaction, also an application's own one
+                // this call joined. A refused read drops the redo list and the attempt goes on, so
+                // the read runs under a savepoint that undoes its failure. It is set in SQL: the pool
+                // and pgjdbc's XA connection refuse JDBC's rollback(Savepoint) in a JTA transaction.
+                SQLException notSet = setSavepoint(connection);
+                boolean savepoint = notSet == null;
+                try (PreparedStatement statement = timeouts.prepare(connection, AUTHORISED_REPLAY_SQL)) {
+                    statement.setString(1, claim.messageId());
+                    statement.setString(2, claim.integration());
+                    statement.setString(3, claim.topic());
+                    statement.setInt(4, claim.attempt());
+                    JsonNode claimed = JSON.readTree(claim.redoStepsJson());
+                    boolean authorised = false;
+                    try (ResultSet resultSet = statement.executeQuery()) {
+                        while (!authorised && resultSet.next()) {
+                            authorised = claimed.equals(JSON.readTree(resultSet.getString(1)));
+                        }
+                    }
+                    if (savepoint) {
+                        execute(connection, "release savepoint " + SAVEPOINT);
+                    }
+                    return authorised;
+                } catch (SQLException e) {
+                    if (savepoint) {
+                        try {
+                            // Undone and gone, so the rest of the transaction runs outside it.
+                            execute(connection, "rollback to savepoint " + SAVEPOINT);
+                            execute(connection, "release savepoint " + SAVEPOINT);
+                        } catch (SQLException rollback) {
+                            // The transaction stays aborted: report that, so the attempt does not go on.
+                            rollback.addSuppressed(e);
+                            throw rollback;
+                        }
+                    } else {
+                        e.addSuppressed(notSet);
+                    }
+                    throw e;
+                } catch (Exception e) {
+                    // Nothing failed in the database: the savepoint is only released.
+                    if (savepoint) {
+                        try {
+                            execute(connection, "release savepoint " + SAVEPOINT);
+                        } catch (SQLException release) {
+                            e.addSuppressed(release);
+                        }
+                    }
+                    throw e;
+                }
+            });
+        } catch (Exception e) {
+            throw new StepOutcomeStoreException("Failed to check the replay audit for message "
+                    + LogText.escape(claim.messageId()), e);
         }
     }
 
@@ -190,6 +275,24 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
     @Override
     public void recordFailed(StepResult step) {
         record(step, StepStatus.FAILED, RECORD_FAILED_SQL, null);
+    }
+
+    // Null when the savepoint was set, otherwise why not. A savepoint refused before it reaches the
+    // server leaves the read without one, as before; one the server refuses has aborted a joined
+    // transaction already, so the read fails as a store failure and the record is read again.
+    private SQLException setSavepoint(Connection connection) {
+        try {
+            execute(connection, "savepoint " + SAVEPOINT);
+            return null;
+        } catch (SQLException e) {
+            return e;
+        }
+    }
+
+    private void execute(Connection connection, String sql) throws SQLException {
+        try (PreparedStatement statement = timeouts.prepare(connection, sql)) {
+            statement.execute();
+        }
     }
 
     private void record(StepResult step, StepStatus status, String sql, StepOutputCheckpoint checkpoint) {
@@ -212,7 +315,7 @@ public class PostgresStepOutcomeStore implements StepOutcomeStore {
             });
         } catch (Exception e) {
             throw new StepOutcomeStoreException("Failed to record " + status + " step outcome for "
-                    + step.idempotencyKey(), e);
+                    + LogText.escape(step.idempotencyKey()), e);
         }
     }
 

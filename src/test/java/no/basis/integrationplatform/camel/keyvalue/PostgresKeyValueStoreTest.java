@@ -292,6 +292,24 @@ class PostgresKeyValueStoreTest {
                 () -> state.put("buffer/ones", ones));
         assertEquals("23514", ((SQLException) rejected.getCause()).getSQLState());
         assertEquals(1, count("select count(*) from bip_key_value"));
+        // The error is stored, parked and logged: it names the key and the limit, not the row.
+        assertEquals("Key-Value Store rejected the write (write key buffer/ones): a value is at most 65536 bytes as "
+                + "stored JSON text (SQLSTATE 23514, bip_key_value_value_check)", rejected.getMessage());
+        for (Throwable cause = rejected; cause != null; cause = cause.getCause()) {
+            assertFalse(String.valueOf(cause.getMessage()).contains("1, 1, 1"), "No stored value in " + cause);
+            assertFalse(String.valueOf(cause.getMessage()).contains("Failing row"), "No failing row in " + cause);
+        }
+    }
+
+    @Test
+    void aValueTheDatabaseCannotStoreIsRefusedWithoutItsText() throws Exception {
+        KeyValueLimitException rejected = assertThrows(KeyValueLimitException.class,
+                () -> state.put("cursor/nul", TextNode.valueOf("secret-value\u0000x")));
+        assertTrue(rejected.getMessage().startsWith("Key-Value Store rejected the write (write key cursor/nul): the "
+                + "database cannot store the value"), rejected.getMessage());
+        for (Throwable cause = rejected; cause != null; cause = cause.getCause()) {
+            assertFalse(String.valueOf(cause.getMessage()).contains("secret-value"), "No stored value in " + cause);
+        }
     }
 
     @Test

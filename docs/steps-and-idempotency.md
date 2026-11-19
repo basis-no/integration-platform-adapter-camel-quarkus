@@ -94,9 +94,11 @@ the steps it records, so both adapters store the same value for the same URI:
   the adapter uses for the headers it masks in a DLQ record: `Authorization`,
   cookies, authentication challenges, names containing secret, token, password,
   passwd, credential, session, signature, apikey, api-key, api_key,
-  subscription-key, private-key or auth (such as `Signature` or
-  `X-Amz-Credential`), or ending in `-key` or `_key` (such as
-  `subscription-key`), but not `x-bip-*` or `Idempotency-Key`; also the names
+  subscription-key, private-key, auth, assertion, privatekey, jwt or bearer
+  (such as `Signature`, `X-Amz-Credential` or `X-JWT-Assertion`), or ending in
+  `-key` or `_key` (such as `subscription-key`), but not the adapter's own
+  envelope headers (such as `x-bip-message-id` or `x-bip-idempotency-key`) or
+  `Idempotency-Key`; also the names
   `key`, `code`, `sig` and `pwd`, and names containing `passphrase`,
   `passcode`, `privatekey`, `accesskey`, `accountkey` or `connectionstring`.
   Parameter names are compared after percent-decoding (an escape that is not
@@ -413,8 +415,8 @@ no call on a later replay, which restores the checkpoint.
 - **No credentials:** startup refuses a credential-like name in
   `header-names` (the rule that masks header values in parked DLQ records:
   `Authorization`, `Cookie`, `Set-Cookie`, names containing `token`,
-  `secret`, `password`, `session`, `auth` and the like, and names ending in
-  `-key` or `_key`), naming each one. A credential restored on replay would be
+  `secret`, `password`, `session`, `auth`, `jwt`, `bearer` and the like, and
+  names ending in `-key` or `_key`), naming each one. A credential restored on replay would be
   stale and kept for the whole retention; obtain a fresh one on each attempt
   instead. The rule goes by the name only, so a harmless header whose name
   matches it, such as `X-Partition-Key`, `X-Idempotency-Key`, `X-Author` or

@@ -33,8 +33,9 @@ Kafka producer publishes them with the message, including `Authorization`, API
 keys and cookies, unmasked. Anyone who can read the topic can read them. A
 Kafka send that published a header with a credential-like name
 (`Authorization`, cookies, authentication challenges, and names containing
-secret, token, password, credential, session, signature or auth, or ending in
-`-key` or `_key`; not `x-bip-*` or `Idempotency-Key`) logs a warning once per
+secret, token, password, credential, session, signature, auth, assertion,
+privatekey, jwt or bearer, or ending in `-key` or `_key`; not the adapter's own
+envelope headers or `Idempotency-Key`) logs a warning once per
 route and header name. The warning names the header, never its value, and says
 how to remove it. What is published does not change. The check runs after a
 successful `to` or `toD`, against the endpoint the send used, including a `toD`

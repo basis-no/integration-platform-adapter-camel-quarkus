@@ -162,8 +162,11 @@ class StoreWriteFailureTest {
         read("message-1");
         assertEquals(1, receiver.received().size());
 
-        // A resend is a new record, at another offset.
+        // A resend is a new record, at another offset, which the replay service audited before it published it.
         offset.set(8);
+        execute("insert into bip_message_replay_audit (replay_id, message_id, integration, replay_attempt, redo_steps,"
+                + " target_topic, status, requested_at) values ('" + java.util.UUID.randomUUID() + "', 'message-1',"
+                + " 'order-pipeline', 2, '[\"post-order\"]'::jsonb, 'bip.order-pipeline.in', 'PUBLISHED', now())");
         send("message-1", "[\"post-order\"]");
 
         assertEquals(2, receiver.received().size(), "The mark belonged to the first record only");

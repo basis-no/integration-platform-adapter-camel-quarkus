@@ -153,6 +153,24 @@ class PostgresKafkaMessageReplayServiceTest {
     }
 
     @Test
+    void aPublishedReplayWhoseMarkFailsSucceedsAndStaysRequested() throws Exception {
+        sink.record(result("message-123", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
+        update("create or replace function refuse_published() returns trigger language plpgsql as $$ begin "
+                + "if new.status = 'PUBLISHED' then raise exception 'mark refused'; end if; return new; end $$");
+        update("create trigger refuse_published before update on bip_message_replay_audit for each row "
+                + "execute function refuse_published()");
+        try {
+            // The record was published: a failure here would invite a second request, and a second redo.
+            MessageReplayResult result = replayService.replay(new MessageReplayRequest(
+                    "message-123", "operator@example.com", "Retry after vendor outage", List.of("sftp")));
+
+            assertEquals("REQUESTED", auditValue(result.replayId(), "status"));
+        } finally {
+            update("drop trigger refuse_published on bip_message_replay_audit");
+        }
+    }
+
+    @Test
     void aReplayRecordIsKeyedByTheStoredCorrelationIdAndHasNoKeyWithoutOne() throws Exception {
         sink.record(result("message-keyed", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));
         sink.record(result("message-unkeyed", 1, "payload-body".getBytes(StandardCharsets.UTF_8), true, null));

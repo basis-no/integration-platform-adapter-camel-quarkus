@@ -30,7 +30,7 @@ import java.util.List;
  * @param occurredAt terminal outcome time
  * @param status terminal message status
  * @param steps observed durable step outcomes
- * @param error terminal error, when present
+ * @param error terminal error, when present; kept as it is, so the adapter passes it masked
  */
 public record MessageAttemptResult(
         int schemaVersion,

@@ -57,7 +57,7 @@ final class HttpClientRetries {
                     .withProperty("automaticRetriesDisabled", value).withMandatory(true).bind();
         } catch (RuntimeException unsupported) {
             LOG.warn("Could not set the {} component's own client retries; a 503 or 429 may be "
-                    + "repeated outside the adapter's redeliveries: {}", name, unsupported.getMessage());
+                    + "repeated outside the adapter's redeliveries: {}", name, ErrorTextMasking.message(unsupported));
         }
     }
 

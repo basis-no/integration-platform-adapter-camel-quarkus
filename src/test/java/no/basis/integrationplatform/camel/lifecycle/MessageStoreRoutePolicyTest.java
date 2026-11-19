@@ -837,7 +837,9 @@ class MessageStoreRoutePolicyTest {
             assertEquals(1, errors.size());
             String logged = no.basis.integrationplatform.camel.LogCapture.text(errors.getFirst());
             assertFalse(logged.matches("(?s).*[\\r\\n\\t\\u0085\\u2028\\u2029].*"), "one line: " + logged);
-            assertTrue(logged.contains("Payload reference has expired: s3://b/k 2026-01-01 ERROR forged"), logged);
+            // Escaped as every value from a record is: one line, and nothing hidden.
+            assertTrue(logged.startsWith("Message m-1\\u000d\\u000aforged\\u2028line\\u2029\\u0085\\u0009end "), logged);
+            assertTrue(logged.contains("Payload reference has expired: s3://b/k\\u000a2026-01-01 ERROR forged"), logged);
         }
         assertTrue(exchange.isRouteStop());
     }

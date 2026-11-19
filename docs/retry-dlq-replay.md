@@ -176,6 +176,41 @@ captured payload to `basis.message-store.dlq-uri`, preserves the envelope, adds
 `x-bip-error` and `x-bip-dlq-at`, records `DLQ`, and only then commits the input
 offset. A replay's `x-bip-redo-steps` is not carried; see [Redo Steps](#redo-steps).
 
+The failure text in `x-bip-error`, in the Message Store's error columns, in the
+attempt's steps and in the adapter's log lines has every URI in it masked by
+the stored-endpoint rule ([Stored Endpoints](steps-and-idempotency.md#stored-endpoints)):
+a receiver URL that a failed send's exception names keeps no user info, key or
+signature. Each text is masked once, where the adapter takes it from the
+failure, as the .NET adapter does, so both adapters store the same text: a
+second pass would mask some texts further (`http://host:8080/a?b=c@d` is stored
+as `http://host:xxxxxx@d`, and a second pass would make it `http://xxxxxx@d`),
+and no sink or log line masks a masked text again. A URI is a scheme (a
+letter, then letters, digits, `+`, `-` or `.`) followed by `://`, up to the next white space, `<` or `>`; a quote that
+ends it is not part of it. One deadline of about a second covers the whole
+text, and at most 20 URIs are masked; any URI past either is replaced by
+`xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
+needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`, which a
+structured log shows as the exception class) whose text names each original
+class, with the stack traces kept and the messages of the failure, its causes
+and its suppressed failures masked the same way. The lines of Camel's error
+handlers that the adapter installs are masked too, and so is the failure that
+Camel's `FatalFallbackErrorHandler` logs when parking a managed Kafka input
+fails, as are the causes of the adapter's own not-parked, not-committed and
+reduced-outcome failures and of the Message Store contract check's startup
+failure. Not covered: a failure of the parking endpoint or route itself, whose
+text Camel logs as it is (keep credentials out of a `direct:` parking route's
+exceptions and out of `basis.message-store.dlq-uri`); for an input that is not a managed Kafka input, which gets
+its original failure back, Camel's `FatalFallbackErrorHandler` line and the
+consumer's own failure line (for example a timer's or file consumer's
+`LoggingExceptionHandler`, or camel-kafka's line for an exchange that ends
+failed); the Kafka client's own log lines; other text in an exception message,
+and credentials that are not in a `scheme://` URI, such as Camel's
+`scheme:path?query` form, a fragment (`#access_token=…`), `;` parameters, a
+`user:pass@host` without a scheme or a URI nested in a query value. Do not put
+credentials in exception messages of your own.
+Headers the record or the route carries are masked in the parked copy by the
+credential-name rule below.
+
 The message counts as parked only after the DLQ endpoint accepted the record; a
 Kafka producer with Camel's default `requestRequiredAcks=all` returns once the
 broker acknowledged it. The publish runs in the adapter's
@@ -347,7 +382,12 @@ POST /admin/messages/{messageId}/resend
 The replay service validates the stored inline payload or S3 claim check,
 writes a `bip_message_replay_audit` row, then publishes to the configured input
 topic. It retains the message id and envelope, sets `x-bip-replay=true`, and
-sets `x-bip-attempt` to the previous attempt plus one.
+sets `x-bip-attempt` to the previous attempt plus one. An `x-bip-attempt` or
+`x-bip-schema-version` that is not a whole number in the `int` range (ASCII
+digits with an optional sign; surrounding spaces, tabs and line breaks are
+ignored) is read as 1, with a warning that names the header; an attempt below 1 is read
+as 1 too. A readable schema version, also 0 or a negative number, is kept as it
+is, as the .NET adapter keeps it.
 
 An integration replays only its own messages, to the input that recorded them.
 Before it writes the audit row or publishes anything, the replay service
@@ -363,6 +403,16 @@ refuses a message:
 The endpoint answers `409 Conflict` with the reason. A message recorded by a
 route that has since changed needs review; send its payload again as a new
 message once it is safe to process.
+
+The answer is JSON with `status` (`SUCCEEDED` or `FAILED`), `messageId` and,
+for a failure, `error`. A message that is not stored is answered
+`404 Not Found`; a replay that is refused or fails, and a request body that is
+not JSON, `409 Conflict` with the reason. A failure the endpoint does not
+expect, also one that carries an HTTP answer of its own, is answered
+`500 Internal Server Error` with a fixed `error`: whether the replay was
+published is not known, so check the replay audit and the integration's log
+before you resend. No answer carries a failure's type or
+stack trace, in any launch mode; the log keeps the failure, masked.
 
 The caller, typically an operator's tool, supplies operator identity and reason
 through the `x-dashboard-user` and `x-dashboard-reason` headers or the JSON
@@ -418,6 +468,41 @@ adapter publishes the JSON array in `x-bip-redo-steps` and stores it in replay
 audit. A listed step id or full idempotency key bypasses the delivered-step
 skip.
 
+Only that replay can redo a step, and only once. A consumed record's
+`x-bip-redo-steps` is honoured only when all of these hold:
+
+- the record comes from a managed Kafka input; on any other input, such as an
+  HTTP request, a timer or a file, the header is dropped with a warning;
+- replay is enabled (`basis.message-store.replay.enabled`), and the record
+  carries `x-bip-replay: true`;
+- `bip_message_replay_audit` has a row for the record's `x-bip-message-id`,
+  this integration, the topic the record was consumed from and the record's
+  `x-bip-attempt`, with the same redo list (compared as JSON), in state
+  `REQUESTED` or `PUBLISHED`. Both count, because the record can be consumed
+  before the replay service marks its row `PUBLISHED`; `FAILED` does not;
+- `bip_message_attempt` has no completed or parked row for that message id and
+  attempt. Once the replay's attempt is completed or parked, its record, or a
+  copy of it, no longer redoes anything. An attempt recorded `FAILED` was not
+  committed and is read again, so it may still redo. A later read of a
+  completed or parked attempt that fails, such as a copy of its record, does
+  not turn it `FAILED`: the Message Store keeps the attempt as it ended. Its
+  summary in `bip_message_log` still shows the failed read until the copy is
+  parked or completes. Every writer of `bip_message_attempt` on the store must
+  keep this rule, the .NET adapter and older adapter versions included.
+
+On any other record the list is ignored with a warning, and its delivered
+steps are skipped as on any redelivery. The Message Store is asked once per
+attempt, when the list names a delivered step. If it cannot be read, the send
+fails as when a step outcome cannot be checked: the record is not committed and
+is read again. A login that may not read `bip_message_replay_audit` gets no
+redo, with a warning, and so does a record whose values the store cannot read
+(SQLSTATE class 22). The lists are compared by the adapter, as JSON; the
+database never parses the record's own list, and a list with text after the
+array is malformed. A record read again before its attempt was completed or
+parked, for example after a crash, redoes once more. An application's own
+`StepOutcomeStore` bean must implement `isAuthorisedReplay` for redo to work;
+the default answers no.
+
 Redo deliberately repeats an external effect. It is safe only when the
 receiver honors the stable idempotency key or repetition is acceptable.
 
@@ -442,9 +527,9 @@ list, and a downstream integration that consumed a published record with the
 same message id would send its own steps with the same ids again. A handler
 that restores the original message, for example with `useOriginalMessage()`,
 gets the header back; the next `to` or `toD` and DLQ parking remove it again.
-`x-bip-replay` and `x-bip-attempt` are still forwarded; nothing in the adapter
-acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
-the header only, not its value.
+`x-bip-replay` and `x-bip-attempt` are still forwarded; at a Kafka input,
+`x-bip-replay` is one of the conditions above. The warning for a malformed list
+names the header only, not its value.
 
 ## Schema Version Startup Gate
 

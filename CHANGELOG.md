@@ -2,6 +2,118 @@
 
 ## Unreleased
 
+- Security: credentials in error texts no longer reach the Message Store, the
+  shared DLQ topic or the log. A failed send's exception names the receiver's
+  URL, query included, and the adapter stored that text in the message log, the
+  attempt and its steps and the step ledger, published it in `x-bip-error` on
+  the DLQ topic, and logged it. Every URI in such a text is now masked by the
+  stored-endpoint rule (user info, and parameters such as `code`, `sig`, `key`
+  or a credential-like name), also in the failures the adapter logs, whose class
+  names and stack traces stay, and in the lines of Camel's error handlers the
+  adapter installs, including the failure logged when parking fails. Each text
+  is masked once, as the .NET adapter does, so that both adapters store the same
+  text for the same failure. Not
+  covered: a failure of the parking endpoint or route itself; for an input that
+  is not a managed Kafka input, Camel's
+  `FatalFallbackErrorHandler` line and the consumer's own failure line; the
+  Kafka client's own logs; and credentials that are not in a `scheme://` URI.
+  See
+  [Terminal Kafka Failure](docs/retry-dlq-replay.md#terminal-kafka-failure).
+  Upgrade: error texts show `xxxxxx` where they showed credentials; a DLQ reader
+  or alert that matched an unmasked value in `x-bip-error` must match the
+  masked form. A text with a URI that cannot be masked within about a second,
+  or with more than 20 URIs, shows `xxxxxx` for the rest. A structured log shows
+  a masked failure's class as `ErrorTextMasking$MaskedFailure`, with the
+  original class in its text. Rows and DLQ records written before keep their
+  text: rotate any credential that has appeared in the URL of a failed send.
+- Security: the credential-name rule masks `X-JWT-Assertion`, `PrivateKey` and
+  other names containing `assertion`, `privatekey`, `jwt` or `bearer`, and no
+  longer exempts every `x-bip-*` name: only the adapter's own envelope headers
+  and `Idempotency-Key` stay readable. The rule decides which header values are
+  masked in a parked DLQ record, which of a consumed record's credential headers
+  an HTTP send withholds, which published headers the Kafka-publish warning
+  names, which query parameters a stored endpoint masks, and which names an
+  output checkpoint refuses.
+  Upgrade: a consumed record's `X-JWT-Assertion` or `PrivateKey` header no
+  longer reaches HTTP receivers; an application's own `x-bip-…-key` or
+  `x-bip-…-token` header is masked in the parked copy, stays bytes at the Kafka
+  boundary instead of turning into text, and so is withheld from HTTP sends
+  like any other consumed credential header; the Kafka-publish warning names
+  these headers too; stored endpoints mask
+  `?jwt=`, `?assertion=` and `?bearer=` values. An output checkpoint's
+  `header-names` that names such a header now refuses to start; see
+  [Upgrading to 0.4](docs/upgrading-to-0.4.md). The .NET adapter needs the same
+  names for its stored endpoints to stay identical.
+- Security: a Key-Value Store write that the database refuses no longer copies
+  the row into the error. PostgreSQL's text for a constraint or data error names
+  the failing row, the stored value included, and the adapter stored, parked and
+  logged it as the message's failure. The error now names the key's operation,
+  the limit and the SQLSTATE only.
+- Security: the resend endpoint answers a failure it does not expect itself.
+  It caught only its own replay failures, and any other exception went to
+  Quarkus's error handling, which in dev and test mode answers the caller with
+  the failure's class, text, source lines and stack trace, and in every mode
+  logs the failure unmasked. Such a failure is now answered `500` with `status`
+  `FAILED` and a fixed `error` saying that whether the replay was published is
+  not known, as the .NET adapter's `RESEND_FAILED` does, and is logged once,
+  masked. The endpoint's other answers are unchanged. A failure that carries
+  an HTTP answer of its own, such as a `WebApplicationException` from an
+  application's own `MessageReplayService` or one an application's
+  `ExceptionMapper` handled, is now answered the same way. See
+  [Manual Replay](docs/retry-dlq-replay.md#manual-replay).
+  Upgrade: a caller that read Quarkus's `details` from such an answer reads the
+  endpoint's `error` instead; the failure itself is in the log. An application
+  whose own replay service or exception mapper chose the answer to a failure
+  gets the `500` instead.
+- Security: a failed HTTP input no longer sends its caller the failure text.
+  In 0.3.1 to 0.3.6 and 0.4.0-rc1 the adapter set `x-bip-error` and
+  `x-bip-dlq-at` on the exchange of an input that is not a managed Kafka input,
+  which it parked or, from 0.3.4, handed back with its failure, and
+  `platform-http` copies an exchange's headers into its answer, so the caller
+  received the failure text, which names a failed send's receiver URL, query
+  included, unmasked. The dead-letter
+  route now hands such a failure back before anything sets these headers (see
+  the `onException` entry below), so the caller gets the status and Camel's
+  empty body; `HttpCallerErrorAnswerTest` holds this.
+  Upgrade: an HTTP caller that read `x-bip-error` from the answer gets the
+  status only.
+- Security: a consumed record's `x-bip-redo-steps` makes the adapter send a
+  delivered step again only for the adapter's own replay, and only once. Before,
+  any record that carried the header and the id of a delivered message, from
+  any producer on the input topic, and any HTTP request to a route the adapter
+  tracks, re-ran the listed steps past the delivered-step ledger, with no replay
+  audit and no new attempt. Now the list is honoured only on a managed Kafka
+  input, while replay is enabled, on a record marked `x-bip-replay: true` that
+  matches a `REQUESTED` or `PUBLISHED` replay audit row for its message id,
+  integration, topic, attempt and redo list, as long as that attempt is not
+  completed or parked. A `FAILED` outcome no longer replaces a completed or
+  parked attempt's row, so a copy of a replay record that fails cannot reopen
+  its redo. A replay whose record was published but whose audit row cannot be
+  marked `PUBLISHED` now succeeds, with a warning, instead of failing: the row
+  stays `REQUESTED`, and requesting it again would publish a second replay. Any
+  other record's list is dropped with a warning. See
+  [Redo Steps](docs/retry-dlq-replay.md#redo-steps).
+  Upgrade: an operator's resend works as before. A tool that writes
+  `x-bip-redo-steps` on records itself, not through the resend endpoint, no
+  longer redoes anything. The Message Store login needs read access to
+  `bip_message_replay_audit` and `bip_message_attempt` for redo; without it, a
+  redo is ignored with a warning. A record with a redo list that names a
+  delivered step costs one more store read. An application's own
+  `StepOutcomeStore` must implement `isAuthorisedReplay`, or no redo is
+  honoured.
+- Security: message ids and the other values the adapter takes from a record
+  are written to the log with control characters, line and paragraph
+  separators, bidirectional controls and invisible format characters escaped as
+  `\uXXXX` (and a backslash as
+  `\\`), so a value with CR/LF can no longer forge or hide log lines. The same
+  applies to the adapter's error texts that name a message id or step key.
+- A record whose `x-bip-attempt` or `x-bip-schema-version` is not a whole number
+  is recorded with attempt 1 or schema version 1 and a warning that names the
+  header. Before, the outcome write failed after the route had run, the failure
+  was ignored, and a later commit moved past the record: the message was
+  processed, or parked, but had no row in the Message Store and could not be
+  resent. An unexpected failure while the outcome is built now leaves the record
+  uncommitted, so it is read again.
 - A send whose `DELIVERED` outcome could not be written is not made again on
   the record's next read in the same process
   ([#137](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/137)).
