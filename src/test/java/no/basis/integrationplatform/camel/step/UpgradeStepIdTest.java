@@ -26,6 +26,8 @@ class UpgradeStepIdTest {
         public boolean wasDelivered(String key) { return ledger.contains(key); }
         public void recordDelivered(StepResult step) { ledger.add(step.idempotencyKey()); }
         public void recordFailed(StepResult step) { }
+        // The redo below is the adapter's own replay.
+        public boolean isAuthorisedReplay(RedoClaim claim) { return true; }
     };
 
     @Test
@@ -75,7 +77,10 @@ class UpgradeStepIdTest {
             context.createProducerTemplate().send("direct:input", e -> {
                 e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-1");
                 if (redoSteps != null) {
+                    // As the route policy reads a managed Kafka input's replay record.
+                    e.getMessage().setHeader(PlatformHeaders.REPLAY, "true");
                     e.getMessage().setHeader(PlatformHeaders.REDO_STEPS, redoSteps);
+                    DefaultStepTracker.acceptRedoSteps(e, "message-1", "order-pipeline", "bip.order-pipeline.in", 2, true);
                 }
                 e.getMessage().setBody("<IDoc/>");
             });

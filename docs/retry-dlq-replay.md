@@ -382,7 +382,12 @@ POST /admin/messages/{messageId}/resend
 The replay service validates the stored inline payload or S3 claim check,
 writes a `bip_message_replay_audit` row, then publishes to the configured input
 topic. It retains the message id and envelope, sets `x-bip-replay=true`, and
-sets `x-bip-attempt` to the previous attempt plus one.
+sets `x-bip-attempt` to the previous attempt plus one. An `x-bip-attempt` or
+`x-bip-schema-version` that is not a whole number in the `int` range (ASCII
+digits with an optional sign; surrounding spaces, tabs and line breaks are
+ignored) is read as 1, with a warning that names the header; an attempt below 1 is read
+as 1 too. A readable schema version, also 0 or a negative number, is kept as it
+is, as the .NET adapter keeps it.
 
 An integration replays only its own messages, to the input that recorded them.
 Before it writes the audit row or publishes anything, the replay service
@@ -463,6 +468,41 @@ adapter publishes the JSON array in `x-bip-redo-steps` and stores it in replay
 audit. A listed step id or full idempotency key bypasses the delivered-step
 skip.
 
+Only that replay can redo a step, and only once. A consumed record's
+`x-bip-redo-steps` is honoured only when all of these hold:
+
+- the record comes from a managed Kafka input; on any other input, such as an
+  HTTP request, a timer or a file, the header is dropped with a warning;
+- replay is enabled (`basis.message-store.replay.enabled`), and the record
+  carries `x-bip-replay: true`;
+- `bip_message_replay_audit` has a row for the record's `x-bip-message-id`,
+  this integration, the topic the record was consumed from and the record's
+  `x-bip-attempt`, with the same redo list (compared as JSON), in state
+  `REQUESTED` or `PUBLISHED`. Both count, because the record can be consumed
+  before the replay service marks its row `PUBLISHED`; `FAILED` does not;
+- `bip_message_attempt` has no completed or parked row for that message id and
+  attempt. Once the replay's attempt is completed or parked, its record, or a
+  copy of it, no longer redoes anything. An attempt recorded `FAILED` was not
+  committed and is read again, so it may still redo. A later read of a
+  completed or parked attempt that fails, such as a copy of its record, does
+  not turn it `FAILED`: the Message Store keeps the attempt as it ended. Its
+  summary in `bip_message_log` still shows the failed read until the copy is
+  parked or completes. Every writer of `bip_message_attempt` on the store must
+  keep this rule, the .NET adapter and older adapter versions included.
+
+On any other record the list is ignored with a warning, and its delivered
+steps are skipped as on any redelivery. The Message Store is asked once per
+attempt, when the list names a delivered step. If it cannot be read, the send
+fails as when a step outcome cannot be checked: the record is not committed and
+is read again. A login that may not read `bip_message_replay_audit` gets no
+redo, with a warning, and so does a record whose values the store cannot read
+(SQLSTATE class 22). The lists are compared by the adapter, as JSON; the
+database never parses the record's own list, and a list with text after the
+array is malformed. A record read again before its attempt was completed or
+parked, for example after a crash, redoes once more. An application's own
+`StepOutcomeStore` bean must implement `isAuthorisedReplay` for redo to work;
+the default answers no.
+
 Redo deliberately repeats an external effect. It is safe only when the
 receiver honors the stable idempotency key or repetition is acceptable.
 
@@ -487,9 +527,9 @@ list, and a downstream integration that consumed a published record with the
 same message id would send its own steps with the same ids again. A handler
 that restores the original message, for example with `useOriginalMessage()`,
 gets the header back; the next `to` or `toD` and DLQ parking remove it again.
-`x-bip-replay` and `x-bip-attempt` are still forwarded; nothing in the adapter
-acts on `x-bip-replay` at a Kafka input. The warning for a malformed list names
-the header only, not its value.
+`x-bip-replay` and `x-bip-attempt` are still forwarded; at a Kafka input,
+`x-bip-replay` is one of the conditions above. The warning for a malformed list
+names the header only, not its value.
 
 ## Schema Version Startup Gate
 

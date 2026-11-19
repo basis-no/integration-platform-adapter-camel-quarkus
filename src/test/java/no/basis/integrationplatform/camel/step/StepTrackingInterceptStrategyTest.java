@@ -347,7 +347,11 @@ class StepTrackingInterceptStrategyTest {
 
         processor.process(exchange("POST"));
         Exchange replay = exchange("POST");
+        // The adapter's own replay of the message, which the store confirms.
+        replay.getMessage().setHeader(PlatformHeaders.REPLAY, "true");
         replay.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"create-order\"]");
+        DefaultStepTracker.acceptRedoSteps(replay, "message-123", "order-pipeline", "bip.order-pipeline.in", 2, true);
+        store.authorisedReplays = true;
         processor.process(replay);
 
         assertEquals(2, endpointCalls.get());
@@ -445,10 +449,16 @@ class StepTrackingInterceptStrategyTest {
         private final List<StepResult> delivered = new ArrayList<>();
         private final List<StepResult> failed = new ArrayList<>();
         private final Map<String, StepOutputCheckpoint> checkpoints = new HashMap<>();
+        private boolean authorisedReplays;
 
         @Override
         public boolean supportsOutputCheckpoints() {
             return true;
+        }
+
+        @Override
+        public boolean isAuthorisedReplay(RedoClaim claim) {
+            return authorisedReplays;
         }
 
         @Override

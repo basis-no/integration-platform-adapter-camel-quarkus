@@ -139,7 +139,7 @@ public final class ForwardedCredentialHeaders {
         if (WARNED.add(sender + "\n" + name.toLowerCase(Locale.ROOT))) {
             LOG.warn("Header {} from the consumed Kafka record was not sent by {}. A credential "
                     + "received with a message must not reach the next receiver; the publishing route "
-                    + "should remove caller headers before it publishes", name, sender);
+                    + "should remove caller headers before it publishes", LogText.escape(name), sender);
         }
     }
 

@@ -214,10 +214,12 @@ public class PlatformRouteConfiguration extends RouteConfigurationBuilder {
         }
         if (failure != null && StepOutcomeFailure.of(exchange) != null) {
             LOG.error("Message {} exhausted retries and is not parked: a step outcome was not checked or recorded",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(failure));
+                    LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)),
+                    ErrorTextMasking.forLog(failure));
         } else if (failure != null) {
             LOG.error("Message {} exhausted retries and is being parked in the DLQ",
-                    exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID), ErrorTextMasking.forLog(failure));
+                    LogText.escape(exchange.getMessage().getHeader(PlatformHeaders.MESSAGE_ID)),
+                    ErrorTextMasking.forLog(failure));
         }
 
         // The DLQ record must carry the ORIGINAL consumed payload, not a body the route

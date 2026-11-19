@@ -59,6 +59,7 @@ class UnresolvableObjectInputTest {
     private final List<MessageAttemptResult> rows = new CopyOnWriteArrayList<>();
     private final List<byte[]> parked = new CopyOnWriteArrayList<>();
     private final AtomicInteger routeRuns = new AtomicInteger();
+    private String messageId = "m-1";
 
     /** Failures that can never pass, each of a claim check that arrives on a replay or a DLQ resend. */
     enum NeverPasses {
@@ -223,6 +224,27 @@ class UnresolvableObjectInputTest {
         assertTrue(rows.getFirst().error().contains("Payload reference has expired"), rows.getFirst().error());
     }
 
+    @Test
+    void theLinesForAnInputThatDidNotReachItsRouteEscapeTheMessageId() throws Exception {
+        messageId = "m-1\r\n2026-01-01 INFO forged\u202e";
+        PayloadReference reference = reference(Instant.now().minus(Duration.ofDays(1)));
+
+        try (var log = LogCapture.of(MessageStoreRoutePolicy.class)) {
+            run(store(ignored -> { throw new AssertionError("not read"); }), spool(1024), true, message -> {
+                message.setBody(reference.toJsonBytes());
+                message.setHeader(PlatformHeaders.TRANSPORT_CONTENT_TYPE, PayloadReference.CONTENT_TYPE);
+            });
+
+            List<String> errors = log.at(Level.SEVERE).stream().map(LogCapture::text).toList();
+            for (String marker : List.of("did not reach its route", "could not be parked, so it is read again")) {
+                String line = errors.stream().filter(text -> text.contains(marker)).findFirst()
+                        .orElseThrow(() -> new AssertionError(marker + " in " + errors));
+                assertTrue(line.startsWith("Message m-1\\u000d\\u000a2026-01-01 INFO forged\\u202e "), line);
+                assertFalse(line.contains("\r") || line.contains("\n") || line.contains("\u202e"), line);
+            }
+        }
+    }
+
     private void assertReadAgain(Exchange exchange) {
         assertEquals(0, routeRuns.get(), "the route does not run");
         assertEquals(List.of("record FAILED"), events, "not parked and not committed");
@@ -264,7 +286,7 @@ class UnresolvableObjectInputTest {
             try (var producer = context.createProducerTemplate()) {
                 return producer.send("direct:input", e -> {
                     e.getMessage().setHeader(KafkaConstants.MANUAL_COMMIT, (KafkaManualCommit) () -> events.add("commit"));
-                    e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "m-1");
+                    e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, messageId);
                     input.accept(e.getMessage());
                 });
             }
