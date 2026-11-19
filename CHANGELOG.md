@@ -85,6 +85,36 @@ No Message Store schema change.
   endpoint's `error` instead; the failure itself is in the log. An application
   whose own replay service or exception mapper chose the answer to a failure
   gets the `500` instead.
+- A consumed record's `x-bip-redo-steps` makes the adapter send a
+  delivered step again only for the adapter's own replay, and only once. Before,
+  any record that carried the header and the id of a delivered message, from
+  any producer on the input topic, and any HTTP request to a route the adapter
+  tracks, re-ran the listed steps past the delivered-step ledger, with no replay
+  audit and no new attempt. Now the list is honoured only on a managed Kafka
+  input, while replay is enabled, on a record marked `x-bip-replay: true` that
+  matches a `REQUESTED` or `PUBLISHED` replay audit row for its message id,
+  integration, topic, attempt and redo list, as long as that attempt is not
+  completed or parked. A `FAILED` outcome no longer replaces a completed or
+  parked attempt's row, so a copy of a replay record that fails cannot reopen
+  its redo. A replay whose record was published but whose audit row cannot be
+  marked `PUBLISHED` now succeeds, with a warning, instead of failing: the row
+  stays `REQUESTED`, and requesting it again would publish a second replay. Any
+  other record's list is dropped with a warning. See
+  [Redo behavior](README.md#redo-behavior).
+  Upgrade: an operator's resend works as before. A tool that writes
+  `x-bip-redo-steps` on records itself, not through the resend endpoint, no
+  longer redoes anything. The Message Store login needs read access to
+  `bip_message_replay_audit` and `bip_message_attempt` for redo; without it, a
+  redo is ignored with a warning. A record with a redo list that names a
+  delivered step costs one more store read. An application's own
+  `StepOutcomeStore` must implement `isAuthorisedReplay`, or no redo is
+  honoured.
+- Message ids and the other values the adapter takes from a record
+  are written to the log with control characters, line and paragraph
+  separators, bidirectional controls and invisible format characters escaped as
+  `\uXXXX` (and a backslash as
+  `\\`), so a value with CR/LF can no longer forge or hide log lines. The same
+  applies to the adapter's error texts that name a message id or step key.
 
 ### Changed
 
@@ -254,6 +284,13 @@ No Message Store schema change.
   See [A record whose own values the store cannot hold](README.md#a-record-whose-own-values-the-store-cannot-hold).
   Upgrade: an envelope value over 1,024 bytes, which the store accepted
   before, is now refused and its record parked.
+- A record whose `x-bip-attempt` or `x-bip-schema-version` is not a whole number
+  is recorded with attempt 1 or schema version 1 and a warning that names the
+  header. Before, the outcome write failed after the route had run, the failure
+  was ignored, and a later commit moved past the record: the message was
+  processed, or parked, but had no row in the Message Store and could not be
+  resent. An unexpected failure while the outcome is built now leaves the record
+  uncommitted, so it is read again.
 
 ### Documentation
 
@@ -341,6 +378,21 @@ the details.
   keeps the failure, masked. A failure that carries an HTTP answer of its own,
   from an application's replay service or exception mapper, gets that `500`
   too.
+- **Redo lists come only from the adapter's own replay.** A resend through the
+  resend endpoint redoes its listed steps as before. A redo list that a tool
+  writes on a record itself, or that an HTTP caller sends, is dropped with a
+  warning. Grant the Message Store login `SELECT` on `bip_message_replay_audit`
+  and `bip_message_attempt`, or a resend's redo is ignored with a warning. An
+  application's own `StepOutcomeStore` must implement `isAuthorisedReplay`, or
+  no redo is honoured. A `FAILED` outcome no longer replaces a `COMPLETED` or
+  `DLQ` row of the same attempt in `bip_message_attempt`; a consumer of
+  `bip.message.status` events that writes that table itself should keep the
+  same rule. See [Redo behavior](README.md#redo-behavior).
+- **Record values in log lines are escaped.** Control and invisible characters
+  in a message id or another value from a record show as `\uXXXX`, and a
+  backslash as `\\`. A record whose `x-bip-attempt` or `x-bip-schema-version`
+  is not a whole number is now recorded, with attempt or schema version 1 and a
+  warning that names the header.
 - **Kafka inputs start at `earliest`.** A new consumer group, a changed
   `groupId`, a group whose committed offsets expired on the broker, and a Kafka
   input without a `groupId` now read each partition's retained records from

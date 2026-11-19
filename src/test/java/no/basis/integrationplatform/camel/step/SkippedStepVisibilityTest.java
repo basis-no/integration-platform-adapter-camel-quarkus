@@ -40,6 +40,8 @@ class SkippedStepVisibilityTest {
             public boolean wasDelivered(String key) { return delivered.contains(key); }
             public void recordDelivered(StepResult step) { delivered.add(step.idempotencyKey()); }
             public void recordFailed(StepResult step) { }
+            // The redo below is the adapter's own replay.
+            public boolean isAuthorisedReplay(RedoClaim claim) { return true; }
         };
         var logging = new LoggingMessageStoreSink();
         context = new DefaultCamelContext();
@@ -117,6 +119,12 @@ class SkippedStepVisibilityTest {
             producer.send("direct:input", e -> {
                 e.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-1");
                 if (redoSteps != null) {
+                    // A replay record on the managed Kafka input.
+                    e.getMessage().setHeader(org.apache.camel.component.kafka.KafkaConstants.TOPIC, "bip.order-pipeline.in");
+                    e.getMessage().setHeader(org.apache.camel.component.kafka.KafkaConstants.MANUAL_COMMIT,
+                            (org.apache.camel.component.kafka.consumer.KafkaManualCommit) () -> { });
+                    e.getMessage().setHeader(PlatformHeaders.REPLAY, "true");
+                    e.getMessage().setHeader(PlatformHeaders.ATTEMPT, "2");
                     e.getMessage().setHeader(PlatformHeaders.REDO_STEPS, redoSteps);
                 }
                 e.getMessage().setBody("<Order/>");

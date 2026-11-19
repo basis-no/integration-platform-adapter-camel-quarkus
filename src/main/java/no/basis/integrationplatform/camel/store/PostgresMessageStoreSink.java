@@ -1,5 +1,6 @@
 package no.basis.integrationplatform.camel.store;
 
+import no.basis.integrationplatform.camel.LogText;
 import no.basis.integrationplatform.camel.MessageStoreTimeouts;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 
@@ -77,7 +78,9 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
             """;
 
     // The CTE reads another integration that already journaled this message id, without
-    // an extra round trip. Its snapshot is taken before the insert.
+    // an extra round trip. Its snapshot is taken before the insert. A FAILED outcome never
+    // replaces a COMPLETED or DLQ attempt: a later read of that attempt that fails, such as a
+    // copy of its record, leaves the attempt as it ended, so its redo list stays used.
     private static final String UPSERT_MESSAGE_ATTEMPT_SQL = """
             with other as (
                 select integration from bip_message_attempt
@@ -131,6 +134,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 occurred_at = excluded.occurred_at,
                 steps_json = excluded.steps_json,
                 error = excluded.error
+            where not (bip_message_attempt.status in ('COMPLETED', 'DLQ') and excluded.status = 'FAILED')
             returning (select integration from other)
             """;
 
@@ -209,7 +213,8 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                             + "id and attempt, so the two integrations can replace each other's records. {} such "
                             + "message(s) for this pair since the last warning. Mint a new x-bip-message-id per "
                             + "integration and keep continuity in x-bip-correlation-id",
-                    result.messageId(), other, result.integration(), result.attempt(), since);
+                    LogText.escape(result.messageId()), LogText.escape(other), result.integration(), result.attempt(),
+                    since);
         }
     }
 
@@ -229,7 +234,7 @@ public class PostgresMessageStoreSink implements MessageStoreSink {
                 return null;
             });
         } catch (Exception e) {
-            throw new MessageStoreSinkException("Failed to record message attempt " + result.messageId()
+            throw new MessageStoreSinkException("Failed to record message attempt " + LogText.escape(result.messageId())
                     + "/" + result.attempt(), e);
         }
     }

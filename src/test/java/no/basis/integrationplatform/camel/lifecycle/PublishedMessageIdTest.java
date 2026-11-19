@@ -4,6 +4,7 @@ import no.basis.integrationplatform.camel.PlatformHeaders;
 import no.basis.integrationplatform.camel.model.MessageAttemptResult;
 import no.basis.integrationplatform.camel.model.StepResult;
 import no.basis.integrationplatform.camel.step.DefaultStepTracker;
+import no.basis.integrationplatform.camel.step.RedoClaim;
 import no.basis.integrationplatform.camel.step.StepOutcomeStore;
 import no.basis.integrationplatform.camel.step.StepTrackingInterceptStrategy;
 import org.apache.camel.builder.RouteBuilder;
@@ -66,6 +67,8 @@ class PublishedMessageIdTest {
             public boolean wasDelivered(String key) { return ledger.contains(key); }
             public void recordDelivered(StepResult step) { ledger.add(step.idempotencyKey()); }
             public void recordFailed(StepResult step) { }
+            // The resends in these tests are the adapter's own replays.
+            public boolean isAuthorisedReplay(RedoClaim claim) { return true; }
         };
         try (var admin = AdminClient.create(Map.<String, Object>of("bootstrap.servers", brokers));
              var context = new DefaultCamelContext()) {
@@ -134,6 +137,8 @@ class PublishedMessageIdTest {
             public boolean wasDelivered(String key) { return ledger.contains(key); }
             public void recordDelivered(StepResult step) { ledger.add(step.idempotencyKey()); }
             public void recordFailed(StepResult step) { }
+            // The resends in these tests are the adapter's own replays.
+            public boolean isAuthorisedReplay(RedoClaim claim) { return true; }
         };
         try (var admin = AdminClient.create(Map.<String, Object>of("bootstrap.servers", brokers));
              var context = new DefaultCamelContext()) {
@@ -202,6 +207,8 @@ class PublishedMessageIdTest {
             public boolean wasDelivered(String key) { return ledger.contains(key); }
             public void recordDelivered(StepResult step) { ledger.add(step.idempotencyKey()); }
             public void recordFailed(StepResult step) { }
+            // The resends in these tests are the adapter's own replays.
+            public boolean isAuthorisedReplay(RedoClaim claim) { return true; }
         };
         try (var admin = AdminClient.create(Map.<String, Object>of("bootstrap.servers", brokers));
              var context = new DefaultCamelContext()) {
