@@ -252,10 +252,15 @@ No Message Store schema change.
   retried the call instead, each failed try was listed twice as `FAILED`. A
   calling send now records only its own step, and a `direct:` send records
   none. Nor does a `toD` whose target is known only when it sends, such as
-  `toD("${header.next}")`, when that target turns out to be such a route:
+  `toD("${header.next}")`, when that target turns out to be internal, such as
+  a `direct:` route, also when that route makes its sends in split parts
+  ([#211](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/211),
+  [#220](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/220)):
   before, it was recorded `DELIVERED` when the route's dead letter channel
-  parked the message, so a resend skipped the whole route and recorded the
-  message `COMPLETED` without the send. Adapter 0.3.5 and 0.3.6 have the fault.
+  parked the message or a part of it, so a resend skipped the whole route and
+  recorded the message `COMPLETED` without the send. A `toD` that resolves to
+  an outside receiver is recorded as before. Adapter 0.3.5 and 0.3.6 have the
+  fault.
   Upgrade: a message that 0.3.5 or 0.3.6 recorded this way keeps its
   `DELIVERED` step and is still skipped. The README gives a way to find such
   messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);
@@ -394,12 +399,6 @@ No Message Store schema change.
 - During a Message Store outage the consumer reads an uncommitted record again
   and runs its route on each read, and a message that fails meanwhile can be
   parked more than once; see Documentation above for what to do.
-- A `toD` whose target is known only when it sends and turns out to be a route
-  that makes its tracked sends in split parts without an aggregation strategy
-  is still recorded `DELIVERED` when such a part is parked, so a resend skips
-  that route. Call such a route with a literal `to("direct:…")`, or give the
-  split an aggregation strategy
-  ([#220](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/220)).
 - Not in 0.3.7, on `main` for 0.4.0 or open: the HTTP client's own retries
   off, with 429 and 503 handled by the adapter
   ([#121](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/pull/121));

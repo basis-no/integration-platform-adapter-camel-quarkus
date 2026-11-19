@@ -306,15 +306,10 @@ send failed, the step stays `FAILED`, so a later read of the record, a resend
 or a replay sends it again. The same holds when the sub-route has no error
 handler of its own and the input route's handler retries the call. A `toD`
 whose target is known only when it sends, such as `toD("${header.next}")`, is
-tracked; when its target turns out to be such a route, it records nothing
-either, so a resend or a redo runs the route again. This holds when the route
-makes its tracked sends on the exchange it was called with: when it makes them
-in split parts without an aggregation strategy, the `toD` does not see them and
-is recorded `DELIVERED`, also when a part was parked, and a resend skips the
-route
-([#220](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/220)).
-Call such a route with a literal `to("direct:…")`, or give the split an
-aggregation strategy.
+tracked; when the endpoint it resolves to is internal, such as a `direct:`
+route, it records nothing either, also when that route makes its sends in split
+parts, so a resend or a redo runs the route again. A `toD` that resolves to an
+outside receiver is recorded as any tracked send.
 
 A later read can still follow a parked message. A commit fails after the DLQ
 publish when a receiver that accepts the connection and never answers kept the
