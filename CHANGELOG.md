@@ -394,6 +394,12 @@ No Message Store schema change.
 - During a Message Store outage the consumer reads an uncommitted record again
   and runs its route on each read, and a message that fails meanwhile can be
   parked more than once; see Documentation above for what to do.
+- A `toD` whose target is known only when it sends and turns out to be a route
+  that makes its tracked sends in split parts without an aggregation strategy
+  is still recorded `DELIVERED` when such a part is parked, so a resend skips
+  that route. Call such a route with a literal `to("direct:…")`, or give the
+  split an aggregation strategy
+  ([#220](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/220)).
 - Not in 0.3.7, on `main` for 0.4.0 or open: the HTTP client's own retries
   off, with 429 and 503 handled by the adapter
   ([#121](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/pull/121));

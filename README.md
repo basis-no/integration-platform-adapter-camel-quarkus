@@ -307,7 +307,14 @@ or a replay sends it again. The same holds when the sub-route has no error
 handler of its own and the input route's handler retries the call. A `toD`
 whose target is known only when it sends, such as `toD("${header.next}")`, is
 tracked; when its target turns out to be such a route, it records nothing
-either, so a resend or a redo runs the route again.
+either, so a resend or a redo runs the route again. This holds when the route
+makes its tracked sends on the exchange it was called with: when it makes them
+in split parts without an aggregation strategy, the `toD` does not see them and
+is recorded `DELIVERED`, also when a part was parked, and a resend skips the
+route
+([#220](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/220)).
+Call such a route with a literal `to("direct:…")`, or give the split an
+aggregation strategy.
 
 A later read can still follow a parked message. A commit fails after the DLQ
 publish when a receiver that accepts the connection and never answers kept the

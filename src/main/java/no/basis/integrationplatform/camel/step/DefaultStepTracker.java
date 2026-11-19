@@ -63,15 +63,15 @@ public class DefaultStepTracker implements StepTracker {
         this.retrySleeper = retrySleeper;
     }
 
-    /**
-     * The exchange properties that describe the send in progress: {@link #beforeSend} sets
-     * them and the outcome is recorded from them.
-     */
     /** The replay attempt and step of a redo in progress, so that its DELIVERED write remembers it. */
     static final String CURRENT_REDO = "basis.messageStore.currentRedo";
     /** How many redo sends this process remembers. */
     static final int MAX_REDONE = 10_000;
 
+    /**
+     * The exchange properties that describe the send in progress: {@link #beforeSend} sets
+     * them and the outcome is recorded from them.
+     */
     static final List<String> CURRENT_STEP_PROPERTIES = List.of(
             CURRENT_REDO,
             StepVisits.REPEATED_IN,
