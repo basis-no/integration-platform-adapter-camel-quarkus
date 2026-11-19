@@ -34,6 +34,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.Consumer;
 
+import static org.apache.camel.builder.Builder.constant;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -42,7 +43,9 @@ import static org.junit.jupiter.api.Assertions.assertTrue;
  * the dead-letter channel parks the message: the sub-route's own, or the input route's when
  * the sub-route has no error handler. The outcome of the HTTP send is recorded once per
  * try: the parked message's step stays FAILED, so its resend sends it again, and a
- * successful send records one DELIVERED.
+ * successful send records one DELIVERED. A {@code toD} whose target turns out to be the
+ * sub-route only when it sends records nothing for itself, as a literal {@code direct:} send
+ * does.
  */
 @Timeout(60)
 class SubRouteStepOutcomeTest {
@@ -87,7 +90,7 @@ class SubRouteStepOutcomeTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"direct", "direct-in-try", "sub-route-without-error-handler"})
+    @ValueSource(strings = {"direct", "direct-in-try", "sub-route-without-error-handler", "dynamic-uri"})
     void aParkedSendInASubRouteStaysFailedAndItsResendSendsItAgain(String shape) throws Exception {
         start(shape);
 
@@ -116,7 +119,7 @@ class SubRouteStepOutcomeTest {
      * is read again without a redo list.
      */
     @ParameterizedTest
-    @ValueSource(strings = {"direct", "direct-in-try", "sub-route-without-error-handler"})
+    @ValueSource(strings = {"direct", "direct-in-try", "sub-route-without-error-handler", "dynamic-uri"})
     void aReadAfterAFailedCommitSendsTheParkedStepAgain(String shape) throws Exception {
         start(shape);
         commitFails = true;
@@ -150,7 +153,7 @@ class SubRouteStepOutcomeTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"direct", "direct-in-try", "sub-route-without-error-handler"})
+    @ValueSource(strings = {"direct", "direct-in-try", "sub-route-without-error-handler", "dynamic-uri"})
     void aSuccessfulSendInASubRouteIsRecordedOnce(String shape) throws Exception {
         receiverStatus = 200;
         start(shape);
@@ -185,6 +188,9 @@ class SubRouteStepOutcomeTest {
         Consumer<RouteDefinition> input = switch (shape) {
             case "direct", "sub-route-without-error-handler" -> route -> route.to("direct:deliver");
             case "direct-in-try" -> route -> route.doTry().to("direct:deliver").doCatch(Exception.class).log("caught").end();
+            // The target is known only when the toD sends, so the send is tracked.
+            case "dynamic-uri" -> route -> route.setHeader("next", constant("direct:deliver"))
+                    .toD("${header.next}").id("dispatch");
             default -> throw new IllegalArgumentException(shape);
         };
         context.addRoutes(new RouteBuilder() {

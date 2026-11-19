@@ -304,7 +304,12 @@ send in the input route. The calling `to("direct:…")` is internal and records
 nothing. When the sub-route's dead letter channel parks the message after the
 send failed, the step stays `FAILED`, so a later read of the record, a resend
 or a replay sends it again. The same holds when the sub-route has no error
-handler of its own and the input route's handler retries the call.
+handler of its own and the input route's handler retries the call. A `toD`
+whose target is known only when it sends, such as `toD("${header.next}")`, is
+tracked; when the endpoint it resolves to is internal, such as a `direct:`
+route, it records nothing either, also when that route makes its sends in split
+parts, so a resend or a redo runs the route again. A `toD` that resolves to an
+outside receiver is recorded as any tracked send.
 
 A later read can still follow a parked message. A commit fails after the DLQ
 publish when a receiver that accepts the connection and never answers kept the
@@ -358,11 +363,12 @@ after the upgrade, so it is still skipped. To find these messages:
 
 3. For each of them, read its attempts in `bip_message_attempt` (see
    [Read Model](#read-model)). A sub-route step listed as `SKIPPED` in
-   `steps_json` points to this case. Check at the receiver whether it got the
-   message.
+   `steps_json` points to this case, and so does a `toD` step listed as
+   `SKIPPED` with none of the sub-route's steps after it, when the `toD` calls
+   the sub-route. Check at the receiver whether it got the message.
 4. Resend a message the receiver did not get with the step in `redoSteps`,
-   together with any step whose output it uses (see
-   [Redo behavior](#redo-behavior)). Redo repeats the call with the same
+   together with the `toD` step that calls its sub-route, if any, and any step
+   whose output it uses (see [Redo behavior](#redo-behavior)). Redo repeats the call with the same
    `Idempotency-Key`.
 
 Every message that 0.3.5 or 0.3.6 parked after a failed send in a sub-route
@@ -563,7 +569,8 @@ dead letter channel's line about a `direct:` parking route that throws the
 masked failure it was handed (see below): that line quotes the masked text and
 is masked as a whole once more. A URI is a scheme (a
 letter, then letters, digits, `+`, `-` or `.`) followed by `://`, up to the next white space, `<` or `>`; a quote that
-ends it is not part of it. One deadline of about a second covers the whole
+ends it is not part of it. A URI that a value of such a URI still holds, as when
+URIs follow each other without white space in JSON, is masked too. One deadline of about a second covers the whole
 text, and at most 20 URIs are masked; any URI past either is replaced by
 `xxxxxx`. A failure the adapter logs is logged as it is when nothing in it
 needs masking; otherwise as a copy (`ErrorTextMasking.MaskedFailure`, which a
@@ -983,7 +990,11 @@ redo, with a warning, and so does a record whose values the store cannot read
 (SQLSTATE class 22). The lists are compared by the adapter, as JSON; the
 database never parses the record's own list, and a list with text after the
 array is malformed. A record read again before its attempt was completed or
-parked, for example after a crash, redoes once more. An application's own
+parked does not redo a step whose redo this process already recorded for that
+attempt (each split part or multicast branch redoes it once; the process
+remembers its last 10,000 redo sends), for example after the attempt's own
+write failed; after a crash or in
+another process, it redoes once more. An application's own
 `StepOutcomeStore` bean must implement `isAuthorisedReplay` for redo to work;
 the default answers no.
 

@@ -288,6 +288,56 @@ class DefaultStepTrackerTest {
     }
 
     @Test
+    void aRedoIsSentOnceWhenItsReplayRecordIsReadAgainBeforeItsAttemptHasAnOutcome() {
+        // The redo was sent and its DELIVERED written, but the attempt's own write failed, so the
+        // record is read again while the store still confirms the replay.
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        Exchange first = exchange("https://vendor.example.com/callback", "notify-vendor");
+        first.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(first, "[\"notify-vendor\"]");
+        tracker.beforeSend(first);
+        assertFalse(first.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+        tracker.recordDelivered(first);
+
+        Exchange again = exchange("https://vendor.example.com/callback", "notify-vendor");
+        again.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        replayRecord(again, "[\"notify-vendor\"]");
+        tracker.beforeSend(again);
+        assertTrue(again.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class),
+                "The same replay attempt does not redo the step once more");
+
+        // A later resend is a new attempt and redoes it.
+        Exchange later = exchange("https://vendor.example.com/callback", "notify-vendor");
+        later.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+        later.getMessage().setHeader(PlatformHeaders.REPLAY, "true");
+        later.getMessage().setHeader(PlatformHeaders.REDO_STEPS, "[\"notify-vendor\"]");
+        stepOutcomeStore.authorisedReplays.add("message-123|3");
+        DefaultStepTracker.acceptRedoSteps(later, "message-123", "order-pipeline", "bip.order-pipeline.in", 3, true);
+        tracker.beforeSend(later);
+        assertFalse(later.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class));
+    }
+
+    @Test
+    void eachPartOfASplitRedoesItsSendOnceInAReplayAttempt() {
+        // In 0.3.x split parts share the step key; a redo still sends each part once.
+        stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
+        for (int read = 0; read < 2; read++) {
+            for (String part : new String[]{"split#1[0]", "split#1[1]"}) {
+                Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");
+                exchange.getMessage().setHeader(PlatformHeaders.MESSAGE_ID, "message-123");
+                exchange.setProperty(StepVisits.PATH, part);
+                replayRecord(exchange, "[\"notify-vendor\"]");
+                tracker.beforeSend(exchange);
+                assertEquals(read == 1, exchange.getProperty(PlatformExchangeProperties.STEP_SHOULD_SKIP, Boolean.class),
+                        "Part " + part + ", read " + (read + 1));
+                if (read == 0) {
+                    tracker.recordDelivered(exchange);
+                }
+            }
+        }
+    }
+
+    @Test
     void redoStepsHeaderMatchesFullIdempotencyKeyToo() {
         stepOutcomeStore.alreadyDelivered.add("message-123:notify-vendor");
         Exchange exchange = exchange("https://vendor.example.com/callback", "notify-vendor");

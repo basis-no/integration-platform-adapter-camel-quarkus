@@ -40,6 +40,8 @@ import java.util.concurrent.atomic.AtomicLong;
 @ApplicationScoped
 public class StepTrackingInterceptStrategy implements InterceptStrategy {
     private static final Logger LOG = LoggerFactory.getLogger(StepTrackingInterceptStrategy.class);
+    /** The tracked sends prepared on an exchange, so that a send can tell whether it ran others. */
+    private static final String TRACKED_SENDS = "basis.messageStore.trackedSends";
     /** Emergency escape hatch: start with generated step ids, logging a warning for each. */
     public static final String EMERGENCY_ALLOW_GENERATED_STEP_IDS = "basis.message-store.step-ids.emergency-allow-generated";
 
@@ -250,11 +252,12 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
 
     /**
      * A send in progress: the activity counters' snapshot, the credential headers it withheld,
-     * and its own step, which a send it makes in turn, such as a tracked send in a
-     * {@code direct:} route, replaces on the exchange.
+     * its own step, which a send it makes in turn, such as a tracked send in a
+     * {@code direct:} route, replaces on the exchange, the number of tracked sends prepared on
+     * the exchange up to and including this one, and whether the exchange was parked before it.
      */
     private record Send(TrafficSignals.PublishSnapshot trafficSnapshot, java.util.Map<String, Object> withheld,
-            java.util.Map<String, Object> step) {
+            java.util.Map<String, Object> step, int trackedSends, boolean parkedBefore) {
         void restoreStep(Exchange exchange) {
             for (String name : DefaultStepTracker.CURRENT_STEP_PROPERTIES) {
                 Object value = step.get(name);
@@ -352,12 +355,19 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 throw new StepOutcomeStoreException("Not sent: a step outcome of this attempt was not checked or "
                         + "recorded, so the input is read again", earlier);
             }
+            int trackedSends = trackedSends(exchange) + 1;
+            exchange.setProperty(TRACKED_SENDS, trackedSends);
+            if (dynamicScheme) {
+                // Camel sets it to the endpoint this toD resolves to: no earlier send's may be read for it.
+                exchange.removeProperty(ExchangePropertyKey.TO_ENDPOINT);
+            }
             stepOutcome(exchange, () -> stepTracker.beforeSend(exchangeWithInterceptProperties(exchange)));
             if (alreadyDelivered(exchange)) {
                 stepTracker.recordSkipped(exchange);
                 return null;
             }
-            return new Send(beforePublish(exchange), withholdCredentials(exchange), currentStep(exchange));
+            return new Send(beforePublish(exchange), withholdCredentials(exchange), currentStep(exchange),
+                    trackedSends, parked(exchange));
         }
 
         private static java.util.Map<String, Object> currentStep(Exchange exchange) {
@@ -388,6 +398,23 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             }
             try {
                 send.restoreStep(exchange);
+                // A toD whose target is known only when it sends and turned out to be internal,
+                // such as a direct: or seda: route, records nothing, as a literal internal send
+                // does: that route's tracked sends record their own steps, and a resend or a redo
+                // runs the route again. Camel sets the endpoint the toD resolved to on this
+                // exchange before it sends; a tracked send in the route on this exchange replaces
+                // it, and so does the parking of this exchange, which also means the send
+                // delivered nothing. Copies, such as split parts, keep their own.
+                String resolved = exchange.getProperty(ExchangePropertyKey.TO_ENDPOINT, String.class);
+                boolean resolvedInternal = dynamicScheme && resolved != null && DefaultStepTracker.isInternal(resolved);
+                // Without a resolved endpoint and without a failure the toD sent nothing, for example
+                // because its expression gave null: there is nothing to record as delivered.
+                boolean sentNothing = dynamicScheme && resolved == null && exchange.getException() == null;
+                boolean ranRoute = dynamicScheme && trackedSends(exchange) > send.trackedSends();
+                boolean parkedNow = exchange.getException() == null && !send.parkedBefore() && parked(exchange);
+                if (resolvedInternal || sentNothing || ranRoute || parkedNow) {
+                    return;
+                }
                 if (exchange.getException() == null) {
                     stepOutcome(exchange, () -> stepTracker.recordDelivered(exchange));
                 } else {
@@ -396,6 +423,15 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
             } catch (Throwable failure) {
                 markFailed(exchange, failure);
             }
+        }
+
+        private static int trackedSends(Exchange exchange) {
+            Integer count = exchange.getProperty(TRACKED_SENDS, Integer.class);
+            return count == null ? 0 : count;
+        }
+
+        private static boolean parked(Exchange exchange) {
+            return Boolean.TRUE.equals(exchange.getProperty(PlatformExchangeProperties.DLQ_PARKED, Boolean.class));
         }
 
         /** Checks or records a step outcome; a failure also keeps the input from being parked or committed. */

@@ -251,7 +251,17 @@ No Message Store schema change.
   route busy past the poll interval. When the input route's error handler
   retried the call instead, each failed try was listed twice as `FAILED`. A
   calling send now records only its own step, and a `direct:` send records
-  none. Adapter 0.3.5 and 0.3.6 have the fault.
+  none. Nor does a `toD` whose target is known only when it sends, such as
+  `toD("${header.next}")`, when that target turns out to be internal, such as
+  a `direct:` route, also when that route makes its sends in split parts
+  ([#211](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/211),
+  [#220](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/220)):
+  before, it was recorded `DELIVERED` when the route's dead letter channel
+  parked the message or a part of it, so a resend skipped the whole route and
+  recorded the message `COMPLETED` without the send. A `toD` that sends
+  nothing, because its expression gives `null`, is no longer recorded
+  `DELIVERED` either. A `toD` that resolves to an outside receiver is recorded
+  as before. Adapter 0.3.5 and 0.3.6 have the fault.
   Upgrade: a message that 0.3.5 or 0.3.6 recorded this way keeps its
   `DELIVERED` step and is still skipped. The README gives a way to find such
   messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);
@@ -305,6 +315,21 @@ No Message Store schema change.
   processed, or parked, but had no row in the Message Store and could not be
   resent. An unexpected failure while the outcome is built now leaves the record
   uncommitted, so it is read again.
+
+- A replay record read again before its attempt has an outcome, for example
+  after the attempt's own write failed, no longer redoes its listed steps on
+  every read: a step whose redo this process already recorded for that attempt
+  is skipped, for each split part or multicast branch. The process remembers
+  its last 10,000 such redo sends. After a crash or in another process it
+  redoes once more, as before. Adapter 0.3.6 redid listed steps on every read.
+- Error-text masking also masks a URI that a value of another URI holds, as
+  when URIs follow each other without white space in JSON
+  (`{"next":"https://a/cb?state=1","upload":"https://b/up?sig=…"}`): before,
+  the second URI's `sig` stayed in clear.
+- A stored endpoint's `RAW(...)` or `RAW{...}` value that holds an `&` is
+  masked as one value for the names only this adapter's rule masks, such as
+  `pwd`, `key` or `sig`; before, the part after the `&` stayed in clear, for
+  example in a `vertx-http` endpoint.
 
 ### Documentation
 

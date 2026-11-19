@@ -63,11 +63,17 @@ public class DefaultStepTracker implements StepTracker {
         this.retrySleeper = retrySleeper;
     }
 
+    /** The replay attempt and step of a redo in progress, so that its DELIVERED write remembers it. */
+    static final String CURRENT_REDO = "basis.messageStore.currentRedo";
+    /** How many redo sends this process remembers. */
+    static final int MAX_REDONE = 10_000;
+
     /**
      * The exchange properties that describe the send in progress: {@link #beforeSend} sets
      * them and the outcome is recorded from them.
      */
     static final List<String> CURRENT_STEP_PROPERTIES = List.of(
+            CURRENT_REDO,
             StepVisits.REPEATED_IN,
             PlatformExchangeProperties.CURRENT_STEP_ID,
             PlatformExchangeProperties.CURRENT_IDEMPOTENCY_KEY,
@@ -77,6 +83,16 @@ public class DefaultStepTracker implements StepTracker {
             PlatformExchangeProperties.STEP_FROM_MARK);
 
     private final StepOutcomeStore stepOutcomeStore;
+    // Redo sends whose DELIVERED outcome this process wrote. A replay record read again before its
+    // attempt has an outcome, for example after the attempt's write failed, is still confirmed
+    // by the store; it must not send the step once more.
+    private final Set<String> redone = java.util.Collections.newSetFromMap(java.util.Collections.synchronizedMap(
+            new java.util.LinkedHashMap<String, Boolean>() {
+                @Override
+                protected boolean removeEldestEntry(java.util.Map.Entry<String, Boolean> eldest) {
+                    return size() > MAX_REDONE;
+                }
+            }));
 
     @Inject
     public DefaultStepTracker(StepOutcomeStore stepOutcomeStore) {
@@ -113,11 +129,18 @@ public class DefaultStepTracker implements StepTracker {
         // A step listed in x-bip-redo-steps is sent again although the ledger has it DELIVERED,
         // but only for the adapter's own replay, confirmed by the store once it matters.
         boolean listed = redoSteps.contains(stepId) || redoSteps.contains(idempotencyKey);
-        boolean redoRequested = listed && alreadyDelivered && redoAuthorised(exchange);
+        String redo = listed && alreadyDelivered ? redoKey(exchange, idempotencyKey) : null;
+        boolean redoneHere = redo != null && redone.contains(redo);
+        boolean redoRequested = listed && alreadyDelivered && !redoneHere && redoAuthorised(exchange);
         boolean skip = alreadyDelivered && !redoRequested;
+        if (redoneHere) {
+            LOG.info("Step {} is listed in {}, but this replay attempt already redid it; skipping",
+                    LogText.escape(stepId), PlatformHeaders.REDO_STEPS);
+        }
         if (redoRequested) {
             LOG.info("Step {} was already DELIVERED but is listed in {}; re-executing", LogText.escape(stepId),
                     PlatformHeaders.REDO_STEPS);
+            exchange.setProperty(CURRENT_REDO, redo);
         }
 
         exchange.setProperty(PlatformExchangeProperties.CURRENT_STEP_ID, stepId);
@@ -315,6 +338,21 @@ public class DefaultStepTracker implements StepTracker {
         steps(exchange).add(step);
         StepVisits.of(exchange).sent(StepVisits.path(exchange), step.idempotencyKey());
         writeDelivered(exchange, step);
+        String redo = exchange.getProperty(CURRENT_REDO, String.class);
+        if (redo != null) {
+            redone.add(redo);
+        }
+    }
+
+    /**
+     * The replay attempt, step and part of a redo, or {@code null} when the record claims no
+     * redo. Split parts, loop iterations and branches share a step key in 0.3.x; each redoes its
+     * send once.
+     */
+    private static String redoKey(Exchange exchange, String idempotencyKey) {
+        RedoClaim claim = exchange.getProperty(PlatformExchangeProperties.REDO_CLAIM, RedoClaim.class);
+        return claim == null ? null : String.join("\n", claim.messageId(), claim.integration(), claim.topic(),
+                Integer.toString(claim.attempt()), idempotencyKey, StepVisits.path(exchange));
     }
 
     /**

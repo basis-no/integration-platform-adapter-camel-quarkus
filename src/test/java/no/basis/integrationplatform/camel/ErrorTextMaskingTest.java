@@ -23,6 +23,19 @@ class ErrorTextMaskingTest {
     }
 
     @Test
+    void masksAUriThatRunsIntoAnotherWithoutWhiteSpace() {
+        // In JSON the first URI runs on to the end of the text; the second sits in the value of a
+        // parameter whose name is not credential-like.
+        assertEquals("{\"next\":\"https://a/cb?state=1\",\"upload\":\"https://b/up?sig=xxxxxx",
+                ErrorTextMasking.mask("{\"next\":\"https://a/cb?state=1\",\"upload\":\"https://b/up?sig=s-1\"}"));
+        assertEquals("Redirect https://a/cb?next=https://xxxxxx@b/in?key=xxxxxx failed",
+                ErrorTextMasking.mask("Redirect https://a/cb?next=https://u:pw@b/in?key=k-1 failed"));
+        // A value the rule masks keeps nothing of the URI in it.
+        assertEquals("https://a/cb?code=xxxxxx",
+                ErrorTextMasking.mask("https://a/cb?code=https://b/up?sig=s-1"));
+    }
+
+    @Test
     void leavesTextWithoutAUriAsItIs() {
         String text = "Validation failed: field code=42 is not allowed";
         assertSame(text, ErrorTextMasking.mask(text));
