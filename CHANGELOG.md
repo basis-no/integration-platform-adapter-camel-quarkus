@@ -258,9 +258,10 @@ No Message Store schema change.
   [#220](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/220)):
   before, it was recorded `DELIVERED` when the route's dead letter channel
   parked the message or a part of it, so a resend skipped the whole route and
-  recorded the message `COMPLETED` without the send. A `toD` that resolves to
-  an outside receiver is recorded as before. Adapter 0.3.5 and 0.3.6 have the
-  fault.
+  recorded the message `COMPLETED` without the send. A `toD` that sends
+  nothing, because its expression gives `null`, is no longer recorded
+  `DELIVERED` either. A `toD` that resolves to an outside receiver is recorded
+  as before. Adapter 0.3.5 and 0.3.6 have the fault.
   Upgrade: a message that 0.3.5 or 0.3.6 recorded this way keeps its
   `DELIVERED` step and is still skipped. The README gives a way to find such
   messages (`COMPLETED` in the Message Store, with a record on the DLQ topic);

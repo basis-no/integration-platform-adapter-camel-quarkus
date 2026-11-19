@@ -108,6 +108,24 @@ class DynamicSendStepOutcomeTest {
     }
 
     @Test
+    void aToDThatSendsNothingRecordsNothing() throws Exception {
+        start(new RouteBuilder() {
+            public void configure() {
+                from("direct:input").routeId("input")
+                        .routePolicy(new MessageStoreRoutePolicy(rows::add, "order-pipeline"))
+                        .setHeader(Exchange.HTTP_METHOD, constant("POST"))
+                        // Camel sends nothing when the expression gives null.
+                        .toD("${header.receipts}").id("post-receipt");
+            }
+        });
+
+        read("message-1", "order");
+
+        assertEquals(Map.of(), outcomes, "Nothing was sent, so nothing is recorded");
+        assertEquals(0, calls("/receipts"));
+    }
+
+    @Test
     void aParallelToDToAReceiverIsRecordedNextToOneThatRunsARoute() throws Exception {
         ordersStatus = 200;
         start(new RouteBuilder() {

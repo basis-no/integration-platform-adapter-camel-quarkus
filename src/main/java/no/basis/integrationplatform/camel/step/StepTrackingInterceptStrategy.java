@@ -407,9 +407,12 @@ public class StepTrackingInterceptStrategy implements InterceptStrategy {
                 // delivered nothing. Copies, such as split parts, keep their own.
                 String resolved = exchange.getProperty(ExchangePropertyKey.TO_ENDPOINT, String.class);
                 boolean resolvedInternal = dynamicScheme && resolved != null && DefaultStepTracker.isInternal(resolved);
+                // Without a resolved endpoint and without a failure the toD sent nothing, for example
+                // because its expression gave null: there is nothing to record as delivered.
+                boolean sentNothing = dynamicScheme && resolved == null && exchange.getException() == null;
                 boolean ranRoute = dynamicScheme && trackedSends(exchange) > send.trackedSends();
                 boolean parkedNow = exchange.getException() == null && !send.parkedBefore() && parked(exchange);
-                if (resolvedInternal || ranRoute || parkedNow) {
+                if (resolvedInternal || sentNothing || ranRoute || parkedNow) {
                     return;
                 }
                 if (exchange.getException() == null) {
