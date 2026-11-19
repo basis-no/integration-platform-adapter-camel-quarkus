@@ -2,45 +2,51 @@
 
 ## 0.3.7 — 2026-11-19
 
+Maven artifact:
+`no.basis.integrationplatform:integration-platform-adapter-camel-quarkus:0.3.7`.
+
 No Message Store schema change.
 
 ### Security
 
 - Credentials in error texts no longer reach the Message Store, the
   shared DLQ topic or the log
-  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)). A failed send's exception names the receiver's
-  URL, query included, and the adapter stored that text in the message log, the
-  attempt and its steps and the step ledger, published it in `x-bip-error` on
-  the DLQ topic, and logged it. Every URI in such a text is now masked by the
-  stored-endpoint rule (user info, and parameters such as `code`, `sig`, `key`
-  or a credential-like name), also in the failures the adapter logs, whose class
-  names and stack traces stay, and in the lines of Camel's error handlers the
-  adapter installs, including the failure logged when parking fails. Each text
-  is masked once, as the .NET adapter does, so that both adapters store the same
-  text for the same failure. Not
-  covered: a failure of the parking endpoint or route itself; for an input that
-  is not a managed Kafka input, Camel's
-  `FatalFallbackErrorHandler` line and the consumer's own failure line; the
-  Kafka client's own logs; and credentials that are not in a `scheme://` URI.
-  See [Retry and DLQ](README.md#retry-and-dlq).
+  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)).
+  A failed send's exception names the receiver's URL, query included, and the
+  adapter stored that text in the message log, the attempt and its steps and the
+  step ledger, published it in `x-bip-error` on the DLQ topic, and logged it.
+  Every URI in such a text is now masked by the stored-endpoint rule (user info,
+  and parameters such as `code`, `sig`, `key` or a credential-like name), also
+  in the failures the adapter logs, whose class names and stack traces stay, and
+  in the lines of Camel's error handlers the adapter installs, including the
+  failure logged when parking fails. Each text is masked once, as the .NET
+  adapter does, so that both adapters store the same text for the same failure.
+  Not covered: a failure of the parking endpoint or route itself; for an input
+  that is not a managed Kafka input, Camel's `FatalFallbackErrorHandler` line
+  and the consumer's own failure line; the Kafka client's own logs; and
+  credentials that are not in a `scheme://` URI. See
+  [Retry and DLQ](README.md#retry-and-dlq).
   Upgrade: error texts show `xxxxxx` where they showed credentials; a DLQ reader
-  or alert that matched an unmasked value in `x-bip-error` must match the
-  masked form. A text with a URI that cannot be masked within about a second,
-  or with more than 20 URIs, shows `xxxxxx` for the rest. An application's own `direct:` parking route
-  (`basis.message-store.dlq-uri=direct:…`) now sees the caught failure as
-  `ErrorTextMasking.MaskedFailure`, whose text keeps the original class name
-  and the masked message, instead of the original exception: a parking route
-  that checks the exception's type or status code must read the text instead. A structured log shows
-  a masked failure's class as `ErrorTextMasking$MaskedFailure`, with the
-  original class in its text. Rows and DLQ records written before keep their
-  text: rotate any credential that has appeared in the URL of a failed send.
+  or alert that matched an unmasked value in `x-bip-error` must match the masked
+  form. A text with a URI that cannot be masked within about a second, or with
+  more than 20 URIs, shows `xxxxxx` for the rest. An application's own `direct:`
+  parking route (`basis.message-store.dlq-uri=direct:…`) now sees the caught
+  failure as `ErrorTextMasking.MaskedFailure`, whose text keeps the original
+  class name and the masked message, instead of the original exception: a
+  parking route that checks the exception's type or status code must read the
+  text instead. A structured log shows a masked failure's class as
+  `ErrorTextMasking$MaskedFailure`, with the original class in its text. Rows
+  and DLQ records written before keep their text: rotate any credential that has
+  appeared in the URL of a failed send.
 - The credential-name rule masks `X-JWT-Assertion`, `PrivateKey` and
   other names containing `assertion`, `privatekey`, `jwt` or `bearer`, and no
-  longer exempts every `x-bip-*` name ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)): only the adapter's own envelope headers
-  and `Idempotency-Key` stay readable. The rule decides which header values are
-  masked in a parked DLQ record, which of a consumed record's credential headers
-  an HTTP send withholds, which published headers the Kafka-publish warning
-  names, and which query parameters a stored endpoint masks.
+  longer exempts every `x-bip-*` name
+  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)):
+  only the adapter's own envelope headers and `Idempotency-Key` stay readable.
+  The rule decides which header values are masked in a parked DLQ record, which
+  of a consumed record's credential headers an HTTP send withholds, which
+  published headers the Kafka-publish warning names, and which query parameters
+  a stored endpoint masks.
   Upgrade: a consumed record's `X-JWT-Assertion` or `PrivateKey` header no
   longer reaches HTTP receivers; an application's own `x-bip-…-key` or
   `x-bip-…-token` header is masked in the parked copy, stays bytes at the Kafka
@@ -50,38 +56,41 @@ No Message Store schema change.
   `?jwt=`, `?assertion=` and `?bearer=` values. The .NET adapter needs the same
   names for its stored endpoints to stay identical.
 - A Key-Value Store write that the database refuses no longer copies
-  the row into the error ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)). PostgreSQL's text for a constraint or data error names
-  the failing row, the stored value included, and the adapter stored, parked and
-  logged it as the message's failure. The error now names the key's operation,
-  the limit and the SQLSTATE only.
+  the row into the error
+  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)).
+  PostgreSQL's text for a constraint or data error names the failing row, the
+  stored value included, and the adapter stored, parked and logged it as the
+  message's failure. The error now names the key's operation, the limit and the
+  SQLSTATE only.
 - A failed HTTP input no longer sends its caller the failure text
-  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)). When an
-  input that is not a managed Kafka input failed, for example a `platform-http`
-  route, the adapter's dead-letter route set `x-bip-error` and `x-bip-dlq-at`
-  on the exchange before it handed the failure back, and `platform-http` copies
-  an exchange's headers into its answer. The caller so received the failure
-  text, which names a failed send's receiver URL, query included; before 0.3.7
-  that text was not masked, so the caller could read a key or signature in the
-  URL. An exchange that is not parked no longer carries these headers. The
-  answer keeps its status and Camel's empty body (`platform-http` leaves the
-  failure out unless the endpoint sets `muteException=false`). The adapter's
-  own log lines keep the masked failure, and so does the Message Store for an
-  input selected by `basis.input-audit.routes`. An answer the route makes
-  itself, in its own `onException` or `doCatch`, is unchanged.
+  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)).
+  When an input that is not a managed Kafka input failed, for example a
+  `platform-http` route, the adapter's dead-letter route set `x-bip-error` and
+  `x-bip-dlq-at` on the exchange before it handed the failure back, and
+  `platform-http` copies an exchange's headers into its answer. The caller so
+  received the failure text, which names a failed send's receiver URL, query
+  included; before 0.3.7 that text was not masked, so the caller could read a
+  key or signature in the URL. An exchange that is not parked no longer carries
+  these headers. The answer keeps its status and Camel's empty body
+  (`platform-http` leaves the failure out unless the endpoint sets
+  `muteException=false`). The adapter's own log lines keep the masked failure,
+  and so does the Message Store for an input selected by
+  `basis.input-audit.routes`. An answer the route makes itself, in its own
+  `onException` or `doCatch`, is unchanged.
   Upgrade: an HTTP caller that read `x-bip-error` from the answer gets the
   status only, and the caller of an internal request (a `direct:` route or a
   `ProducerTemplate`) that read `x-bip-error` or `x-bip-dlq-at` from the failed
   exchange must read its exception instead.
 - The resend endpoint answers a failure it does not expect itself
-  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)). It caught
-  only its own replay failures, and any other exception went to Quarkus's error
-  handling, which in dev and test mode answers the caller with the failure's
-  class, text, source lines and stack trace, and in every mode logs the failure
-  unmasked. Such a failure is now answered `500` with `status` `FAILED` and a
-  fixed `error` saying that whether the replay was published is not known, as
-  the .NET adapter's `RESEND_FAILED` does, and is logged once, masked. The
-  endpoint's other answers are unchanged. A failure that carries an HTTP
-  answer of its own, such as a `WebApplicationException` from an
+  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)).
+  It caught only its own replay failures, and any other exception went to
+  Quarkus's error handling, which in dev and test mode answers the caller with
+  the failure's class, text, source lines and stack trace, and in every mode
+  logs the failure unmasked. Such a failure is now answered `500` with `status`
+  `FAILED` and a fixed `error` saying that whether the replay was published is
+  not known, as the .NET adapter's `RESEND_FAILED` does, and is logged once,
+  masked. The endpoint's other answers are unchanged. A failure that carries an
+  HTTP answer of its own, such as a `WebApplicationException` from an
   application's own `MessageReplayService` or one an application's
   `ExceptionMapper` handled, is now answered the same way.
   Upgrade: a caller that read Quarkus's `details` from such an answer reads the
@@ -90,21 +99,21 @@ No Message Store schema change.
   gets the `500` instead.
 - A consumed record's `x-bip-redo-steps` makes the adapter send a
   delivered step again only for the adapter's own replay, and only once
-  ([GHSA-gp87-4w66-553x](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-gp87-4w66-553x)). Before,
-  any record that carried the header and the id of a delivered message, from
-  any producer on the input topic, and any HTTP request to a route the adapter
-  tracks, re-ran the listed steps past the delivered-step ledger, with no replay
-  audit and no new attempt. Now the list is honoured only on a managed Kafka
-  input, while replay is enabled, on a record marked `x-bip-replay: true` that
-  matches a `REQUESTED` or `PUBLISHED` replay audit row for its message id,
+  ([GHSA-gp87-4w66-553x](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-gp87-4w66-553x)).
+  Before, any record that carried the header and the id of a delivered message,
+  from any producer on the input topic, and any HTTP request to a route the
+  adapter tracks, re-ran the listed steps past the delivered-step ledger, with
+  no replay audit and no new attempt. Now the list is honoured only on a managed
+  Kafka input, while replay is enabled, on a record marked `x-bip-replay: true`
+  that matches a `REQUESTED` or `PUBLISHED` replay audit row for its message id,
   integration, topic, attempt and redo list, as long as that attempt is not
   completed or parked. A `FAILED` outcome no longer replaces a completed or
   parked attempt's row, so a copy of a replay record that fails cannot reopen
   its redo. A replay whose record was published but whose audit row cannot be
   marked `PUBLISHED` now succeeds, with a warning, instead of failing: the row
   stays `REQUESTED`, and requesting it again would publish a second replay. Any
-  other record's list is dropped with a warning. See
-  [Redo behavior](README.md#redo-behavior).
+  other record's list is dropped with a warning. See [Redo
+  behavior](README.md#redo-behavior).
   Upgrade: an operator's resend works as before. A tool that writes
   `x-bip-redo-steps` on records itself, not through the resend endpoint, no
   longer redoes anything. The Message Store login needs read access to
@@ -356,8 +365,9 @@ No Message Store schema change.
   `kafka.HEADERS` issue found after 0.3.6
   ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w))
   still applies: remove `kafka.HEADERS` before an HTTP send from a Kafka
-  route, or import a Quarkus platform that brings camel-kafka 4.18.3 or later.
-  See the 0.3.6 known limitations below and the README.
+  route, or import a Quarkus platform that brings camel-kafka 4.14.8, 4.18.3
+  or 4.21.0 or later, such as Quarkus 3.33.4. See the 0.3.6 notes'
+  known limitations and [Retry and DLQ](README.md#retry-and-dlq).
 - Error-text masking does not cover a failure of the parking endpoint or route
   itself; for an input that is not a managed Kafka input, Camel's
   `FatalFallbackErrorHandler` line and the consumer's own failure line; the
@@ -370,10 +380,16 @@ No Message Store schema change.
   off, with 429 and 503 handled by the adapter
   ([#121](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/pull/121));
   a consumed record's credential headers kept off `rest:` and `rest-openapi:`
-  sends ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53), [#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158)); the input's message id kept when a
-  route removes all headers before a tracked send ([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)). A `toD`
-  that chooses its component only when it sends is not counted by the
-  activity counters ([#110](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/110), documented above).
+  sends
+  ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53),
+  [#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158));
+  the input's message id kept when a route removes all headers before a
+  tracked send
+  ([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)).
+  A `toD` that chooses its component only when it sends is not counted by the
+  activity counters
+  ([#110](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/110),
+  documented above).
 
 ### Upgrade notes
 
@@ -489,9 +505,9 @@ the details.
   `docs/release-packaging.md#snapshot-lane`. Otherwise acceptance uses locally
   built artifacts.
 - 0.3.7 is signed in CI with the release key's signing subkey
-  `B3E77E6F8222F0F26C3C73479BB5C2AB4F8E9565`, under the primary key
-  `43133136DA830375E5970B501E0487B13768F40C` that signed 0.3.6, published on
-  keys.openpgp.org and keyserver.ubuntu.com.
+  `B3E77E6F8222F0F26C3C73479BB5C2AB4F8E9565`, under the same primary key as
+  0.3.6, `43133136DA830375E5970B501E0487B13768F40C`, published with this
+  subkey on keys.openpgp.org and keyserver.ubuntu.com.
 
 ## 0.3.6 — 2026-11-04
 
