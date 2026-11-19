@@ -1,13 +1,14 @@
 # Changelog
 
-## 0.3.7 — unreleased
+## 0.3.7 — 2026-11-19
 
 No Message Store schema change.
 
 ### Security
 
 - Credentials in error texts no longer reach the Message Store, the
-  shared DLQ topic or the log. A failed send's exception names the receiver's
+  shared DLQ topic or the log
+  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)). A failed send's exception names the receiver's
   URL, query included, and the adapter stored that text in the message log, the
   attempt and its steps and the step ledger, published it in `x-bip-error` on
   the DLQ topic, and logged it. Every URI in such a text is now masked by the
@@ -35,7 +36,7 @@ No Message Store schema change.
   text: rotate any credential that has appeared in the URL of a failed send.
 - The credential-name rule masks `X-JWT-Assertion`, `PrivateKey` and
   other names containing `assertion`, `privatekey`, `jwt` or `bearer`, and no
-  longer exempts every `x-bip-*` name: only the adapter's own envelope headers
+  longer exempts every `x-bip-*` name ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)): only the adapter's own envelope headers
   and `Idempotency-Key` stay readable. The rule decides which header values are
   masked in a parked DLQ record, which of a consumed record's credential headers
   an HTTP send withholds, which published headers the Kafka-publish warning
@@ -49,11 +50,12 @@ No Message Store schema change.
   `?jwt=`, `?assertion=` and `?bearer=` values. The .NET adapter needs the same
   names for its stored endpoints to stay identical.
 - A Key-Value Store write that the database refuses no longer copies
-  the row into the error. PostgreSQL's text for a constraint or data error names
+  the row into the error ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)). PostgreSQL's text for a constraint or data error names
   the failing row, the stored value included, and the adapter stored, parked and
   logged it as the message's failure. The error now names the key's operation,
   the limit and the SQLSTATE only.
-- A failed HTTP input no longer sends its caller the failure text. When an
+- A failed HTTP input no longer sends its caller the failure text
+  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)). When an
   input that is not a managed Kafka input failed, for example a `platform-http`
   route, the adapter's dead-letter route set `x-bip-error` and `x-bip-dlq-at`
   on the exchange before it handed the failure back, and `platform-http` copies
@@ -70,7 +72,8 @@ No Message Store schema change.
   status only, and the caller of an internal request (a `direct:` route or a
   `ProducerTemplate`) that read `x-bip-error` or `x-bip-dlq-at` from the failed
   exchange must read its exception instead.
-- The resend endpoint answers a failure it does not expect itself. It caught
+- The resend endpoint answers a failure it does not expect itself
+  ([GHSA-2j26-w5jj-xmc9](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-2j26-w5jj-xmc9)). It caught
   only its own replay failures, and any other exception went to Quarkus's error
   handling, which in dev and test mode answers the caller with the failure's
   class, text, source lines and stack trace, and in every mode logs the failure
@@ -86,7 +89,8 @@ No Message Store schema change.
   whose own replay service or exception mapper chose the answer to a failure
   gets the `500` instead.
 - A consumed record's `x-bip-redo-steps` makes the adapter send a
-  delivered step again only for the adapter's own replay, and only once. Before,
+  delivered step again only for the adapter's own replay, and only once
+  ([GHSA-gp87-4w66-553x](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-gp87-4w66-553x)). Before,
   any record that carried the header and the id of a delivered message, from
   any producer on the input topic, and any HTTP request to a route the adapter
   tracks, re-ran the listed steps past the delivered-step ledger, with no replay
@@ -114,7 +118,8 @@ No Message Store schema change.
   separators, bidirectional controls and invisible format characters escaped as
   `\uXXXX` (and a backslash as
   `\\`), so a value with CR/LF can no longer forge or hide log lines. The same
-  applies to the adapter's error texts that name a message id or step key.
+  applies to the adapter's error texts that name a message id or step key
+  ([GHSA-gp87-4w66-553x](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-gp87-4w66-553x)).
 
 ### Changed
 
@@ -345,6 +350,31 @@ No Message Store schema change.
   releases of the Surefire (3.5.6), Jandex (3.5.3), Javadoc (3.11.3), GPG
   (3.2.8) and Central publishing (0.11.1) plugins.
 
+### Known limitations
+
+- Built against Quarkus 3.32.4, which brings Camel 4.18.0, so the camel-kafka
+  `kafka.HEADERS` issue found after 0.3.6
+  ([GHSA-9xmf-gp9j-qw7w](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/security/advisories/GHSA-9xmf-gp9j-qw7w))
+  still applies: remove `kafka.HEADERS` before an HTTP send from a Kafka
+  route, or import a Quarkus platform that brings camel-kafka 4.18.3 or later.
+  See the 0.3.6 known limitations below and the README.
+- Error-text masking does not cover a failure of the parking endpoint or route
+  itself; for an input that is not a managed Kafka input, Camel's
+  `FatalFallbackErrorHandler` line and the consumer's own failure line; the
+  Kafka client's own logs; and credentials that are not in a `scheme://` URI.
+  Rows, DLQ records and logs written before 0.3.7 keep their text.
+- During a Message Store outage the consumer reads an uncommitted record again
+  and runs its route on each read, and a message that fails meanwhile can be
+  parked more than once; see Documentation above for what to do.
+- Not in 0.3.7, on `main` for 0.4.0 or open: the HTTP client's own retries
+  off, with 429 and 503 handled by the adapter
+  ([#121](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/pull/121));
+  a consumed record's credential headers kept off `rest:` and `rest-openapi:`
+  sends ([#53](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/53), [#158](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/158)); the input's message id kept when a
+  route removes all headers before a tracked send ([#143](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/143)). A `toD`
+  that chooses its component only when it sends is not counted by the
+  activity counters ([#110](https://github.com/basis-no/integration-platform-adapter-camel-quarkus/issues/110), documented above).
+
 ### Upgrade notes
 
 What an integration notices when it moves from 0.3.6; the entries above give
@@ -458,6 +488,10 @@ the details.
   uploads again. It needs repository settings first; see
   `docs/release-packaging.md#snapshot-lane`. Otherwise acceptance uses locally
   built artifacts.
+- 0.3.7 is signed in CI with the release key's signing subkey
+  `B3E77E6F8222F0F26C3C73479BB5C2AB4F8E9565`, under the primary key
+  `43133136DA830375E5970B501E0487B13768F40C` that signed 0.3.6, published on
+  keys.openpgp.org and keyserver.ubuntu.com.
 
 ## 0.3.6 — 2026-11-04
 
