@@ -150,6 +150,18 @@ class EndpointUriMaskingTest {
     }
 
     @Test
+    void keepsARawValueWithAnAmpersandAsOneValueForTheAdaptersNames() {
+        // Camel keeps RAW(...) in a normalised endpoint URI, and its own rule knows only its names.
+        assertEquals("https://target.example/a?pwd=xxxxxx&page=2",
+                EndpointUriMasking.mask("https://target.example/a?pwd=RAW(p&q)&page=2"));
+        assertEquals("https://target.example/a?sig=xxxxxx&page=2",
+                EndpointUriMasking.mask("https://target.example/a?sig=RAW{p&q}&page=2"));
+        assertEquals("https://target.example/a?key=xxxxxx", EndpointUriMasking.mask("https://target.example/a?key=RAW(p&q"));
+        assertEquals("https://target.example/a?page=RAW(p&q)&key=xxxxxx",
+                EndpointUriMasking.mask("https://target.example/a?page=RAW(p&q)&key=k"));
+    }
+
+    @Test
     void masksTheCredentialNamesAddedToTheHeaderRule() {
         assertEquals("https://idp.example/token?assertion=xxxxxx&jwt=xxxxxx&bearer=xxxxxx&page=2",
                 EndpointUriMasking.mask("https://idp.example/token?assertion=a-1&jwt=j-1&bearer=b-1&page=2"));

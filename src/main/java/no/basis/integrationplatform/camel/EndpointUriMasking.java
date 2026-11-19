@@ -244,6 +244,10 @@ public final class EndpointUriMasking {
             int ampersand = indexWithin(uri, '&', parameterStart, queryEnd);
             int parameterEnd = ampersand < 0 ? queryEnd : ampersand;
             int equals = indexWithin(uri, '=', parameterStart, parameterEnd);
+            if (equals >= 0) {
+                // Camel's RAW(...) or RAW{...} value may hold an '&': it ends at its closing bracket.
+                parameterEnd = rawValueEnd(uri, equals + 1, parameterEnd, queryEnd);
+            }
             if (equals >= 0 && isCredentialParameter(uri.substring(parameterStart, equals))) {
                 for (int index = equals + 1; index < parameterEnd; index++) {
                     masked[index] = true;
@@ -252,6 +256,28 @@ public final class EndpointUriMasking {
             parameterStart = parameterEnd + 1;
         }
         return masked;
+    }
+
+    /**
+     * The end of a parameter whose value starts at {@code valueStart}: for a {@code RAW(...)} or
+     * {@code RAW{...}} value, after the first closing bracket that the query's end or an '&'
+     * follows, or the query's end when there is none; otherwise {@code parameterEnd}.
+     */
+    private static int rawValueEnd(String uri, int valueStart, int parameterEnd, int queryEnd) {
+        if (!uri.startsWith("RAW", valueStart) || valueStart + 3 >= queryEnd) {
+            return parameterEnd;
+        }
+        char open = uri.charAt(valueStart + 3);
+        char close = open == '(' ? ')' : open == '{' ? '}' : 0;
+        if (close == 0) {
+            return parameterEnd;
+        }
+        for (int index = valueStart + 4; index < queryEnd; index++) {
+            if (uri.charAt(index) == close && (index + 1 == queryEnd || uri.charAt(index + 1) == '&')) {
+                return index + 1;
+            }
+        }
+        return queryEnd;
     }
 
     static boolean isCredentialParameter(String encodedName) {

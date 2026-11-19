@@ -71,6 +71,12 @@ public final class ErrorTextMasking {
             }
             String replacement = ++count <= MAX_URIS && System.nanoTime() - deadline < 0
                     ? EndpointUriMasking.mask(text.substring(start, uriEnd), deadline) : PlatformRouteConfiguration.MASKED;
+            // A URI that runs into another, as in JSON without white space between them, keeps the
+            // other in a value it does not mask: mask that one too.
+            int inner = replacement.indexOf("://") + 3;
+            if (inner > 2 && replacement.indexOf("://", inner) >= 0) {
+                replacement = replacement.substring(0, inner) + mask(replacement.substring(inner), deadline);
+            }
             masked.append(text, copied, start).append(replacement);
             copied = uriEnd;
         }

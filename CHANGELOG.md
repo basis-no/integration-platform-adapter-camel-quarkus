@@ -310,6 +310,20 @@ No Message Store schema change.
   resent. An unexpected failure while the outcome is built now leaves the record
   uncommitted, so it is read again.
 
+- A replay record read again before its attempt has an outcome, for example
+  after the attempt's own write failed, no longer redoes its listed steps on
+  every read: a step whose redo this process already recorded for that attempt
+  is skipped. After a crash or in another process it redoes once more, as
+  before. Adapter 0.3.6 redid listed steps on every read.
+- Error-text masking also masks a URI that a value of another URI holds, as
+  when URIs follow each other without white space in JSON
+  (`{"next":"https://a/cb?state=1","upload":"https://b/up?sig=…"}`): before,
+  the second URI's `sig` stayed in clear.
+- A stored endpoint's `RAW(...)` or `RAW{...}` value that holds an `&` is
+  masked as one value for the names only this adapter's rule masks, such as
+  `pwd`, `key` or `sig`; before, the part after the `&` stayed in clear, for
+  example in a `vertx-http` endpoint.
+
 ### Documentation
 
 - The 0.3 line continues as a maintained series, with its current scope (one
